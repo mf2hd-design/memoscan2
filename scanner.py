@@ -1,12 +1,13 @@
 import os, re, requests, base64, asyncio, json
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from openai import OpenAI
+from openai import AsyncOpenAI # CORRECTED: Import the async client
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# CORRECTED: Instantiate the async client
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
 # Phase 1: Core Logic - Data Collection
