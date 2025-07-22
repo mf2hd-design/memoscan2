@@ -18,4 +18,4 @@ COPY . .
 EXPOSE 10000
 
 # The command to run when the container starts. This starts our Gunicorn server.
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:10000", "app:app"]
+CMD ["gunicorn", "-w", "4", "--bind", "0.0.0.0:10000", "app:app"]
