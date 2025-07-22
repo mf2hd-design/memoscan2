@@ -1,12 +1,11 @@
 import os, re, requests, base64, asyncio, json
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from openai import AsyncOpenAI # CORRECTED: Import the AsyncOpenAI client
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 load_dotenv()
-# CORRECTED: Instantiate the AsyncOpenAI client, which is awaitable
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
@@ -17,7 +16,7 @@ def _clean_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-return url.split("#")[0]
+    return url.split("#")[0]
 
 def _is_same_domain(home: str, test: str) -> bool:
     return urlparse(home).netloc == urlparse(test).netloc
@@ -151,7 +150,7 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-        return key_name, response.choices.message.content
+        return key_name, response.choices[0].message.content
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
         error_response = {
