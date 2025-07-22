@@ -1,6 +1,6 @@
 # This is a complete, known-good set of dependencies.
 Quart==0.18.4
-Werkzeug==2.3.9
+Werkzeug==2.3.8
 hypercorn==0.16.0
 openai==1.14.3
 python-dotenv==1.0.1
