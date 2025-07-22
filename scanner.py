@@ -4,13 +4,13 @@ from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
-import httpx # CORRECTED: Import the async HTTP client
+import httpx
 
 load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Data Collection Logic
+# Data Collection Logic (This part is correct and unchanged)
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -44,7 +44,6 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     
-    # CORRECTED: Use an async client for all network requests
     async with httpx.AsyncClient(headers=headers, timeout=10) as http_client:
         try:
             sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
@@ -88,7 +87,7 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
 
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Logic
+# AI Analysis Logic (This part is correct and unchanged)
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -174,22 +173,24 @@ async def run_full_scan_stream(url: str):
     queue = asyncio.Queue()
 
     async def heartbeat_producer():
-        """Sends a heartbeat every 10 seconds to keep the connection alive."""
+        """Puts a heartbeat comment into the queue every 10 seconds."""
         while True:
             await asyncio.sleep(10)
             await queue.put("data: : heartbeat\\n\\n")
 
     async def analysis_producer():
-        """Runs the main analysis and puts status and results into the queue."""
+        """Runs the main analysis and puts status/results into the queue."""
         await queue.put("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
         try:
             brand_data = await crawl_and_screenshot(url)
         except Exception as e:
             await queue.put(f"data: [ERROR] Failed to collect data from the website: {e}\\n\\n")
+            await queue.put(None)  # Sentinel to stop consumer
             return
 
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
             await queue.put("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
+            await queue.put(None)  # Sentinel to stop consumer
             return
         
         await queue.put("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
@@ -204,25 +205,24 @@ async def run_full_scan_stream(url: str):
             await queue.put(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
         
         await queue.put("data: [COMPLETE] Analysis finished.\\n\\n")
+        await queue.put(None)  # Sentinel to stop consumer
 
-    main_task = asyncio.create_task(analysis_producer())
+    # Start producers
+    analysis_task = asyncio.create_task(analysis_producer())
     heartbeat_task = asyncio.create_task(heartbeat_producer())
 
-    while not main_task.done():
-        done, pending = await asyncio.wait([
-            asyncio.create_task(queue.get()),
-            main_task
-        ], return_when=asyncio.FIRST_COMPLETED)
-
-        for task in done:
-            if task != main_task:
-                yield task.result()
-
+    # Run consumer loop
+    while True:
+        message = await queue.get()
+        if message is None:  # Sentinel value received
+            break
+        yield message
+    
+    # Cleanup
     heartbeat_task.cancel()
     try:
         await heartbeat_task
     except asyncio.CancelledError:
         pass
     
-    while not queue.empty():
-        yield queue.get_nowait()
+    await analysis_task # Ensure analysis task is finished
