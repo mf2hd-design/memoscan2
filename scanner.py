@@ -1,16 +1,16 @@
 import os, re, requests, base64, asyncio, json
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from openai import AsyncOpenAI # CORRECTED: Import the async client
+from openai import AsyncOpenAI # CORRECTED: Import the AsyncOpenAI client
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
 load_dotenv()
-# CORRECTED: Instantiate the async client
+# CORRECTED: Instantiate the AsyncOpenAI client, which is awaitable
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Phase 1: Core Logic - Data Collection
+# Data Collection Logic
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -32,8 +32,6 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         page = await browser.new_page()
-
-        # 1. Screenshot the main page
         try:
             print(f"[Scanner] Taking screenshot of {cleaned_url}")
             await page.goto(cleaned_url, wait_until="networkidle", timeout=15000)
@@ -42,13 +40,9 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
             print(f"[Scanner] Screenshot successful, {len(screenshot_b64)} bytes encoded.")
         except Exception as e:
             print(f"[ERROR] Could not take screenshot: {e}")
-        
         await browser.close()
 
-    # 2. Crawl for text content
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    
-    # Attempt to find and add sitemap URLs first
     try:
         sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
         res = requests.get(sitemap_url, headers=headers, timeout=10)
@@ -66,42 +60,31 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
         if url in visited or not _is_same_domain(cleaned_url, url):
             continue
         visited.add(url)
-        
         try:
             print(f"[Scanner] Crawling: {url}")
             res = requests.get(url, headers=headers, timeout=10)
             res.raise_for_status()
-            
             soup = BeautifulSoup(res.text, "html.parser")
-            
-            # Prioritize metadata
             title = soup.find("title").get_text() if soup.find("title") else ""
             meta_desc = soup.find("meta", attrs={"name": "description"})
             description = meta_desc['content'] if meta_desc else ""
-            
             page_content = f"Page URL: {url}\\nTitle: {title}\\nDescription: {description}\\n"
-            
             for tag in soup(["script", "style", "nav", "footer", "aside"]):
                 tag.decompose()
-            
             page_content += soup.get_text(" ", strip=True)
             text_corpus += page_content + "\\n\\n"
-
-            # Find more links
             for a in soup.find_all("a", href=True):
                 link = urljoin(url, a["href"])
                 if _is_same_domain(cleaned_url, link) and link not in visited and link not in queue:
                     queue.append(link)
-
         except Exception as e:
             print(f"[WARN] Failed to crawl {url}: {e}")
-            
     print(f"[Scanner] Crawl complete. Total text corpus size: {len(text_corpus)} chars.")
     return {"text_corpus": text_corpus[:max_chars], "screenshot_b64": screenshot_b64}
 
 
 # -----------------------------------------------------------------------------------
-# Phase 1: Core Logic - AI Analysis
+# AI Analysis Logic
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -132,7 +115,7 @@ MEMORABILITY_KEYS_PROMPTS = {
     """,
     "Consistency": """
         Analyze the **Consistency** key.
-        - **Lens:** Does the brand's touchpoints feel aligned in tone, message, and design?
+        - **Lens:** Do the brand's touchpoints feel aligned in tone, message, and design?
         - **Source:** Primarily use the screenshot to judge visual consistency. Use the text corpus to evaluate the consistency of the brand's tone and messaging across different pages. Do the parts feel like they belong to a coherent whole?
     """
 }
@@ -183,7 +166,6 @@ async def run_full_scan_stream(url: str):
     Orchestrates the full scan: crawl, screenshot, and then analyze each key.
     This is a generator function that yields results as they become available.
     """
-    # Phase 1: Data Collection
     yield "data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n"
     try:
         brand_data = await crawl_and_screenshot(url)
@@ -197,7 +179,6 @@ async def run_full_scan_stream(url: str):
     
     yield "data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n"
 
-    # Phase 2: Analysis - run all keys concurrently
     tasks = [
         analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
