@@ -1,14 +1,12 @@
 services:
   - type: web
     name: memoscan-v2-pilot
-    env: python
+    # This is the key change: we tell Render to use Docker.
+    env: docker
     plan: free
-    buildCommand: |
-      pip install -r requirements.txt
-      playwright install --with-deps
-    startCommand: "gunicorn -w 4 -k uvicorn.workers.UvicornWorker app:app"
+    # Render will now automatically find and use your Dockerfile.
+    # It also gives more memory to Docker builds, which is good.
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.11"
+      # We still need to set the API key as a secret.
       - key: OPENAI_API_KEY
         fromSecret: true
