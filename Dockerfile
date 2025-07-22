@@ -18,4 +18,4 @@ EXPOSE 10000
 
 # The command to run when the container starts.
 # We use the default Gunicorn sync worker, which is the most stable.
-CMD ["gunicorn", "-w", "4", "--timeout", "120", "--bind", "0.0.0.0:10000", "app:app"]
+CMD ["hypercorn", "--bind", "0.0.0.0:10000", "--timeout", "120", "app:app"]
