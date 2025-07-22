@@ -11,21 +11,15 @@ async def index():
 async def scan():
     url = request.args.get("url", "").strip()
 
-    # Define an inner async generator function.
-    # This is the correct pattern for streaming with Quart.
     async def _generate():
         if not url:
             yield "data: [ERROR] URL parameter is missing.\\n\\n"
             return
 
         print(f"[WebApp] Received scan request for: {url}")
-
-        # We can now directly loop over our async scanner and yield the results.
         async for data in run_full_scan_stream(url):
             yield data
 
-    # We call _generate() to create the generator object
-    # and pass that object to the Response.
     return Response(_generate(), mimetype="text/event-stream")
 
 if __name__ == "__main__":
