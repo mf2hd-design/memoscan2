@@ -17,7 +17,7 @@ def _clean_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    return url.split("#")[0]
+    return url.split("#")
 
 def _is_same_domain(home: str, test: str) -> bool:
     return urlparse(home).netloc == urlparse(test).netloc
@@ -137,7 +137,7 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
         Provide your analysis in a structured format. Respond with ONLY a JSON object with the following keys:
         - "score": An integer from 0 to 100.
         - "justification": A concise, 1-2 sentence explanation for your score.
-        - "evidence": A single, direct quote from the text or a specific visual observation from the screenshot that supports your analysis.
+        - "evidence": A single, a direct quote from the text or a specific visual observation from the screenshot that supports your analysis.
         - "confidence": An integer from 1 to 5 representing your confidence in the analysis, where 1 is low (major guess) and 5 is high (strong evidence).
     """
 
@@ -151,7 +151,7 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-        return key_name, response.choices[0].message.content
+        return key_name, response.choices.message.content
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
         error_response = {
