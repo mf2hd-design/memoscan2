@@ -1,5 +1,5 @@
-# Note: We are replacing Flask and Gunicorn with Quart and Hypercorn
-Quart==0.19.4
+# Using a known-stable version of Quart to resolve startup KeyError
+Quart==0.18.4
 hypercorn==0.16.0
 openai==1.14.3
 python-dotenv==1.0.1
