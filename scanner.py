@@ -172,49 +172,45 @@ async def run_full_scan_stream(url: str):
     
     queue = asyncio.Queue()
 
-    async def analysis_producer():
-        """Runs the main analysis and puts status/results into the queue."""
+    async def producer():
+        """Runs the entire scan and puts results and status messages into a queue."""
         await queue.put("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
         try:
             brand_data = await crawl_and_screenshot(url)
+            await queue.put("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
+            
+            if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
+                await queue.put("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
+            else:
+                tasks = [
+                    analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
+                    for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
+                ]
+                for future in asyncio.as_completed(tasks):
+                    key_name, result_json = await future
+                    await queue.put(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
+            
+            await queue.put("data: [COMPLETE] Analysis finished.\\n\\n")
+
         except Exception as e:
-            await queue.put(f"data: [ERROR] Failed to collect data from the website: {e}\\n\\n")
-            await queue.put(None)
-            return
+            await queue.put(f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n")
+        finally:
+            await queue.put(None) # Sentinel to stop the consumer
 
-        if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
-            await queue.put("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
-            await queue.put(None)
-            return
-        
-        await queue.put("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
-
-        tasks = [
-            analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-            for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
-        ]
-        
-        for future in asyncio.as_completed(tasks):
-            key_name, result_json = await future
-            await queue.put(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
-        
-        await queue.put("data: [COMPLETE] Analysis finished.\\n\\n")
-        await queue.put(None)  # Sentinel to stop the consumer
-
-    # Start the analysis producer in the background
-    producer_task = asyncio.create_task(analysis_producer())
+    # Start the producer task in the background
+    producer_task = asyncio.create_task(producer())
 
     # Run the consumer loop
     while True:
         try:
             # Wait for a result from the queue, but with a timeout
-            message = await asyncio.wait_for(queue.get(), timeout=15.0)
-            if message is None:  # Sentinel value received, we are done
+            message = await asyncio.wait_for(queue.get(), timeout=10.0)
+            if message is None:
                 break
             yield message
         except asyncio.TimeoutError:
-            # If we time out, the analysis is still running. Send a heartbeat.
+            # If the queue is empty and we time out, the analysis is still running. Send a heartbeat.
             print("[HEARTBEAT] Sending heartbeat to keep connection alive.")
             yield "data: : heartbeat\\n\\n"
     
-    await producer_task # Ensure the producer task is finished
+    await producer_task
