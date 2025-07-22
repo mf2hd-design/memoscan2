@@ -1,9 +1,10 @@
-import os, re, requests, base64, asyncio, json
+import os, re, base64, asyncio, json
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+import httpx # CORRECTED: Import the async HTTP client
 
 load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -42,42 +43,46 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
         await browser.close()
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    try:
-        sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
-        res = requests.get(sitemap_url, headers=headers, timeout=10)
-        if res.ok:
-            sitemap_soup = BeautifulSoup(res.text, "xml")
-            urls = [loc.text for loc in sitemap_soup.find_all("loc")]
-            if urls:
-                print(f"[Scanner] Found {len(urls)} URLs in sitemap.xml. Adding to queue.")
-                queue.extend(urls)
-    except Exception as e:
-        print(f"[Scanner] No sitemap.xml found or error parsing it: {e}")
-
-    while queue and len(visited) < max_pages and len(text_corpus) < max_chars:
-        url = queue.pop(0)
-        if url in visited or not _is_same_domain(cleaned_url, url):
-            continue
-        visited.add(url)
+    
+    # CORRECTED: Use an async client for all network requests
+    async with httpx.AsyncClient(headers=headers, timeout=10) as http_client:
         try:
-            print(f"[Scanner] Crawling: {url}")
-            res = requests.get(url, headers=headers, timeout=10)
-            res.raise_for_status()
-            soup = BeautifulSoup(res.text, "html.parser")
-            title = soup.find("title").get_text() if soup.find("title") else ""
-            meta_desc = soup.find("meta", attrs={"name": "description"})
-            description = meta_desc['content'] if meta_desc else ""
-            page_content = f"Page URL: {url}\\nTitle: {title}\\nDescription: {description}\\n"
-            for tag in soup(["script", "style", "nav", "footer", "aside"]):
-                tag.decompose()
-            page_content += soup.get_text(" ", strip=True)
-            text_corpus += page_content + "\\n\\n"
-            for a in soup.find_all("a", href=True):
-                link = urljoin(url, a["href"])
-                if _is_same_domain(cleaned_url, link) and link not in visited and link not in queue:
-                    queue.append(link)
+            sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
+            res = await http_client.get(sitemap_url)
+            if res.is_success:
+                sitemap_soup = BeautifulSoup(res.text, "xml")
+                urls = [loc.text for loc in sitemap_soup.find_all("loc")]
+                if urls:
+                    print(f"[Scanner] Found {len(urls)} URLs in sitemap.xml. Adding to queue.")
+                    queue.extend(urls)
         except Exception as e:
-            print(f"[WARN] Failed to crawl {url}: {e}")
+            print(f"[Scanner] No sitemap.xml found or error parsing it: {e}")
+
+        while queue and len(visited) < max_pages and len(text_corpus) < max_chars:
+            url = queue.pop(0)
+            if url in visited or not _is_same_domain(cleaned_url, url):
+                continue
+            visited.add(url)
+            try:
+                print(f"[Scanner] Crawling: {url}")
+                res = await http_client.get(url)
+                res.raise_for_status()
+                soup = BeautifulSoup(res.text, "html.parser")
+                title = soup.find("title").get_text() if soup.find("title") else ""
+                meta_desc = soup.find("meta", attrs={"name": "description"})
+                description = meta_desc['content'] if meta_desc else ""
+                page_content = f"Page URL: {url}\\nTitle: {title}\\nDescription: {description}\\n"
+                for tag in soup(["script", "style", "nav", "footer", "aside"]):
+                    tag.decompose()
+                page_content += soup.get_text(" ", strip=True)
+                text_corpus += page_content + "\\n\\n"
+                for a in soup.find_all("a", href=True):
+                    link = urljoin(url, a["href"])
+                    if _is_same_domain(cleaned_url, link) and link not in visited and link not in queue:
+                        queue.append(link)
+            except Exception as e:
+                print(f"[WARN] Failed to crawl {url}: {e}")
+    
     print(f"[Scanner] Crawl complete. Total text corpus size: {len(text_corpus)} chars.")
     return {"text_corpus": text_corpus[:max_chars], "screenshot_b64": screenshot_b64}
 
