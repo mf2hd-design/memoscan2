@@ -165,18 +165,12 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
 
 
 # -----------------------------------------------------------------------------------
-# Robust Streaming Orchestrator with Heartbeats
+# Final, Robust Streaming Orchestrator
 # -----------------------------------------------------------------------------------
 
 async def run_full_scan_stream(url: str):
     
     queue = asyncio.Queue()
-
-    async def heartbeat_producer():
-        """Puts a heartbeat comment into the queue every 10 seconds."""
-        while True:
-            await asyncio.sleep(10)
-            await queue.put("data: : heartbeat\\n\\n")
 
     async def analysis_producer():
         """Runs the main analysis and puts status/results into the queue."""
@@ -185,12 +179,12 @@ async def run_full_scan_stream(url: str):
             brand_data = await crawl_and_screenshot(url)
         except Exception as e:
             await queue.put(f"data: [ERROR] Failed to collect data from the website: {e}\\n\\n")
-            await queue.put(None)  # Sentinel to stop consumer
+            await queue.put(None)
             return
 
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
             await queue.put("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
-            await queue.put(None)  # Sentinel to stop consumer
+            await queue.put(None)
             return
         
         await queue.put("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
@@ -205,24 +199,22 @@ async def run_full_scan_stream(url: str):
             await queue.put(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
         
         await queue.put("data: [COMPLETE] Analysis finished.\\n\\n")
-        await queue.put(None)  # Sentinel to stop consumer
+        await queue.put(None)  # Sentinel to stop the consumer
 
-    # Start producers
-    analysis_task = asyncio.create_task(analysis_producer())
-    heartbeat_task = asyncio.create_task(heartbeat_producer())
+    # Start the analysis producer in the background
+    producer_task = asyncio.create_task(analysis_producer())
 
-    # Run consumer loop
+    # Run the consumer loop
     while True:
-        message = await queue.get()
-        if message is None:  # Sentinel value received
-            break
-        yield message
+        try:
+            # Wait for a result from the queue, but with a timeout
+            message = await asyncio.wait_for(queue.get(), timeout=15.0)
+            if message is None:  # Sentinel value received, we are done
+                break
+            yield message
+        except asyncio.TimeoutError:
+            # If we time out, the analysis is still running. Send a heartbeat.
+            print("[HEARTBEAT] Sending heartbeat to keep connection alive.")
+            yield "data: : heartbeat\\n\\n"
     
-    # Cleanup
-    heartbeat_task.cancel()
-    try:
-        await heartbeat_task
-    except asyncio.CancelledError:
-        pass
-    
-    await analysis_task # Ensure analysis task is finished
+    await producer_task # Ensure the producer task is finished
