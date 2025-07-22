@@ -17,7 +17,7 @@ def _clean_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    return url.split("#")
+return url.split("#")[0]
 
 def _is_same_domain(home: str, test: str) -> bool:
     return urlparse(home).netloc == urlparse(test).netloc
