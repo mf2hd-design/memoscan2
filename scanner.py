@@ -10,7 +10,7 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Data Collection Logic (This part is correct and unchanged)
+# Data Collection Logic
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -87,7 +87,7 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
 
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Logic (This part is correct and unchanged)
+# AI Analysis Logic
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -209,8 +209,8 @@ async def run_full_scan_stream(url: str):
                 break
             yield message
         except asyncio.TimeoutError:
-            # If the queue is empty and we time out, the analysis is still running. Send a heartbeat.
+            # If the queue is empty and we time out, the analysis is still running. Send a real event.
             print("[HEARTBEAT] Sending heartbeat to keep connection alive.")
-            yield "data: : heartbeat\\n\\n"
+            yield "event: heartbeat\\ndata: {}\\n\\n"
     
     await producer_task
