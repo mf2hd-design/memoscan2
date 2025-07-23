@@ -18,8 +18,8 @@
         button { padding: .75rem 1.25rem; background: var(--primary-color); border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 1rem; transition: background .2s; }
         button:hover { background: #005fa3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
-        #status-container { margin-top: 1.5rem; color: var(--text-light); font-style: italic; }
-        #results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; }
+        #status-container { margin-top: 1.5rem; background: #fafafa; border-radius: 6px; padding: 0.5rem 1rem; color: var(--text-light); font-style: italic; max-height: 200px; overflow-y: auto; }
+        #results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
         .result-block { background: #fff; border-left: 5px solid; padding: 1rem 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,.05); opacity: 0; transform: translateY(20px); animation: fadeIn .5s forwards; }
         .result-block.error { border-left-color: var(--error-color); }
         .result-block h3 { margin: 0 0 0.5rem; }
@@ -57,28 +57,31 @@
             return;
         }
 
-        // Revert to the simpler, single-request process
         scanButton.disabled = true;
         scanButton.textContent = "Analyzing...";
         resultsGrid.innerHTML = "";
-        statusContainer.textContent = "Submitting your request...";
+        statusContainer.innerHTML = ""; // Clear status container
 
         if (eventSource) {
             eventSource.close();
         }
 
         eventSource = new EventSource(`/scan?url=${encodeURIComponent(url)}`);
-
+        
+        // --- THIS onmessage HANDLER IS THE ONLY CHANGE IN THE SCRIPT ---
         eventSource.onmessage = (evt) => {
             const line = evt.data;
             
             if (line.startsWith("[STATUS]")) {
-                statusContainer.textContent = line.replace("[STATUS]", "").trim();
+                const statusMsg = line.replace("[STATUS]", "").trim();
+                statusContainer.innerHTML += `<div>${statusMsg}</div>`; // Append new status messages
+                statusContainer.scrollTop = statusContainer.scrollHeight; // Auto-scroll to bottom
             } else if (line.startsWith("[ERROR]")) {
                 const errorMsg = line.replace("[ERROR]", "").trim();
                 resultsGrid.innerHTML += `<div class="result-block error">${errorMsg}</div>`;
             } else if (line.startsWith("[COMPLETE]")) {
-                statusContainer.textContent = "Analysis Complete.";
+                statusContainer.innerHTML += `<div><strong>Analysis Complete.</strong></div>`;
+                statusContainer.scrollTop = statusContainer.scrollHeight;
                 eventSource.close();
                 scanButton.disabled = false;
                 scanButton.textContent = "Analyze Brand";
@@ -95,7 +98,7 @@
         };
 
         eventSource.onerror = (err) => {
-            statusContainer.textContent = "An error occurred with the connection. Please try again.";
+            statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Error:</strong> The connection to the server was lost. Please try again.</div>`;
             console.error("EventSource failed:", err);
             eventSource.close();
             scanButton.disabled = false;
