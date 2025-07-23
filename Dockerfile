@@ -18,4 +18,4 @@ EXPOSE 10000
 
 # The command to run when the container starts.
 # We use the default Gunicorn sync worker, which is the most stable.
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "180", "-b", "0.0.0.0:10000", "app:app"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000", "--workers", "4", "--timeout-keep-alive", "180"]
