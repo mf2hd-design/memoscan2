@@ -34,7 +34,7 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
         page = await browser.new_page()
         try:
             print(f"[Scanner] Taking screenshot of {cleaned_url}")
-            await page.goto(cleaned_url, wait_until="networkidle", timeout=15000)
+            await page.goto(cleaned_url, wait_until="networkidle", timeout=20000)
             screenshot_bytes = await page.screenshot(full_page=True)
             screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
             print(f"[Scanner] Screenshot successful, {len(screenshot_b64)} bytes encoded.")
@@ -165,36 +165,35 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
 
 
 # -----------------------------------------------------------------------------------
-# Final, Robust Orchestrator
+# Final, True Async Streaming Orchestrator
 # -----------------------------------------------------------------------------------
 
-async def run_full_scan(url: str) -> list[str]:
+async def run_full_scan_stream(url: str):
     """
-    This is now a simple async function that does all the work and returns a list of SSE messages.
+    This is now a true async generator that yields messages as they are ready.
     """
-    results = []
-    
-    results.append("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
     try:
+        yield "data: [STATUS] Starting scan... This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
+        
         brand_data = await crawl_and_screenshot(url)
+        
+        yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
+        
+        if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
+            yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
+            return
+
+        tasks = [
+            analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
+            for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
+        ]
+        
+        for future in asyncio.as_completed(tasks):
+            key_name, result_json = await future
+            yield f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n"
+        
+        yield "data: [COMPLETE] Analysis finished.\\n\\n"
+
     except Exception as e:
-        results.append(f"data: [ERROR] Failed to collect data from the website: {e}\\n\\n")
-        return results
-
-    if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
-        results.append("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
-        return results
-    
-    results.append("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
-
-    tasks = [
-        analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-        for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
-    ]
-    
-    for future in asyncio.as_completed(tasks):
-        key_name, result_json = await future
-        results.append(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
-    
-    results.append("data: [COMPLETE] Analysis finished.\\n\\n")
-    return results
+        print(f"[CRITICAL ERROR] The main stream failed: {e}")
+        yield f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n"
