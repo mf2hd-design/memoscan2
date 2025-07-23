@@ -41,7 +41,18 @@ def take_screenshot_via_api(url: str):
             print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
             return None
         api_url = "https://shot.screenshotapi.net/screenshot"
-        params = {"token": api_key, "url": url, "full_page": "true", "output": "image", "file_type": "png", "wait_for_event": "networkidle"}
+        
+        # --- THE DEFINITIVE FIX ---
+        # We remove 'full_page': 'true' to capture only the visible viewport.
+        # This is much faster and avoids timeouts on large websites.
+        params = {
+            "token": api_key,
+            "url": url,
+            "output": "image",
+            "file_type": "png",
+            "wait_for_event": "networkidle"
+        }
+        
         response = requests.get(api_url, params=params, timeout=120)
         response.raise_for_status()
         print("[API Screenshot] Screenshot successful.")
@@ -167,38 +178,6 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
         error_response = {"score": 0, "analysis": "Analysis failed due to a server error.", "evidence": str(e), "confidence": 1, "confidence_rationale": "System error.", "recommendation": "Resolve the technical error to proceed."}
         return key_name, error_response
-    finally:
-        for key, value in original_proxies.items():
-            if value is not None:
-                os.environ[key] = value
-
-def call_openai_for_executive_summary(all_analyses):
-    """Generates the final executive summary based on all individual key analyses."""
-    print("[AI] Generating Executive Summary...")
-    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-    original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
-    try:
-        http_client = httpx.Client(proxies=None)
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
-        
-        analyses_text = "\n\n".join([f"Key: {data['key']}\nScore: {data['analysis']['score']}\nAnalysis: {data['analysis']['analysis']}" for data in all_analyses])
-        
-        summary_prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
-        1.  **Overall Summary:** A brief, high-level overview of the brand's memorability performance.
-        2.  **Key Strengths:** Identify the 2-3 strongest keys for the brand and explain why.
-        3.  **Primary Weaknesses:** Identify the 2-3 weakest keys and explain the impact.
-        4.  **Strategic Focus:** State the single most important key the brand should focus on to improve its overall memorability.
-
-        Here are the individual analyses to synthesize:
-        ---
-        {analyses_text}
-        ---
-        """
-        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": summary_prompt}], temperature=0.3)
-        return response.choices[0].message.content
-    except Exception as e:
-        print(f"[ERROR] AI summary failed: {e}")
-        return "Could not generate the executive summary due to an error."
     finally:
         for key, value in original_proxies.items():
             if value is not None:
