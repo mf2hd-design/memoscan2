@@ -1,3 +1,4 @@
+import asyncio
 from quart import Quart, render_template, request, Response
 from scanner import run_full_scan_stream
 
@@ -17,11 +18,19 @@ async def scan():
             return
 
         print(f"[WebApp] Received scan request for: {url}")
-        # Directly iterate over the true async generator from the scanner
         async for data in run_full_scan_stream(url):
             yield data
 
-    return Response(_generate(), mimetype="text/event-stream")
+    # --- THIS IS THE CRITICAL FIX ---
+    # This header is a direct command to Render's proxy to disable buffering
+    # and stream the response immediately, which prevents timeouts.
+    headers = {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache",
+    }
+    
+    return Response(_generate(), mimetype="text/event-stream", headers=headers)
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=10000)
