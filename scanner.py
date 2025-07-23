@@ -247,6 +247,7 @@ def run_full_scan_stream(url: str, cache: dict):
         cleaned_url = _clean_url(url)
 
         yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
+        # We only need the HTML from this first call, not the screenshot yet.
         _, homepage_html = fetch_content_and_screenshot(cleaned_url)
         if not homepage_html:
             raise Exception("Could not fetch homepage content. The site may be blocking automation.")
@@ -274,7 +275,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 priority_pages.append(found_url)
                 found_urls.add(found_url)
         
-        # --- THIS IS THE STRATEGIC COMPROMISE: CRAWL 5 PAGES ---
+        # This is your requested logic: crawl up to 5 pages.
         while len(priority_pages) < 5:
             for link_url, _ in discovered_links:
                 if len(priority_pages) >= 5: break
@@ -290,20 +291,22 @@ def run_full_scan_stream(url: str, cache: dict):
         for i, page_url in enumerate(priority_pages):
             yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
-            # --- THIS IS THE STRATEGIC COMPROMISE: ONLY SCREENSHOT 3 PAGES ---
+            # This is your requested logic: only take screenshots for the first 3 pages.
             screenshot_b64, page_html = None, None
             if i < 3:
                 screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
             else:
-                # For pages 4 and 5, we still need the text content
+                # For pages 4 and 5, we must still fetch the text content.
                 try:
+                    # We can use a simple requests.get() here as a fallback.
                     res = requests.get(page_url, timeout=15)
                     res.raise_for_status()
                     page_html = res.text
                 except Exception as e:
                     print(f"[WARN] Failed to fetch text for {page_url}: {e}")
-            
+
             if screenshot_b64:
+                # This is your requested logic: only save the homepage screenshot for the AI.
                 if page_url == cleaned_url: homepage_screenshot_b64 = screenshot_b64
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
@@ -318,7 +321,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 for tag in soup(["script", "style", "nav", "footer", "aside", "header"]): tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + soup.get_text(" ", strip=True)
 
-        full_corpus = (text_corpus + social_corpus)[:25000]
+        full_corpus = (text_corpus + social_corpus)[:30000] # Increased corpus limit slightly
         
         yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
         brand_summary = call_openai_for_synthesis(full_corpus)
