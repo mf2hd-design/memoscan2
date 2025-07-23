@@ -20,14 +20,7 @@
         button:hover { background: #005fa3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
         #status-container { margin-top: 1.5rem; background: #fafafa; border-radius: 6px; padding: 0.5rem 1rem; color: var(--text-light); font-style: italic; max-height: 200px; overflow-y: auto; font-size: 0.9rem; }
-        #evidence-gallery { margin-bottom: 2rem; }
-        #evidence-gallery h3 { color: var(--text-dark); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1rem; }
-        #evidence-gallery img {
-            max-width: 100%;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,.08);
-        }
+        
         #results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
         .result-block { background: #fff; border-left: 5px solid; padding: 1rem 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,.05); opacity: 0; transform: translateY(20px); animation: fadeIn .5s forwards; }
         .result-block.error { border-left-color: var(--error-color); }
@@ -36,6 +29,49 @@
         .evidence { font-style: italic; color: var(--text-light); border-left: 3px solid #eee; padding-left: 1rem; margin-top: 0.75rem; }
         .confidence-bar { width: 100px; height: 10px; background: #eee; border-radius: 5px; overflow: hidden; margin-top: 5px; }
         .confidence-fill { height: 100%; width: 0%; background: var(--primary-color); transition: width .5s; }
+        
+        #evidence-gallery { margin-top: 2rem; }
+        #evidence-gallery h3 { color: var(--text-dark); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        #screenshot-container img {
+            max-width: 300px; /* Thumbnail size */
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        #screenshot-container img:hover {
+            transform: scale(1.05);
+        }
+
+        /* Styles for the modal (enlarged view) */
+        #modal-overlay {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            justify-content: center;
+            align-items: center;
+        }
+        #modal-image {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+        }
+        #modal-close {
+            position: absolute;
+            top: 20px;
+            right: 35px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
         @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
@@ -49,12 +85,20 @@
             <div id="status-container"></div>
         </div>
 
+        <div id="results-grid"></div>
+
+        <!-- Gallery is now below the results grid -->
         <div id="evidence-gallery" style="display: none;">
             <h3>Visual Evidence (Homepage)</h3>
+            <p>Click thumbnail to enlarge.</p>
             <div id="screenshot-container"></div>
         </div>
-        
-        <div id="results-grid"></div>
+    </div>
+
+    <!-- Modal HTML structure -->
+    <div id="modal-overlay">
+        <span id="modal-close">×</span>
+        <img id="modal-image" src="" alt="Enlarged Screenshot">
     </div>
 
 <script>
@@ -64,6 +108,9 @@
     const statusContainer = document.getElementById("status-container");
     const evidenceGallery = document.getElementById("evidence-gallery");
     const screenshotContainer = document.getElementById("screenshot-container");
+    const modalOverlay = document.getElementById("modal-overlay");
+    const modalImage = document.getElementById("modal-image");
+    const modalClose = document.getElementById("modal-close");
     
     const socket = io();
 
@@ -96,8 +143,16 @@
             case 'screenshot_ready':
                 evidenceGallery.style.display = 'block';
                 const img = document.createElement('img');
-                // Set the src to the new HTTP endpoint, using the unique ID.
-                img.src = `/screenshot/${msg.id}`;
+                const imgSrc = `/screenshot/${msg.id}`;
+                img.src = imgSrc;
+                img.alt = "Homepage Screenshot Thumbnail";
+                
+                // Add click listener to the thumbnail
+                img.addEventListener('click', () => {
+                    modalImage.src = imgSrc;
+                    modalOverlay.style.display = 'flex';
+                });
+                
                 screenshotContainer.appendChild(img);
                 break;
             case 'result':
@@ -109,6 +164,17 @@
                 scanButton.disabled = false;
                 scanButton.textContent = "Analyze Brand";
                 break;
+        }
+    });
+
+    // Add event listeners to close the modal
+    modalClose.addEventListener('click', () => {
+        modalOverlay.style.display = 'none';
+    });
+    modalOverlay.addEventListener('click', (event) => {
+        // Only close if the click is on the overlay itself, not the image
+        if (event.target === modalOverlay) {
+            modalOverlay.style.display = 'none';
         }
     });
 
