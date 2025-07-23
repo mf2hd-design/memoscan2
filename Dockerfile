@@ -16,6 +16,5 @@ COPY . .
 # Tell Render that the container will listen on port 10000
 EXPOSE 10000
 
-# The command to run when the container starts.
-# We use the default Gunicorn sync worker, which is the most stable.
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "10000", "--workers", "4", "--timeout-keep-alive", "180"]
+# The command to run when the container starts. This is the industry-standard command.
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "180", "-b", "0.0.0.0:10000", "app:app"]
