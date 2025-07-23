@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 from dotenv import load_dotenv
 import httpx
+import gevent # Import the gevent library
 
 load_dotenv()
 
@@ -49,7 +50,7 @@ def take_screenshot_via_api(url: str):
         return None
 
 # -----------------------------------------------------------------------------------
-# Social Media Scraping Function (Simplified and Fixed)
+# Social Media Scraping Function
 # -----------------------------------------------------------------------------------
 
 def get_social_media_text(soup, base_url):
@@ -180,9 +181,12 @@ def run_full_scan_stream(url: str):
         
         if screenshot_b64:
             yield {'type': 'screenshot_start'}
-            chunk_size = 16 * 1024
+            chunk_size = 16 * 1024  # 16KB chunks
             for i in range(0, len(screenshot_b64), chunk_size):
                 yield {'type': 'screenshot_chunk', 'data': screenshot_b64[i:i + chunk_size]}
+                # --- THIS IS THE CRITICAL FIX ---
+                # Add a cooperative sleep to allow the network buffer to flush.
+                gevent.sleep(0) 
             yield {'type': 'screenshot_end'}
         
         yield {'type': 'status', 'message': 'Step 3/4: Crawling website and social media...'}
@@ -230,6 +234,7 @@ def run_full_scan_stream(url: str):
             yield {'type': 'result', 'key': key_name, 'analysis': result_json}
         
         yield {'type': 'complete', 'message': 'Analysis finished.'}
+
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
