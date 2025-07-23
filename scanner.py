@@ -89,8 +89,6 @@ def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15
 # -----------------------------------------------------------------------------------
 # AI Analysis Logic
 # -----------------------------------------------------------------------------------
-
-# --- FULL PROMPTS RESTORED ---
 MEMORABILITY_KEYS_PROMPTS = {
     "Emotion": """
         Analyze the **Emotion** key.
@@ -134,8 +132,8 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
         content = [{"type": "text", "text": f"Text corpus from the brand's website:\\n\\n---\\n{text_corpus}\\n---"}]
         if screenshot_b64:
             content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}})
-
-        # --- FULL SYSTEM PROMPT RESTORED ---
+        
+        # This is the full system prompt, including the critical "JSON" keyword.
         system_prompt = f"""
             You are a senior brand strategist at Saffron Brand Consultants. Your task is to evaluate a brand's memorability for one specific key.
             
@@ -147,52 +145,33 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
             - "evidence": A single, a direct quote from the text or a specific visual observation from the screenshot that supports your analysis.
             - "confidence": An integer from 1 to 5 representing your confidence in the analysis, where 1 is low (major guess) and 5 is high (strong evidence).
         """
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-        )
-        return key_name, response.choices[0].message.content
+        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], response_format={"type": "json_object"}, temperature=0.2)
+        return key_name, json.loads(response.choices[0].message.content)
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
         error_response = {"score": 0, "justification": "Analysis failed due to an internal error.", "evidence": str(e), "confidence": 1}
-        return key_name, json.dumps(error_response)
+        return key_name, error_response
     finally:
         for key, value in original_proxies.items():
             if value is not None:
                 os.environ[key] = value
 
 # -----------------------------------------------------------------------------------
-# Final, Synchronous Streaming Orchestrator (With Heartbeat)
+# Final Generator
 # -----------------------------------------------------------------------------------
-
 def run_full_scan_stream(url: str):
     try:
-        yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
-        
+        yield {'type': 'status', 'message': 'Request received! Your brand analysis is starting now.'}
         brand_data = crawl_and_screenshot(url)
-        
-        yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
-        
+        yield {'type': 'status', 'message': 'Data collection complete. Analyzing with AI...'}
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
-            yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
+            yield {'type': 'error', 'message': 'Could not gather any content or visuals from the URL.'}
             return
-
-        # --- THIS LOOP IS THE ONLY PART THAT HAS CHANGED ---
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
-            # Send a "heartbeat" status update BEFORE the slow network call.
-            # This keeps the proxy connection alive.
-            yield f"data: [STATUS] Analyzing key: {key}...\\n\\n"
-            
-            # This is the slow part.
+            yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
             key_name, result_json = analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-            
-            # Send the actual result.
-            yield f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n"
-        
-        yield "data: [COMPLETE] Analysis finished.\\n\\n"
-
+            yield {'type': 'result', 'key': key_name, 'analysis': result_json}
+        yield {'type': 'complete', 'message': 'Analysis finished.'}
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
-        yield f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n"
+        yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
