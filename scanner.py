@@ -247,7 +247,6 @@ def run_full_scan_stream(url: str, cache: dict):
         cleaned_url = _clean_url(url)
 
         yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
-        # We only need the HTML from this first call, not the screenshot yet.
         _, homepage_html = fetch_content_and_screenshot(cleaned_url)
         if not homepage_html:
             raise Exception("Could not fetch homepage content. The site may be blocking automation.")
@@ -275,53 +274,53 @@ def run_full_scan_stream(url: str, cache: dict):
                 priority_pages.append(found_url)
                 found_urls.add(found_url)
         
-        # This is your requested logic: crawl up to 5 pages.
-        while len(priority_pages) < 5:
-            for link_url, _ in discovered_links:
-                if len(priority_pages) >= 5: break
-                if link_url not in found_urls:
-                    priority_pages.append(link_url)
-                    found_urls.add(link_url)
-            if len(priority_pages) < 5: break
+        # CORRECTED LOGIC: This ensures we fill up to 5 pages correctly.
+        for link_url, _ in discovered_links:
+            if len(priority_pages) >= 5:
+                break
+            if link_url not in found_urls:
+                priority_pages.append(link_url)
+                found_urls.add(link_url)
 
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
-        text_corpus, social_corpus = "", ""
+        text_corpus = ""
+        social_corpus = ""
         homepage_screenshot_b64 = None
         
+        # This is now a separate, dedicated social media scrape of the homepage soup
+        yield {'type': 'status', 'message': 'Searching for social media links...'}
+        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
+        if social_corpus:
+             yield {'type': 'status', 'message': 'Social media text captured.'}
+        else:
+             yield {'type': 'status', 'message': 'No social media links found.'}
+
         for i, page_url in enumerate(priority_pages):
             yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
-            # This is your requested logic: only take screenshots for the first 3 pages.
-            screenshot_b64, page_html = None, None
-            if i < 3:
-                screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
+            # Use the already-fetched homepage data for the first page
+            if page_url == cleaned_url:
+                screenshot_b64 = cache.get(next(iter(cache))) # A bit of a trick to get the first cached image
+                page_html = homepage_html
             else:
-                # For pages 4 and 5, we must still fetch the text content.
-                try:
-                    # We can use a simple requests.get() here as a fallback.
-                    res = requests.get(page_url, timeout=15)
-                    res.raise_for_status()
-                    page_html = res.text
-                except Exception as e:
-                    print(f"[WARN] Failed to fetch text for {page_url}: {e}")
-
-            if screenshot_b64:
-                # This is your requested logic: only save the homepage screenshot for the AI.
-                if page_url == cleaned_url: homepage_screenshot_b64 = screenshot_b64
+                screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
+            
+            if screenshot_b64 and page_url != cleaned_url: # Don't double-cache the homepage
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
                 yield {'type': 'screenshot_ready', 'id': image_id, 'url': page_url}
-
+            
             if page_html:
                 soup = BeautifulSoup(page_html, "html.parser")
-                if page_url == cleaned_url:
-                    social_corpus = get_social_media_text(soup, cleaned_url)
-                    if social_corpus: yield {'type': 'status', 'message': 'Social media text captured.'}
-
-                for tag in soup(["script", "style", "nav", "footer", "aside", "header"]): tag.decompose()
+                for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
+                    tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + soup.get_text(" ", strip=True)
 
-        full_corpus = (text_corpus + social_corpus)[:30000] # Increased corpus limit slightly
+        # Get the homepage screenshot for the AI
+        if cache:
+            homepage_screenshot_b64 = cache.get(next(iter(cache)))
+
+        full_corpus = (text_corpus + social_corpus)[:30000]
         
         yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
         brand_summary = call_openai_for_synthesis(full_corpus)
@@ -333,7 +332,6 @@ def run_full_scan_stream(url: str, cache: dict):
             key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
-            yield result_obj
         
         yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
         summary_text = call_openai_for_executive_summary(all_results)
