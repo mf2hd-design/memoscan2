@@ -49,11 +49,11 @@ def take_screenshot_via_api(url: str):
         return None
 
 # -----------------------------------------------------------------------------------
-# Social Media Scraping Function
+# Social Media Scraping Function (Simplified and Fixed)
 # -----------------------------------------------------------------------------------
 
-def get_social_media_content(soup, base_url):
-    """Finds social media links and scrapes text from their profiles. Yields statuses and returns final text."""
+def get_social_media_text(soup, base_url):
+    """A simple function that finds social links, scrapes them, and returns a single block of text."""
     social_text = ""
     social_links = {
         'twitter': soup.find('a', href=re.compile(r'twitter\.com/')),
@@ -64,7 +64,7 @@ def get_social_media_content(soup, base_url):
     for platform, link_tag in social_links.items():
         if link_tag:
             url = urljoin(base_url, link_tag['href'])
-            yield {'type': 'status', 'message': f'Found and scraping {platform.capitalize()}...'}
+            print(f"[Scanner] Scraping {platform.capitalize()} at {url}...")
             try:
                 res = requests.get(url, headers=headers, timeout=15)
                 if res.ok:
@@ -75,7 +75,6 @@ def get_social_media_content(soup, base_url):
                     social_text += social_soup.get_text(" ", strip=True)[:2000]
             except Exception as e:
                 print(f"[WARN] Failed to scrape {platform}: {e}")
-    # This is a Python generator trick: the final return value of the generator.
     return social_text
 
 # -----------------------------------------------------------------------------------
@@ -131,7 +130,8 @@ def call_openai_for_synthesis(corpus):
         return "Could not generate brand summary due to an error."
     finally:
         for key, value in original_proxies.items():
-            if value is not None: os.environ[key] = value
+            if value is not None:
+                os.environ[key] = value
 
 def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64, brand_summary):
     """Analyzes a single memorability key using the full context."""
@@ -147,8 +147,15 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
         ]
         if screenshot_b64:
             content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}})
+        
         system_prompt = f"""You are a senior brand strategist. Your task is to evaluate a brand's memorability for one specific key, using the provided brand summary for high-level context and the full text corpus for detailed evidence. {prompt_template} Provide your analysis in a structured format. Respond with ONLY a JSON object with the following keys: "score" (an integer from 0 to 100), "justification" (a concise, 1-2 sentence explanation), "evidence" (a single, direct quote from the text or a specific visual observation from the screenshot), and "confidence" (an integer from 1 to 5)."""
-        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], response_format={"type": "json_object"}, temperature=0.2)
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}],
+            response_format={"type": "json_object"},
+            temperature=0.2
+        )
         return key_name, json.loads(response.choices[0].message.content)
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
@@ -156,7 +163,8 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
         return key_name, error_response
     finally:
         for key, value in original_proxies.items():
-            if value is not None: os.environ[key] = value
+            if value is not None:
+                os.environ[key] = value
 
 # -----------------------------------------------------------------------------------
 # Main Orchestrator Function
@@ -172,10 +180,9 @@ def run_full_scan_stream(url: str):
         
         if screenshot_b64:
             yield {'type': 'screenshot_start'}
-            chunk_size = 16 * 1024  # Send in 16KB chunks
+            chunk_size = 16 * 1024
             for i in range(0, len(screenshot_b64), chunk_size):
-                chunk = screenshot_b64[i:i + chunk_size]
-                yield {'type': 'screenshot_chunk', 'data': chunk}
+                yield {'type': 'screenshot_chunk', 'data': screenshot_b64[i:i + chunk_size]}
             yield {'type': 'screenshot_end'}
         
         yield {'type': 'status', 'message': 'Step 3/4: Crawling website and social media...'}
@@ -196,13 +203,10 @@ def run_full_scan_stream(url: str):
                 soup = BeautifulSoup(res.text, "html.parser")
                 
                 if current_url == cleaned_url:
-                    social_gen = get_social_media_content(soup, cleaned_url)
-                    for item in social_gen:
-                        # The generator yields status dicts, then returns the final text
-                        if isinstance(item, dict):
-                            yield item
-                    # This is a trick to get the final "return" value from the generator
-                    social_corpus = next(get_social_media_content(soup, cleaned_url), "")
+                    yield {'type': 'status', 'message': 'Searching for social media links...'}
+                    social_corpus = get_social_media_text(soup, cleaned_url)
+                    if social_corpus:
+                         yield {'type': 'status', 'message': 'Social media text captured.'}
 
                 for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
                     tag.decompose()
@@ -226,7 +230,6 @@ def run_full_scan_stream(url: str):
             yield {'type': 'result', 'key': key_name, 'analysis': result_json}
         
         yield {'type': 'complete', 'message': 'Analysis finished.'}
-
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
