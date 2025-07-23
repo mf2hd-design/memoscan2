@@ -43,9 +43,9 @@
     <div id="container">
         <h1>🧠 MemoScan v2</h1>
         <div id="form-section">
-            <p>Enter a brand website URL for memorability analysis:</p>
+            <p>Enter a brand website URL for an enhanced memorability analysis:</p>
             <input id="url" type="text" placeholder="https://www.saffron-consultants.com">
-            <button id="scan-button">Begin Analysis</button>
+            <button id="scan-button">Analyze Brand</button>
             <div id="status-container"></div>
         </div>
 
@@ -66,6 +66,8 @@
     const screenshotContainer = document.getElementById("screenshot-container");
     
     const socket = io();
+
+    let screenshotChunks = [];
 
     socket.on('connect', () => { statusContainer.innerHTML = `<div>Ready.</div>`; });
     socket.on('disconnect', () => { statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`; });
@@ -93,11 +95,19 @@
             case 'error':
                 resultsGrid.innerHTML += `<div class="result-block error">${msg.message}</div>`;
                 break;
-            case 'screenshot':
+            case 'screenshot_start':
+                screenshotChunks = [];
                 evidenceGallery.style.display = 'block';
+                break;
+            case 'screenshot_chunk':
+                screenshotChunks.push(msg.data);
+                break;
+            case 'screenshot_end':
+                const fullBase64 = screenshotChunks.join('');
                 const img = document.createElement('img');
-                img.src = `data:image/png;base64,${msg.data}`;
+                img.src = `data:image/png;base64,${fullBase64}`;
                 screenshotContainer.appendChild(img);
+                screenshotChunks = [];
                 break;
             case 'result':
                 renderResultBlock(msg.key, msg.analysis);
