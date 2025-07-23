@@ -2,8 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>MemoScan – Final Prototype (WebSocket)</title>
-    <!-- We include the Socket.IO client library to handle WebSockets -->
+    <title>MemoScan v2 – Enhanced Analysis</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
         :root {
@@ -20,7 +19,15 @@
         button { padding: .75rem 1.25rem; background: var(--primary-color); border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 1rem; transition: background .2s; }
         button:hover { background: #005fa3; }
         button:disabled { background: #ccc; cursor: not-allowed; }
-        #status-container { margin-top: 1.5rem; background: #fafafa; border-radius: 6px; padding: 0.5rem 1rem; color: var(--text-light); font-style: italic; max-height: 200px; overflow-y: auto; }
+        #status-container { margin-top: 1.5rem; background: #fafafa; border-radius: 6px; padding: 0.5rem 1rem; color: var(--text-light); font-style: italic; max-height: 200px; overflow-y: auto; font-size: 0.9rem; }
+        #evidence-gallery { margin-bottom: 2rem; }
+        #evidence-gallery h3 { color: var(--text-dark); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        #evidence-gallery img {
+            max-width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+        }
         #results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
         .result-block { background: #fff; border-left: 5px solid; padding: 1rem 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,.05); opacity: 0; transform: translateY(20px); animation: fadeIn .5s forwards; }
         .result-block.error { border-left-color: var(--error-color); }
@@ -34,14 +41,19 @@
 </head>
 <body>
     <div id="container">
-        <h1>🧠 MemoScan</h1>
-        <h2>Phase 1: Final Prototype</h2>
+        <h1>🧠 MemoScan v2</h1>
         <div id="form-section">
-            <p>Enter a brand website URL to begin the memorability analysis:</p>
+            <p>Enter a brand website URL for memorability analysis:</p>
             <input id="url" type="text" placeholder="https://www.saffron-consultants.com">
-            <button id="scan-button">Analyze Brand</button>
+            <button id="scan-button">Begin Analysis</button>
             <div id="status-container"></div>
         </div>
+
+        <div id="evidence-gallery" style="display: none;">
+            <h3>Visual Evidence (Homepage)</h3>
+            <div id="screenshot-container"></div>
+        </div>
+        
         <div id="results-grid"></div>
     </div>
 
@@ -50,37 +62,29 @@
     const scanButton = document.getElementById("scan-button");
     const resultsGrid = document.getElementById("results-grid");
     const statusContainer = document.getElementById("status-container");
+    const evidenceGallery = document.getElementById("evidence-gallery");
+    const screenshotContainer = document.getElementById("screenshot-container");
     
-    // Connect to the WebSocket server
     const socket = io();
 
-    socket.on('connect', () => {
-        statusContainer.innerHTML = `<div>Ready.</div>`;
-    });
-
-    socket.on('disconnect', () => {
-        statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`;
-    });
+    socket.on('connect', () => { statusContainer.innerHTML = `<div>Ready.</div>`; });
+    socket.on('disconnect', () => { statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`; });
 
     scanButton.addEventListener("click", () => {
         const url = urlInput.value.trim();
-        if (!url) {
-            alert("Please enter a URL.");
-            return;
-        }
+        if (!url) { alert("Please enter a URL."); return; }
         
         scanButton.disabled = true;
         scanButton.textContent = "Analyzing...";
         resultsGrid.innerHTML = "";
         statusContainer.innerHTML = "";
+        screenshotContainer.innerHTML = "";
+        evidenceGallery.style.display = 'none';
         
-        // We emit a 'start_scan' event to the server with the URL.
         socket.emit('start_scan', { url: url });
     });
 
-    // This single listener handles all incoming messages from the server.
     socket.on('scan_update', (msg) => {
-        // We check the 'type' property of the message object to decide what to do.
         switch(msg.type) {
             case 'status':
                 statusContainer.innerHTML += `<div>${msg.message}</div>`;
@@ -88,6 +92,12 @@
                 break;
             case 'error':
                 resultsGrid.innerHTML += `<div class="result-block error">${msg.message}</div>`;
+                break;
+            case 'screenshot':
+                evidenceGallery.style.display = 'block';
+                const img = document.createElement('img');
+                img.src = `data:image/png;base64,${msg.data}`;
+                screenshotContainer.appendChild(img);
                 break;
             case 'result':
                 renderResultBlock(msg.key, msg.analysis);
@@ -102,7 +112,6 @@
     });
 
     function renderResultBlock(key, analysis) {
-        // This function to display the final cards is unchanged.
         const score = analysis.score || 0;
         const confidence = analysis.confidence || 1;
         const confidenceColor = getComputedStyle(document.documentElement).getPropertyValue(`--confidence-${confidence}`);
