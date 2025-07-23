@@ -1,6 +1,9 @@
 # Use an official, slim Python image.
 FROM python:3.11-slim
 
+# Set environment variables
+ENV PYTHONUNBUFFERED True
+
 # Set the working directory inside the container
 WORKDIR /app
 
@@ -13,9 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of your application code into the container
 COPY . .
 
-# Tell Render that the container will listen on port 10000
-EXPOSE 10000
+# This tells Render which port the container is listening on.
+# Render will set this environment variable for us.
+EXPOSE ${PORT}
 
 # The command to run when the container starts.
-# We've increased the timeout to 300 seconds (5 minutes) just in case.
-CMD ["gunicorn", "--timeout", "300", "-b", "0.0.0.0:10000", "app:app"]
+# It now correctly uses the $PORT variable provided by Render's environment.
+CMD ["gunicorn", "--timeout", "300", "--workers", "1", "--threads", "4", "-b", "0.0.0.0:${PORT}", "app:app"]
