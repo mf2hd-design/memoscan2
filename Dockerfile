@@ -16,10 +16,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of your application code into the container
 COPY . .
 
-# This tells Render which port the container is listening on.
-# Render will set this environment variable for us.
-EXPOSE ${PORT}
+# This line is primarily for documentation; the CMD line is what matters for execution.
+EXPOSE 10000
 
-# The command to run when the container starts.
-# It now correctly uses the $PORT variable provided by Render's environment.
-CMD ["gunicorn", "--timeout", "300", "--workers", "1", "--threads", "4", "-b", "0.0.0.0:${PORT}", "app:app"]
+#
+# --- THE FIX IS HERE ---
+# We now use the 'shell' form of CMD, which correctly processes the ${PORT} environment variable.
+#
+CMD gunicorn --timeout 300 --workers 1 --threads 4 -b 0.0.0.0:${PORT} app:app
