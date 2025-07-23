@@ -50,51 +50,24 @@
     const statusContainer = document.getElementById("status-container");
     let eventSource = null;
 
-    scanButton.addEventListener("click", async () => {
+    scanButton.addEventListener("click", () => {
         const url = urlInput.value.trim();
         if (!url) {
             alert("Please enter a URL.");
             return;
         }
 
-        // --- NEW TWO-STEP PROCESS ---
-
-        // 1. Start the scan and get a task ID
+        // Revert to the simpler, single-request process
         scanButton.disabled = true;
         scanButton.textContent = "Analyzing...";
         resultsGrid.innerHTML = "";
         statusContainer.textContent = "Submitting your request...";
 
-        try {
-            const response = await fetch('/scan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url })
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to start the scan.');
-            }
-
-            const data = await response.json();
-            const taskId = data.task_id;
-            
-            // 2. Open a new connection to the status stream
-            startStatusStream(taskId);
-
-        } catch (error) {
-            statusContainer.textContent = `Error: ${error.message}`;
-            scanButton.disabled = false;
-            scanButton.textContent = "Analyze Brand";
-        }
-    });
-
-    function startStatusStream(taskId) {
         if (eventSource) {
             eventSource.close();
         }
 
-        eventSource = new EventSource(`/status/${taskId}`);
+        eventSource = new EventSource(`/scan?url=${encodeURIComponent(url)}`);
 
         eventSource.onmessage = (evt) => {
             const line = evt.data;
@@ -128,7 +101,7 @@
             scanButton.disabled = false;
             scanButton.textContent = "Analyze Brand";
         };
-    }
+    });
 
     function renderResultBlock(key, analysis) {
         const score = analysis.score || 0;
