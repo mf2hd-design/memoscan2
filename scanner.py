@@ -3,43 +3,54 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
-import httpx # Import the httpx library
 
 load_dotenv()
 
-# -----------------------------------------------------------------------------------
-# Data Collection Logic (Synchronous)
-# -----------------------------------------------------------------------------------
+# This new function calls the external screenshot API
+def take_screenshot_via_api(url: str):
+    """
+    Takes a screenshot of a URL using an external API service.
+    Returns the base64 encoded string of the screenshot on success, or None on failure.
+    """
+    print(f"[API Screenshot] Requesting screenshot for {url}")
+    try:
+        api_key = os.getenv("SCREENSHOT_API_KEY")
+        if not api_key:
+            print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
+            return None
 
-def _clean_url(url: str) -> str:
-    url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return url.split("#")[0]
+        # Construct the API request URL
+        api_url = "https://shot.screenshotapi.net/screenshot"
+        params = {
+            "token": api_key,
+            "url": url,
+            "full_page": "true",
+            "fresh": "true",
+            "output": "image",
+            "file_type": "png",
+            "wait_for_event": "load"
+        }
+        
+        response = requests.get(api_url, params=params, timeout=120) # 2 minute timeout for the API call
+        response.raise_for_status() # Will raise an exception for 4xx/5xx responses
+        
+        print("[API Screenshot] Screenshot successful.")
+        return base64.b64encode(response.content).decode('utf-8')
 
-def _is_same_domain(home: str, test: str) -> bool:
-    return urlparse(home).netloc == urlparse(test).netloc
+    except requests.exceptions.RequestException as e:
+        print(f"[ERROR] Could not take screenshot via API: {e}")
+        return None
 
+# The original crawl_and_screenshot function is now much simpler.
 def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15000):
     cleaned_url = _clean_url(start_url)
+    
+    # --- The Playwright block is replaced with this single API call ---
+    screenshot_b64 = take_screenshot_via_api(cleaned_url)
+    
     visited, queue, text_corpus = set(), [cleaned_url], ""
-    screenshot_b64 = None
 
     print(f"[Scanner] Starting crawl at {cleaned_url}")
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(args=['--no-sandbox'])
-        page = browser.new_page()
-        try:
-            print(f"[Scanner] Taking screenshot of {cleaned_url}")
-            page.goto(cleaned_url, wait_until="networkidle", timeout=30000)
-            screenshot_bytes = page.screenshot(full_page=True)
-            screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-            print(f"[Scanner] Screenshot successful.")
-        except Exception as e:
-            print(f"[ERROR] Could not take screenshot: {e}")
-        browser.close()
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     
@@ -85,7 +96,7 @@ def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15
 
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Logic
+# AI Analysis Logic - This part remains the same
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -123,16 +134,12 @@ MEMORABILITY_KEYS_PROMPTS = {
 
 def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
     print(f"[Analyzer] Analyzing key: {key_name}")
-    
-    try:
-        # Manually create an http client, ignoring environment proxies that cause the error.
-        http_client = httpx.Client(proxies=None)
 
-        # Pass the manually configured client to OpenAI.
-        client = OpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            http_client=http_client
-        )
+    original_http_proxy = os.environ.pop("HTTP_PROXY", None)
+    original_https_proxy = os.environ.pop("HTTPS_PROXY", None)
+
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         
         content = [
             {"type": "text", "text": f"Text corpus from the brand's website:\\n\\n---\\n{text_corpus}\\n---"},
@@ -169,6 +176,11 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
             "evidence": str(e), "confidence": 1
         }
         return key_name, json.dumps(error_response)
+    finally:
+        if original_http_proxy:
+            os.environ["HTTP_PROXY"] = original_http_proxy
+        if original_https_proxy:
+            os.environ["HTTPS_PROXY"] = original_https_proxy
 
 
 # -----------------------------------------------------------------------------------
@@ -176,9 +188,6 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
 # -----------------------------------------------------------------------------------
 
 def run_full_scan_stream(url: str):
-    """
-    This is a simple, synchronous generator that yields messages as they are ready.
-    """
     try:
         yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
         
