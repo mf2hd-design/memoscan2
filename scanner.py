@@ -10,7 +10,7 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Data Collection Logic
+# Data Collection Logic (This part is correct and unchanged)
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -87,7 +87,7 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
 
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Logic
+# AI Analysis Logic (This part is correct and unchanged)
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -165,52 +165,36 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
 
 
 # -----------------------------------------------------------------------------------
-# Final, Robust Streaming Orchestrator
+# Final, Robust Orchestrator
 # -----------------------------------------------------------------------------------
 
-async def run_full_scan_stream(url: str):
+async def run_full_scan(url: str) -> list[str]:
+    """
+    This is now a simple async function that does all the work and returns a list of SSE messages.
+    """
+    results = []
     
-    queue = asyncio.Queue()
+    results.append("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
+    try:
+        brand_data = await crawl_and_screenshot(url)
+    except Exception as e:
+        results.append(f"data: [ERROR] Failed to collect data from the website: {e}\\n\\n")
+        return results
 
-    async def producer():
-        """Runs the entire scan and puts results and status messages into a queue."""
-        await queue.put("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
-        try:
-            brand_data = await crawl_and_screenshot(url)
-            await queue.put("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
-            
-            if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
-                await queue.put("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
-            else:
-                tasks = [
-                    analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-                    for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
-                ]
-                for future in asyncio.as_completed(tasks):
-                    key_name, result_json = await future
-                    await queue.put(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
-            
-            await queue.put("data: [COMPLETE] Analysis finished.\\n\\n")
-
-        except Exception as e:
-            await queue.put(f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n")
-        finally:
-            await queue.put(None) # Sentinel to stop the consumer
-
-    # Start the producer task in the background
-    producer_task = asyncio.create_task(producer())
-
-    # Run the consumer loop
-    while True:
-        try:
-            # Wait for a result from the queue, but with a timeout
-            message = await asyncio.wait_for(queue.get(), timeout=10.0)
-            if message is None:
-                break
-            yield message
-        except asyncio.TimeoutError:
-            # If the queue is empty and we time out, the analysis is still running. Send a real event.
-            print("[HEARTBEAT] Sending heartbeat to keep connection alive.")
-            yield "event: heartbeat\\ndata: {}\\n\\n"
+    if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
+        results.append("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
+        return results
     
-    await producer_task
+    results.append("data: [STATUS] Data collection complete. Starting analysis of 6 memorability keys...\\n\\n")
+
+    tasks = [
+        analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
+        for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
+    ]
+    
+    for future in asyncio.as_completed(tasks):
+        key_name, result_json = await future
+        results.append(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n")
+    
+    results.append("data: [COMPLETE] Analysis finished.\\n\\n")
+    return results
