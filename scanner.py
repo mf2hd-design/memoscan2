@@ -1,16 +1,15 @@
-import os, re, base64, asyncio, json
+import os, re, requests, json, base64
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from openai import AsyncOpenAI
+from openai import OpenAI
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
-import httpx
+from playwright.sync_api import sync_playwright
 
 load_dotenv()
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Data Collection Logic
+# Data Collection Logic (Synchronous)
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -22,65 +21,64 @@ def _clean_url(url: str) -> str:
 def _is_same_domain(home: str, test: str) -> bool:
     return urlparse(home).netloc == urlparse(test).netloc
 
-async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15000):
+def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15000):
     cleaned_url = _clean_url(start_url)
     visited, queue, text_corpus = set(), [cleaned_url], ""
     screenshot_b64 = None
 
     print(f"[Scanner] Starting crawl at {cleaned_url}")
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(args=['--no-sandbox'])
-        page = await browser.new_page()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=['--no-sandbox'])
+        page = browser.new_page()
         try:
             print(f"[Scanner] Taking screenshot of {cleaned_url}")
-            await page.goto(cleaned_url, wait_until="networkidle", timeout=20000)
-            screenshot_bytes = await page.screenshot(full_page=True)
+            page.goto(cleaned_url, wait_until="networkidle", timeout=20000)
+            screenshot_bytes = page.screenshot(full_page=True)
             screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
             print(f"[Scanner] Screenshot successful, {len(screenshot_b64)} bytes encoded.")
         except Exception as e:
             print(f"[ERROR] Could not take screenshot: {e}")
-        await browser.close()
+        browser.close()
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     
-    async with httpx.AsyncClient(headers=headers, timeout=10, follow_redirects=True) as http_client:
-        try:
-            sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
-            res = await http_client.get(sitemap_url)
-            if res.is_success:
-                sitemap_soup = BeautifulSoup(res.text, "xml")
-                urls = [loc.text for loc in sitemap_soup.find_all("loc")]
-                if urls:
-                    print(f"[Scanner] Found {len(urls)} URLs in sitemap.xml. Adding to queue.")
-                    queue.extend(urls)
-        except Exception as e:
-            print(f"[Scanner] No sitemap.xml found or error parsing it: {e}")
+    try:
+        sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
+        res = requests.get(sitemap_url, headers=headers, timeout=10, allow_redirects=True)
+        if res.ok:
+            sitemap_soup = BeautifulSoup(res.text, "xml")
+            urls = [loc.text for loc in sitemap_soup.find_all("loc")]
+            if urls:
+                print(f"[Scanner] Found {len(urls)} URLs in sitemap.xml. Adding to queue.")
+                queue.extend(urls)
+    except Exception as e:
+        print(f"[Scanner] No sitemap.xml found or error parsing it: {e}")
 
-        while queue and len(visited) < max_pages and len(text_corpus) < max_chars:
-            url = queue.pop(0)
-            if url in visited or not _is_same_domain(cleaned_url, url):
-                continue
-            visited.add(url)
-            try:
-                print(f"[Scanner] Crawling: {url}")
-                res = await http_client.get(url)
-                res.raise_for_status()
-                soup = BeautifulSoup(res.text, "html.parser")
-                title = soup.find("title").get_text() if soup.find("title") else ""
-                meta_desc = soup.find("meta", attrs={"name": "description"})
-                description = meta_desc['content'] if meta_desc else ""
-                page_content = f"Page URL: {url}\\nTitle: {title}\\nDescription: {description}\\n"
-                for tag in soup(["script", "style", "nav", "footer", "aside"]):
-                    tag.decompose()
-                page_content += soup.get_text(" ", strip=True)
-                text_corpus += page_content + "\\n\\n"
-                for a in soup.find_all("a", href=True):
-                    link = urljoin(url, a["href"])
-                    if _is_same_domain(cleaned_url, link) and link not in visited and link not in queue:
-                        queue.append(link)
-            except Exception as e:
-                print(f"[WARN] Failed to crawl {url}: {e}")
+    while queue and len(visited) < max_pages and len(text_corpus) < max_chars:
+        url = queue.pop(0)
+        if url in visited or not _is_same_domain(cleaned_url, url):
+            continue
+        visited.add(url)
+        try:
+            print(f"[Scanner] Crawling: {url}")
+            res = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
+            res.raise_for_status()
+            soup = BeautifulSoup(res.text, "html.parser")
+            title = soup.find("title").get_text() if soup.find("title") else ""
+            meta_desc = soup.find("meta", attrs={"name": "description"})
+            description = meta_desc['content'] if meta_desc else ""
+            page_content = f"Page URL: {url}\\nTitle: {title}\\nDescription: {description}\\n"
+            for tag in soup(["script", "style", "nav", "footer", "aside"]):
+                tag.decompose()
+            page_content += soup.get_text(" ", strip=True)
+            text_corpus += page_content + "\\n\\n"
+            for a in soup.find_all("a", href=True):
+                link = urljoin(url, a["href"])
+                if _is_same_domain(cleaned_url, link) and link not in visited and link not in queue:
+                    queue.append(link)
+        except Exception as e:
+            print(f"[WARN] Failed to crawl {url}: {e}")
     
     print(f"[Scanner] Crawl complete. Total text corpus size: {len(text_corpus)} chars.")
     return {"text_corpus": text_corpus[:max_chars], "screenshot_b64": screenshot_b64}
@@ -123,7 +121,7 @@ MEMORABILITY_KEYS_PROMPTS = {
     """
 }
 
-async def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
+def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
     print(f"[Analyzer] Analyzing key: {key_name}")
     
     content = [
@@ -145,7 +143,7 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
     """
 
     try:
-        response = await client.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -165,33 +163,26 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
 
 
 # -----------------------------------------------------------------------------------
-# Final, True Async Streaming Orchestrator
+# Final, Synchronous Streaming Orchestrator
 # -----------------------------------------------------------------------------------
 
-async def run_full_scan_stream(url: str):
+def run_full_scan_stream(url: str):
     """
-    This is now a true async generator that yields messages as they are ready.
+    This is now a simple, synchronous generator that yields messages as they are ready.
     """
     try:
         yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
-        await asyncio.sleep(0.01) # Force the first message to send
         
-        brand_data = await crawl_and_screenshot(url)
+        brand_data = crawl_and_screenshot(url)
         
         yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
-        await asyncio.sleep(0.01) # Force the second message to send
         
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
             yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
             return
 
-        tasks = [
-            analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-            for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
-        ]
-        
-        for future in asyncio.as_completed(tasks):
-            key_name, result_json = await future
+        for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
+            key_name, result_json = analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
             yield f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n"
         
         yield "data: [COMPLETE] Analysis finished.\\n\\n"
