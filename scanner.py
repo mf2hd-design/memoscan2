@@ -4,9 +4,9 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
+import httpx # Import the httpx library
 
 load_dotenv()
-# The OpenAI client is NOT initialized here.
 
 # -----------------------------------------------------------------------------------
 # Data Collection Logic (Synchronous)
@@ -124,28 +124,34 @@ MEMORABILITY_KEYS_PROMPTS = {
 def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
     print(f"[Analyzer] Analyzing key: {key_name}")
     
-    # This is the critical change: Initialize the client inside the function.
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    
-    content = [
-        {"type": "text", "text": f"Text corpus from the brand's website:\\n\\n---\\n{text_corpus}\\n---"},
-    ]
-    if screenshot_b64:
-        content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}})
-
-    system_prompt = f"""
-        You are a senior brand strategist at Saffron Brand Consultants. Your task is to evaluate a brand's memorability for one specific key.
-        
-        {prompt_template}
-
-        Provide your analysis in a structured format. Respond with ONLY a JSON object with the following keys:
-        - "score": An integer from 0 to 100.
-        - "justification": A concise, 1-2 sentence explanation for your score.
-        - "evidence": A single, a direct quote from the text or a specific visual observation from the screenshot that supports your analysis.
-        - "confidence": An integer from 1 to 5 representing your confidence in the analysis, where 1 is low (major guess) and 5 is high (strong evidence).
-    """
-
     try:
+        # Manually create an http client, ignoring environment proxies that cause the error.
+        http_client = httpx.Client(proxies=None)
+
+        # Pass the manually configured client to OpenAI.
+        client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            http_client=http_client
+        )
+        
+        content = [
+            {"type": "text", "text": f"Text corpus from the brand's website:\\n\\n---\\n{text_corpus}\\n---"},
+        ]
+        if screenshot_b64:
+            content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}})
+
+        system_prompt = f"""
+            You are a senior brand strategist at Saffron Brand Consultants. Your task is to evaluate a brand's memorability for one specific key.
+            
+            {prompt_template}
+
+            Provide your analysis in a structured format. Respond with ONLY a JSON object with the following keys:
+            - "score": An integer from 0 to 100.
+            - "justification": A concise, 1-2 sentence explanation for your score.
+            - "evidence": A single, a direct quote from the text or a specific visual observation from the screenshot that supports your analysis.
+            - "confidence": An integer from 1 to 5 representing your confidence in the analysis, where 1 is low (major guess) and 5 is high (strong evidence).
+        """
+
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
