@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# CRITICAL FIX: DO NOT initialize the client here. Initialize it inside the function.
+# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
 # Data Collection Logic (Synchronous)
@@ -33,10 +34,10 @@ def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15
         page = browser.new_page()
         try:
             print(f"[Scanner] Taking screenshot of {cleaned_url}")
-            page.goto(cleaned_url, wait_until="networkidle", timeout=20000)
+            page.goto(cleaned_url, wait_until="networkidle", timeout=30000)
             screenshot_bytes = page.screenshot(full_page=True)
             screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-            print(f"[Scanner] Screenshot successful, {len(screenshot_b64)} bytes encoded.")
+            print(f"[Scanner] Screenshot successful.")
         except Exception as e:
             print(f"[ERROR] Could not take screenshot: {e}")
         browser.close()
@@ -50,7 +51,7 @@ def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15
             sitemap_soup = BeautifulSoup(res.text, "xml")
             urls = [loc.text for loc in sitemap_soup.find_all("loc")]
             if urls:
-                print(f"[Scanner] Found {len(urls)} URLs in sitemap.xml. Adding to queue.")
+                print(f"[Scanner] Found {len(urls)} URLs in sitemap.xml.")
                 queue.extend(urls)
     except Exception as e:
         print(f"[Scanner] No sitemap.xml found or error parsing it: {e}")
@@ -124,6 +125,9 @@ MEMORABILITY_KEYS_PROMPTS = {
 def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
     print(f"[Analyzer] Analyzing key: {key_name}")
     
+    # CRITICAL FIX: Initialize the client HERE, inside the function.
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
     content = [
         {"type": "text", "text": f"Text corpus from the brand's website:\\n\\n---\\n{text_corpus}\\n---"},
     ]
@@ -168,7 +172,7 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
 
 def run_full_scan_stream(url: str):
     """
-    This is now a simple, synchronous generator that yields messages as they are ready.
+    This is a simple, synchronous generator that yields messages as they are ready.
     """
     try:
         yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
