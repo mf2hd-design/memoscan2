@@ -30,7 +30,7 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
     print(f"[Scanner] Starting crawl at {cleaned_url}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser = await p.chromium.launch(args=['--no-sandbox']) # Added for Render compatibility
         page = await browser.new_page()
         try:
             print(f"[Scanner] Taking screenshot of {cleaned_url}")
@@ -170,14 +170,21 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
 
 async def run_full_scan_stream(url: str):
     """
-    This is now a true async generator that yields messages as they are ready.
+    This is a true async generator that yields messages as they are ready.
     """
     try:
-        yield "data: [STATUS] Starting scan... This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
+        yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
+        
+        # --- THIS IS THE CRITICAL FIX ---
+        # Yield control to the event loop, forcing the server to send the first message
+        # before starting the long-running crawl.
+        await asyncio.sleep(0.01)
         
         brand_data = await crawl_and_screenshot(url)
         
         yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
+        # And yield control again to send the second status update.
+        await asyncio.sleep(0.01)
         
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
             yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
