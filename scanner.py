@@ -30,7 +30,7 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
     print(f"[Scanner] Starting crawl at {cleaned_url}")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(args=['--no-sandbox']) # Added for Render compatibility
+        browser = await p.chromium.launch(args=['--no-sandbox'])
         page = await browser.new_page()
         try:
             print(f"[Scanner] Taking screenshot of {cleaned_url}")
@@ -123,7 +123,7 @@ MEMORABILITY_KEYS_PROMPTS = {
     """
 }
 
-async def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
+async def analyze_memorability_key(tasks: dict, task_id: str, key_name: str, prompt_template: str, text_corpus: str, screenshot_b64: str):
     print(f"[Analyzer] Analyzing key: {key_name}")
     
     content = [
@@ -154,53 +154,47 @@ async def analyze_memorability_key(key_name, prompt_template, text_corpus, scree
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-        return key_name, response.choices[0].message.content
+        result = response.choices[0].message.content
+        tasks[task_id]['results'].append(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result}}}\\n\\n")
+
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
-        error_response = {
+        error_result = json.dumps({
             "score": 0, "justification": "Analysis failed due to an internal error.",
             "evidence": str(e), "confidence": 1
-        }
-        return key_name, json.dumps(error_response)
+        })
+        tasks[task_id]['results'].append(f"data: {{\"key\": \"{key_name}\", \"analysis\": {error_result}}}\\n\\n")
 
 
 # -----------------------------------------------------------------------------------
-# Final, True Async Streaming Orchestrator
+# Final, Robust Orchestrator
 # -----------------------------------------------------------------------------------
 
-async def run_full_scan_stream(url: str):
+async def run_full_scan(tasks: dict, task_id: str, url: str):
     """
-    This is a true async generator that yields messages as they are ready.
+    This function now runs the entire scan and updates the shared tasks dictionary.
     """
     try:
-        yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
-        
-        # --- THIS IS THE CRITICAL FIX ---
-        # Yield control to the event loop, forcing the server to send the first message
-        # before starting the long-running crawl.
-        await asyncio.sleep(0.01)
+        tasks[task_id]['status'] = 'running'
+        tasks[task_id]['results'].append("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
         
         brand_data = await crawl_and_screenshot(url)
         
-        yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
-        # And yield control again to send the second status update.
-        await asyncio.sleep(0.01)
+        tasks[task_id]['results'].append("data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n")
         
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
-            yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
-            return
-
-        tasks = [
-            analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-            for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
-        ]
+            tasks[task_id]['results'].append("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
+        else:
+            analysis_tasks = [
+                analyze_memorability_key(tasks, task_id, key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
+                for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
+            ]
+            await asyncio.gather(*analysis_tasks)
         
-        for future in asyncio.as_completed(tasks):
-            key_name, result_json = await future
-            yield f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n"
-        
-        yield "data: [COMPLETE] Analysis finished.\\n\\n"
+        tasks[task_id]['results'].append("data: [COMPLETE] Analysis finished.\\n\\n")
 
     except Exception as e:
-        print(f"[CRITICAL ERROR] The main stream failed: {e}")
-        yield f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n"
+        print(f"[CRITICAL ERROR] The main scan failed: {e}")
+        tasks[task_id]['results'].append(f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n")
+    finally:
+        tasks[task_id]['status'] = 'complete'
