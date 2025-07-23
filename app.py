@@ -1,6 +1,6 @@
 import asyncio
 from quart import Quart, render_template, request, Response
-from scanner import run_full_scan # CORRECTED: Import the new function name
+from scanner import run_full_scan
 
 app = Quart(__name__)
 
@@ -18,6 +18,10 @@ async def scan():
             return
 
         print(f"[WebApp] Received scan request for: {url}")
+        
+        # --- THIS IS THE NEW LINE ---
+        # Immediately send a user-friendly confirmation message to the client.
+        yield "data: [STATUS] Request received. Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
         
         # Start the long-running analysis in the background
         analysis_task = asyncio.create_task(run_full_scan(url))
@@ -38,7 +42,7 @@ async def scan():
         for result_line in results:
             yield result_line
 
-    return Response(_generate(), mimetype="text/event-stream")
+    return Response(_generate(), mimetype="text-event-stream")
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=10000)
