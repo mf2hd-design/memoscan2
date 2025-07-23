@@ -6,8 +6,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 load_dotenv()
-# CRITICAL FIX: DO NOT initialize the client here. Initialize it inside the function.
-# client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# The OpenAI client is NOT initialized here.
 
 # -----------------------------------------------------------------------------------
 # Data Collection Logic (Synchronous)
@@ -125,7 +124,7 @@ MEMORABILITY_KEYS_PROMPTS = {
 def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
     print(f"[Analyzer] Analyzing key: {key_name}")
     
-    # CRITICAL FIX: Initialize the client HERE, inside the function.
+    # This is the critical change: Initialize the client inside the function.
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     
     content = [
