@@ -1,5 +1,5 @@
-# Use the official Microsoft Playwright image which has all browser dependencies pre-installed.
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+# Use an official, slim Python image.
+FROM python:3.11-slim
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install the Python packages
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code into the container
 COPY . .
@@ -16,5 +16,6 @@ COPY . .
 # Tell Render that the container will listen on port 10000
 EXPOSE 10000
 
-# The command to run when the container starts. This is a standard synchronous worker.
+# The command to run when the container starts.
+# We've increased the timeout to 300 seconds (5 minutes) just in case.
 CMD ["gunicorn", "--timeout", "300", "-b", "0.0.0.0:10000", "app:app"]
