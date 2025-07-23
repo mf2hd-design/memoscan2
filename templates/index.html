@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>MemoScan – Final Prototype (WebSocket)</title>
-    <!-- We need to include the Socket.IO client library -->
+    <!-- We include the Socket.IO client library to handle WebSockets -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
         :root {
@@ -46,7 +46,6 @@
     </div>
 
 <script>
-    // --- THIS SCRIPT IS COMPLETELY NEW ---
     const urlInput = document.getElementById("url");
     const scanButton = document.getElementById("scan-button");
     const resultsGrid = document.getElementById("results-grid");
@@ -56,12 +55,10 @@
     const socket = io();
 
     socket.on('connect', () => {
-        console.log('Connected to WebSocket server!');
         statusContainer.innerHTML = `<div>Ready.</div>`;
     });
 
     socket.on('disconnect', () => {
-        console.log('Disconnected from WebSocket server.');
         statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`;
     });
 
@@ -75,51 +72,43 @@
         scanButton.disabled = true;
         scanButton.textContent = "Analyzing...";
         resultsGrid.innerHTML = "";
-        statusContainer.innerHTML = ""; // Clear status container
+        statusContainer.innerHTML = "";
         
-        // Instead of fetching a URL, we 'emit' an event to the server.
+        // We emit a 'start_scan' event to the server with the URL.
         socket.emit('start_scan', { url: url });
     });
 
-    // This is our listener for all messages from the server.
+    // This single listener handles all incoming messages from the server.
     socket.on('scan_update', (msg) => {
-        // The server wraps our original data in a 'data' key.
-        const line = msg.data.trim();
-
-        if (line.startsWith("[STATUS]")) {
-            const statusMsg = line.replace("[STATUS]", "").trim();
-            statusContainer.innerHTML += `<div>${statusMsg}</div>`;
-            statusContainer.scrollTop = statusContainer.scrollHeight;
-        } else if (line.startsWith("[ERROR]")) {
-            const errorMsg = line.replace("[ERROR]", "").trim();
-            resultsGrid.innerHTML += `<div class="result-block error">${errorMsg}</div>`;
-        } else if (line.startsWith("[COMPLETE]")) {
-            statusContainer.innerHTML += `<div><strong>Analysis Complete.</strong></div>`;
-            statusContainer.scrollTop = statusContainer.scrollHeight;
-            scanButton.disabled = false;
-            scanButton.textContent = "Analyze Brand";
-        } else {
-            try {
-                // The JSON data comes through directly
-                const data = JSON.parse(line);
-                if (data.key && data.analysis) {
-                    renderResultBlock(data.key, data.analysis);
-                }
-            } catch (e) {
-                console.warn("Ignoring non-JSON message:", line, e);
-            }
+        // We check the 'type' property of the message object to decide what to do.
+        switch(msg.type) {
+            case 'status':
+                statusContainer.innerHTML += `<div>${msg.message}</div>`;
+                statusContainer.scrollTop = statusContainer.scrollHeight;
+                break;
+            case 'error':
+                resultsGrid.innerHTML += `<div class="result-block error">${msg.message}</div>`;
+                break;
+            case 'result':
+                renderResultBlock(msg.key, msg.analysis);
+                break;
+            case 'complete':
+                statusContainer.innerHTML += `<div><strong>${msg.message}</strong></div>`;
+                statusContainer.scrollTop = statusContainer.scrollHeight;
+                scanButton.disabled = false;
+                scanButton.textContent = "Analyze Brand";
+                break;
         }
     });
 
     function renderResultBlock(key, analysis) {
+        // This function to display the final cards is unchanged.
         const score = analysis.score || 0;
         const confidence = analysis.confidence || 1;
         const confidenceColor = getComputedStyle(document.documentElement).getPropertyValue(`--confidence-${confidence}`);
-
         const block = document.createElement("div");
         block.className = "result-block";
         block.style.borderLeftColor = confidenceColor;
-
         block.innerHTML = `
             <h3>${key} – <span class="score">${score}/100</span></h3>
             <p>${analysis.justification || "No justification provided."}</p>
