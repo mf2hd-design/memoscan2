@@ -1,7 +1,5 @@
 Quart==0.18.4
 Werkzeug==2.3.8
-# CORRECTED: Using the industry-standard Gunicorn + Uvicorn server stack
-gunicorn==22.0.0
 uvicorn==0.29.0
 openai==1.14.3
 python-dotenv==1.0.1
