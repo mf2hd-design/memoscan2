@@ -37,59 +37,42 @@ def find_priority_page(discovered_links: list, keywords: list) -> str or None:
     return None
 
 # -----------------------------------------------------------------------------------
-# UNIFIED Fetching and Screenshot Function (THIS WAS MISSING)
+# Screenshot API Function
 # -----------------------------------------------------------------------------------
 
-def fetch_content_and_screenshot(url: str):
-    """
-    Uses the screenshot API to get both the screenshot AND the rendered HTML.
-    This bypasses anti-bot protections that block simple 'requests.get()'.
-    """
-    print(f"[API] Fetching content and screenshot for {url}")
+def take_screenshot_via_api(url: str):
+    """Takes a screenshot using an external API."""
+    print(f"[API Screenshot] Requesting screenshot for {url}")
     try:
         api_key = os.getenv("SCREENSHOT_API_KEY")
         if not api_key:
             print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
-            return None, None # Return a tuple of two Nones
-
+            return None
         api_url = "https://shot.screenshotapi.net/screenshot"
         params = {
             "token": api_key,
             "url": url,
-            "output": "json", # We now ask for a JSON response
+            "output": "image",
             "file_type": "png",
             "width": 1280,
             "height": 1024,
             "wait_for_event": "networkidle",
-            "hide_cookie_banners": "true",
-            "html": "true" # This tells the API to include the HTML in its response
+            "hide_cookie_banners": "true"
         }
-        
         response = requests.get(api_url, params=params, timeout=120)
         response.raise_for_status()
-        
-        data = response.json()
-        
-        # The API returns a URL to the image, so we download it.
-        screenshot_response = requests.get(data["screenshot"], timeout=60)
-        screenshot_response.raise_for_status()
-        screenshot_b64 = base64.b64encode(screenshot_response.content).decode('utf-8')
-        
-        html_content = data.get("html", "")
-        
-        print(f"[API] Successfully fetched content for {url}.")
-        return screenshot_b64, html_content
-
+        print(f"[API Screenshot] Screenshot for {url} successful.")
+        return base64.b64encode(response.content).decode('utf-8')
     except requests.exceptions.RequestException as e:
-        print(f"[ERROR] API fetch failed for {url}: {e}")
-        return None, None
+        print(f"[ERROR] Screenshot API failed for {url}: {e}")
+        return None
 
 # -----------------------------------------------------------------------------------
 # Social Media Scraping Function
 # -----------------------------------------------------------------------------------
 
 def get_social_media_text(soup, base_url):
-    """Finds social links, scrapes them, and returns a single block of text."""
+    """A simple function that finds social links, scrapes them, and returns a single block of text."""
     social_text = ""
     social_links = {
         'twitter': soup.find('a', href=re.compile(r'twitter\.com/')),
@@ -113,7 +96,7 @@ def get_social_media_text(soup, base_url):
     return social_text
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Functions
+# AI Analysis Functions (THIS SECTION IS NOW CORRECTED)
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -162,8 +145,12 @@ def call_openai_for_synthesis(corpus):
             if value is not None:
                 os.environ[key] = value
 
-def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots: dict, brand_summary):
-    """Analyzes a single memorability key using the full context AND multiple screenshots."""
+def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64, brand_summary):
+    """
+    Analyzes a single memorability key.
+    THIS FUNCTION'S SIGNATURE AND LOGIC ARE NOW CORRECT.
+    It expects screenshot_b64 to be a single base64 string.
+    """
     print(f"[AI] Analyzing key: {key_name}")
     proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
     original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
@@ -171,18 +158,13 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
         
-        content = []
-        if screenshots:
-            # We use the homepage screenshot for AI analysis to conserve memory
-            homepage_url = next(iter(screenshots))
-            homepage_b64 = screenshots[homepage_url]
-            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{homepage_b64}"}})
-            content.append({"type": "text", "text": f"--- Screenshot from homepage: {homepage_url} ---"})
-
-        content.extend([
+        content = [
             {"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"},
             {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"}
-        ])
+        ]
+        # This logic is now correct for handling a single screenshot string.
+        if screenshot_b64:
+            content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}})
         
         system_prompt = f"""You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
         {prompt_template}
@@ -252,6 +234,7 @@ def run_full_scan_stream(url: str, cache: dict):
     try:
         yield {'type': 'status', 'message': 'Step 1/5: Initializing scan...'}
         cleaned_url = _clean_url(url)
+        headers = {"User-Agent": "Mozilla/5.0"}
 
         yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
         _, homepage_html = fetch_content_and_screenshot(cleaned_url)
@@ -290,7 +273,6 @@ def run_full_scan_stream(url: str, cache: dict):
 
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
         text_corpus, social_corpus = "", ""
-        # We now correctly only save the homepage screenshot for the AI
         homepage_screenshot_b64 = None
         
         for i, page_url in enumerate(priority_pages):
@@ -299,9 +281,7 @@ def run_full_scan_stream(url: str, cache: dict):
             screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
             
             if screenshot_b64:
-                # Store the first screenshot for the AI, and all screenshots for the UI
-                if page_url == cleaned_url: 
-                    homepage_screenshot_b64 = screenshot_b64
+                if page_url == cleaned_url: homepage_screenshot_b64 = screenshot_b64
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
                 yield {'type': 'screenshot_ready', 'id': image_id, 'url': page_url}
@@ -324,7 +304,6 @@ def run_full_scan_stream(url: str, cache: dict):
         all_results = []
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
-            # We now correctly pass only the single homepage screenshot to the AI
             key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
