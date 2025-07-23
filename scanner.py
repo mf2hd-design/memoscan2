@@ -10,7 +10,7 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Data Collection Logic
+# Data Collection Logic (This part is correct and unchanged)
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -44,10 +44,9 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     
-    # CORRECTED: Added follow_redirects=True to handle 301/302 redirects
     async with httpx.AsyncClient(headers=headers, timeout=10, follow_redirects=True) as http_client:
         try:
-            sitemap_url = urljoin(cleaned_unral, "/sitemap.xml")
+            sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
             res = await http_client.get(sitemap_url)
             if res.is_success:
                 sitemap_soup = BeautifulSoup(res.text, "xml")
@@ -124,7 +123,7 @@ MEMORABILITY_KEYS_PROMPTS = {
     """
 }
 
-async def analyze_memorability_key(tasks: dict, task_id: str, key_name: str, prompt_template: str, text_corpus: str, screenshot_b64: str):
+async def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64):
     print(f"[Analyzer] Analyzing key: {key_name}")
     
     content = [
@@ -155,47 +154,104 @@ async def analyze_memorability_key(tasks: dict, task_id: str, key_name: str, pro
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-        result = response.choices[0].message.content
-        tasks[task_id]['results'].append(f"data: {{\"key\": \"{key_name}\", \"analysis\": {result}}}\\n\\n")
-
+        return key_name, response.choices[0].message.content
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
-        error_result = json.dumps({
+        error_response = {
             "score": 0, "justification": "Analysis failed due to an internal error.",
             "evidence": str(e), "confidence": 1
-        })
-        tasks[task_id]['results'].append(f"data: {{\"key\": \"{key_name}\", \"analysis\": {error_result}}}\\n\\n")
+        }
+        return key_name, json.dumps(error_response)
 
 
 # -----------------------------------------------------------------------------------
-# Final, Robust Orchestrator
+# Final, True Async Streaming Orchestrator
 # -----------------------------------------------------------------------------------
 
-async def run_full_scan(tasks: dict, task_id: str, url: str):
+async def run_full_scan_stream(url: str):
     """
-    This function now runs the entire scan and updates the shared tasks dictionary.
+    This is now a true async generator that yields messages as they are ready.
     """
     try:
-        tasks[task_id]['status'] = 'running'
-        tasks[task_id]['results'].append("data: [STATUS] Starting scan... Crawling site and taking screenshot.\\n\\n")
+        yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
+        
+        # --- THIS IS THE CRITICAL FIX ---
+        # Yield control to the event loop, forcing the server to send the first message
+        # before starting the long-running crawl.
+        await asyncio.sleep(0.01)
         
         brand_data = await crawl_and_screenshot(url)
         
-        tasks[task_id]['results'].append("data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n")
+        yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
+        # And yield control again to send the second status update.
+        await asyncio.sleep(0.01)
         
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
-            tasks[task_id]['results'].append("data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n")
-        else:
-            analysis_tasks = [
-                analyze_memorability_key(tasks, task_id, key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
-                for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
-            ]
-            await asyncio.gather(*analysis_tasks)
+            yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
+            return
+
+        tasks = {
+            asyncio.create_task(
+                analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
+            )
+            for key, prompt in MEMORABILITY_KEYS_PROMPTS.items()
+        }
         
-        tasks[task_id]['results'].append("data: [COMPLETE] Analysis finished.\\n\\n")
+        while tasks:
+            done, pending = await asyncio.wait(tasks, timeout=10.0, return_when=asyncio.FIRST_COMPLETED)
+            
+            if done:
+                for task in done:
+                    key_name, result_json = task.result()
+                    yield f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n"
+                tasks = pending
+            else:
+                # If nothing finished, the timeout was hit. Send a heartbeat.
+                print("[HEARTBEAT] Sending heartbeat to keep connection alive.")
+                yield "event: heartbeat\\ndata: {}\\n\\n"
+
+        yield "data: [COMPLETE] Analysis finished.\\n\\n"
 
     except Exception as e:
-        print(f"[CRITICAL ERROR] The main scan failed: {e}")
-        tasks[task_id]['results'].append(f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n")
-    finally:
-        tasks[task_id]['status'] = 'complete'
+        print(f"[CRITICAL ERROR] The main stream failed: {e}")
+        yield f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n"```
+
+### **Step 2: Replace `app.py`**
+
+This version is now extremely simple and just streams directly from the corrected scanner.
+
+1.  **Go to your `app.py` file on GitHub** and **replace the entire contents** with this final version.
+
+#### **Complete, Correct, and Final `app.py`**
+```python
+from quart import Quart, render_template, request, Response
+from scanner import run_full_scan_stream
+
+app = Quart(__name__)
+
+@app.route("/")
+async def index():
+    return await render_template("index.html")
+
+@app.route("/scan")
+async def scan():
+    url = request.args.get("url", "").strip()
+
+    async def _generate():
+        if not url:
+            yield "data: [ERROR] URL parameter is missing.\\n\\n"
+            return
+
+        print(f"[WebApp] Received scan request for: {url}")
+        # Directly iterate over the true async generator from the scanner
+        async for data in run_full_scan_stream(url):
+            yield data
+
+    headers = {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache",
+    }
+    return Response(_generate(), mimetype="text/event-stream", headers=headers)
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=10000)
