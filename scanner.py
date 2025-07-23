@@ -10,7 +10,7 @@ load_dotenv()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # -----------------------------------------------------------------------------------
-# Data Collection Logic (This part is correct and unchanged)
+# Data Collection Logic
 # -----------------------------------------------------------------------------------
 
 def _clean_url(url: str) -> str:
@@ -44,9 +44,10 @@ async def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: in
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     
-    async with httpx.AsyncClient(headers=headers, timeout=10) as http_client:
+    # CORRECTED: Added follow_redirects=True to handle 301/302 redirects
+    async with httpx.AsyncClient(headers=headers, timeout=10, follow_redirects=True) as http_client:
         try:
-            sitemap_url = urljoin(cleaned_url, "/sitemap.xml")
+            sitemap_url = urljoin(cleaned_unral, "/sitemap.xml")
             res = await http_client.get(sitemap_url)
             if res.is_success:
                 sitemap_soup = BeautifulSoup(res.text, "xml")
