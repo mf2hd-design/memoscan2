@@ -5,56 +5,90 @@
     <title>MemoScan v2 – Strategic Analysis</title>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
-        /* ... (Previous CSS is mostly unchanged) ... */
+        :root {
+            --primary-color: #007acc; --border-color: #ddd; --bg-light: #f7f7f7;
+            --text-dark: #333; --text-light: #666; --error-color: #d9534f;
+            --confidence-1: #d9534f; --confidence-2: #f0ad4e; --confidence-3: #5bc0de;
+            --confidence-4: #5cb85c; --confidence-5: #0275d8;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg-light); margin: 0; padding: 2rem; color: var(--text-dark); }
+        h1, h2 { color: var(--primary-color); }
+        #container { max-width: 900px; margin: 0 auto; }
+        #form-section { background: #fff; padding: 1.5rem 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.08); margin-bottom: 2rem; }
+        input[type=text] { width: calc(100% - 120px); padding: .75rem; border: 1px solid var(--border-color); border-radius: 6px; margin-right: 1rem; font-size: 1rem; }
+        button { padding: .75rem 1.25rem; background: var(--primary-color); border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 1rem; transition: background .2s; }
+        button:hover { background: #005fa3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        #status-container { margin-top: 1.5rem; background: #fafafa; border-radius: 6px; padding: 0.5rem 1rem; color: var(--text-light); font-style: italic; max-height: 200px; overflow-y: auto; font-size: 0.9rem; }
         
-        /* NEW STYLES for collapsible evidence and summary */
-        .evidence-container {
-            margin-top: 0.75rem;
-        }
-        .evidence-container summary {
-            cursor: pointer;
-            font-weight: bold;
-            color: var(--primary-color);
-            outline: none;
-        }
-        .evidence-text {
-            font-style: italic;
-            color: var(--text-light);
-            border-left: 3px solid #eee;
-            padding: 0.5rem 1rem;
-            margin-top: 0.5rem;
-        }
-        .recommendation {
-            margin-top: 1rem;
-            padding: 0.75rem 1rem;
-            background: #eaf6ff;
-            border-left: 3px solid var(--primary-color);
-            border-radius: 4px;
-        }
+        #results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
+        .result-block { background: #fff; border-left: 5px solid; padding: 1rem 1.5rem; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,.05); opacity: 0; transform: translateY(20px); animation: fadeIn .5s forwards; }
+        .result-block.error { border-left-color: var(--error-color); }
+        .result-block h3 { margin: 0 0 0.5rem; }
+        .result-block p { margin: 0.25rem 0; font-size: 0.95rem; }
+        
+        .evidence-container { margin-top: 0.75rem; }
+        .evidence-container summary { cursor: pointer; font-weight: bold; color: var(--primary-color); outline: none; font-size: 0.9rem; }
+        .evidence-text { font-style: italic; color: var(--text-light); border-left: 3px solid #eee; padding: 0.5rem 1rem; margin-top: 0.5rem; }
+        .recommendation { margin-top: 1rem; padding: 0.75rem 1rem; background: #eaf6ff; border-left: 3px solid var(--primary-color); border-radius: 4px; }
+        .recommendation p { margin: 0; }
+        
         #summary-container {
             margin-top: 2rem;
             background: #fff;
             padding: 1.5rem 2rem;
             border-radius: 8px;
             box-shadow: 0 4px 12px rgba(0,0,0,.08);
-            white-space: pre-wrap; /* Preserve formatting from AI */
-            font-family: monospace;
+            white-space: pre-wrap;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+            font-size: 0.9rem;
+            line-height: 1.6;
         }
+        
+        #evidence-gallery { margin-top: 2rem; }
+        #evidence-gallery h3 { color: var(--text-dark); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        #screenshot-container img {
+            max-width: 300px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        #screenshot-container img:hover { transform: scale(1.05); }
+
+        #modal-overlay {
+            display: none; position: fixed; z-index: 1000; left: 0; top: 0;
+            width: 100%; height: 100%; background-color: rgba(0,0,0,0.8);
+            justify-content: center; align-items: center;
+        }
+        #modal-image { max-width: 90%; max-height: 90%; border-radius: 8px; }
+        #modal-close {
+            position: absolute; top: 20px; right: 35px; color: #fff;
+            font-size: 40px; font-weight: bold; cursor: pointer;
+        }
+        
+        @keyframes fadeIn { to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
     <div id="container">
-        <!-- ... (Form section is unchanged) ... -->
+        <h1>🧠 MemoScan v2</h1>
+        <h2>Strategic Memorability Analysis</h2>
+        <div id="form-section">
+            <p>Enter a brand website URL to begin:</p>
+            <input id="url" type="text" placeholder="https://www.saffron-consultants.com">
+            <button id="scan-button">Analyze Brand</button>
+            <div id="status-container"></div>
+        </div>
 
         <div id="results-grid"></div>
 
-        <!-- NEW: Executive Summary Section -->
         <div id="summary-container" style="display: none;">
             <h3>Executive Summary</h3>
             <div id="summary-text"></div>
         </div>
         
-        <!-- Gallery is still here, below the results -->
         <div id="evidence-gallery" style="display: none;">
             <h3>Visual Evidence (Homepage)</h3>
             <p>Click thumbnail to enlarge.</p>
@@ -62,37 +96,88 @@
         </div>
     </div>
 
-    <!-- Modal HTML is unchanged -->
-    <div id="modal-overlay"> ... </div>
+    <div id="modal-overlay">
+        <span id="modal-close">×</span>
+        <img id="modal-image" src="" alt="Enlarged Screenshot">
+    </div>
 
 <script>
-    // ... (Initial variable declarations are unchanged) ...
+    const urlInput = document.getElementById("url");
+    const scanButton = document.getElementById("scan-button");
+    const resultsGrid = document.getElementById("results-grid");
+    const statusContainer = document.getElementById("status-container");
+    const evidenceGallery = document.getElementById("evidence-gallery");
+    const screenshotContainer = document.getElementById("screenshot-container");
+    const modalOverlay = document.getElementById("modal-overlay");
+    const modalImage = document.getElementById("modal-image");
+    const modalClose = document.getElementById("modal-close");
     const summaryContainer = document.getElementById("summary-container");
     const summaryText = document.getElementById("summary-text");
+    
+    const socket = io();
 
-    // ... (socket.on('connect'/'disconnect') and scanButton.addEventListener are unchanged) ...
+    socket.on('connect', () => { statusContainer.innerHTML = `<div>Ready.</div>`; });
+    socket.on('disconnect', () => { statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`; });
+
+    scanButton.addEventListener("click", () => {
+        const url = urlInput.value.trim();
+        if (!url) { alert("Please enter a URL."); return; }
+        
+        scanButton.disabled = true;
+        scanButton.textContent = "Analyzing...";
+        resultsGrid.innerHTML = "";
+        statusContainer.innerHTML = "";
+        screenshotContainer.innerHTML = "";
+        evidenceGallery.style.display = 'none';
+        summaryContainer.style.display = 'none';
+        summaryText.textContent = '';
+        
+        socket.emit('start_scan', { url: url });
+    });
 
     socket.on('scan_update', (msg) => {
         switch(msg.type) {
-            // ... ('status', 'error', 'screenshot_ready' cases are unchanged) ...
-            
+            case 'status':
+                statusContainer.innerHTML += `<div>${msg.message}</div>`;
+                statusContainer.scrollTop = statusContainer.scrollHeight;
+                break;
+            case 'error':
+                resultsGrid.innerHTML += `<div class="result-block error">${msg.message}</div>`;
+                break;
+            case 'screenshot_ready':
+                evidenceGallery.style.display = 'block';
+                const img = document.createElement('img');
+                const imgSrc = `/screenshot/${msg.id}`;
+                img.src = imgSrc;
+                img.alt = "Homepage Screenshot Thumbnail";
+                img.addEventListener('click', () => {
+                    modalImage.src = imgSrc;
+                    modalOverlay.style.display = 'flex';
+                });
+                screenshotContainer.appendChild(img);
+                break;
             case 'result':
                 renderResultBlock(msg.key, msg.analysis);
                 break;
-
-            // NEW CASE for the executive summary
             case 'summary':
                 summaryContainer.style.display = 'block';
                 summaryText.textContent = msg.text;
                 break;
-
             case 'complete':
-                // ... (unchanged) ...
+                statusContainer.innerHTML += `<div><strong>${msg.message}</strong></div>`;
+                statusContainer.scrollTop = statusContainer.scrollHeight;
+                scanButton.disabled = false;
+                scanButton.textContent = "Analyze Brand";
                 break;
         }
     });
 
-    // ... (Modal close listeners are unchanged) ...
+    modalClose.addEventListener('click', () => { modalOverlay.style.display = 'none'; });
+    modalOverlay.addEventListener('click', (event) => {
+        if (event.target === modalOverlay) {
+            modalOverlay.style.display = 'none';
+        }
+    });
 
     function renderResultBlock(key, analysis) {
         const score = analysis.score || 0;
@@ -101,8 +186,6 @@
         const block = document.createElement("div");
         block.className = "result-block";
         block.style.borderLeftColor = confidenceColor;
-        
-        // --- UPDATED INNER HTML TO INCLUDE NEW FIELDS AND COLLAPSIBLE EVIDENCE ---
         block.innerHTML = `
             <h3>${key} – <span class="score">${score}/100</span></h3>
             <p>${analysis.analysis || "No analysis provided."}</p>
