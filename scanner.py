@@ -52,8 +52,8 @@ def take_screenshot_via_api(url: str):
 # Social Media Scraping Function
 # -----------------------------------------------------------------------------------
 
-def get_social_media_text(soup, base_url):
-    """Finds social media links and scrapes text from their profiles."""
+def get_social_media_content(soup, base_url):
+    """Finds social media links and scrapes text from their profiles. Yields statuses and returns final text."""
     social_text = ""
     social_links = {
         'twitter': soup.find('a', href=re.compile(r'twitter\.com/')),
@@ -64,7 +64,7 @@ def get_social_media_text(soup, base_url):
     for platform, link_tag in social_links.items():
         if link_tag:
             url = urljoin(base_url, link_tag['href'])
-            yield {'type': 'status', 'message': f'Found and scraping {platform.capitalize()} profile...'}
+            yield {'type': 'status', 'message': f'Found and scraping {platform.capitalize()}...'}
             try:
                 res = requests.get(url, headers=headers, timeout=15)
                 if res.ok:
@@ -75,7 +75,8 @@ def get_social_media_text(soup, base_url):
                     social_text += social_soup.get_text(" ", strip=True)[:2000]
             except Exception as e:
                 print(f"[WARN] Failed to scrape {platform}: {e}")
-    yield social_text
+    # This is a Python generator trick: the final return value of the generator.
+    return social_text
 
 # -----------------------------------------------------------------------------------
 # AI Analysis Functions
@@ -168,8 +169,14 @@ def run_full_scan_stream(url: str):
         
         yield {'type': 'status', 'message': 'Step 2/4: Capturing homepage screenshot...'}
         screenshot_b64 = take_screenshot_via_api(cleaned_url)
+        
         if screenshot_b64:
-            yield {'type': 'screenshot', 'data': screenshot_b64}
+            yield {'type': 'screenshot_start'}
+            chunk_size = 16 * 1024  # Send in 16KB chunks
+            for i in range(0, len(screenshot_b64), chunk_size):
+                chunk = screenshot_b64[i:i + chunk_size]
+                yield {'type': 'screenshot_chunk', 'data': chunk}
+            yield {'type': 'screenshot_end'}
         
         yield {'type': 'status', 'message': 'Step 3/4: Crawling website and social media...'}
         text_corpus, social_corpus = "", ""
@@ -189,15 +196,17 @@ def run_full_scan_stream(url: str):
                 soup = BeautifulSoup(res.text, "html.parser")
                 
                 if current_url == cleaned_url:
-                    social_gen = get_social_media_text(soup, cleaned_url)
+                    social_gen = get_social_media_content(soup, cleaned_url)
                     for item in social_gen:
-                        if isinstance(item, dict): yield item
-                        else: social_corpus += item
+                        # The generator yields status dicts, then returns the final text
+                        if isinstance(item, dict):
+                            yield item
+                    # This is a trick to get the final "return" value from the generator
+                    social_corpus = next(get_social_media_content(soup, cleaned_url), "")
 
                 for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
-
                 for a in soup.find_all("a", href=True):
                     link = urljoin(current_url, a["href"])
                     if _is_same_domain(cleaned_url, link) and link not in visited and len(queue) < 10:
@@ -205,17 +214,15 @@ def run_full_scan_stream(url: str):
             except Exception as e:
                 print(f"[WARN] Failed to crawl {current_url}: {e}")
 
-        full_corpus = text_corpus + social_corpus
-        final_corpus = full_corpus[:25000]
+        full_corpus = (text_corpus + social_corpus)[:25000]
         
         yield {'type': 'status', 'message': 'Step 4/4: Performing AI analysis...'}
-        
         yield {'type': 'status', 'message': 'Synthesizing brand overview...'}
-        brand_summary = call_openai_for_synthesis(final_corpus)
+        brand_summary = call_openai_for_synthesis(full_corpus)
         
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
-            key_name, result_json = analyze_memorability_key(key, prompt, final_corpus, screenshot_b64, brand_summary)
+            key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, screenshot_b64, brand_summary)
             yield {'type': 'result', 'key': key_name, 'analysis': result_json}
         
         yield {'type': 'complete', 'message': 'Analysis finished.'}
