@@ -67,8 +67,6 @@
     
     const socket = io();
 
-    let screenshotChunks = [];
-
     socket.on('connect', () => { statusContainer.innerHTML = `<div>Ready.</div>`; });
     socket.on('disconnect', () => { statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`; });
 
@@ -95,19 +93,12 @@
             case 'error':
                 resultsGrid.innerHTML += `<div class="result-block error">${msg.message}</div>`;
                 break;
-            case 'screenshot_start':
-                screenshotChunks = [];
+            case 'screenshot_ready':
                 evidenceGallery.style.display = 'block';
-                break;
-            case 'screenshot_chunk':
-                screenshotChunks.push(msg.data);
-                break;
-            case 'screenshot_end':
-                const fullBase64 = screenshotChunks.join('');
                 const img = document.createElement('img');
-                img.src = `data:image/png;base64,${fullBase64}`;
+                // Set the src to the new HTTP endpoint, using the unique ID.
+                img.src = `/screenshot/${msg.id}`;
                 screenshotContainer.appendChild(img);
-                screenshotChunks = [];
                 break;
             case 'result':
                 renderResultBlock(msg.key, msg.analysis);
