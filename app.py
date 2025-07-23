@@ -1,5 +1,6 @@
+import asyncio
 from quart import Quart, render_template, request, Response
-from scanner import run_full_scan_stream
+from scanner import run_full_scan # CORRECTED: Import the new function name
 
 app = Quart(__name__)
 
@@ -17,8 +18,25 @@ async def scan():
             return
 
         print(f"[WebApp] Received scan request for: {url}")
-        async for data in run_full_scan_stream(url):
-            yield data
+        
+        # Start the long-running analysis in the background
+        analysis_task = asyncio.create_task(run_full_scan(url))
+
+        # This is the heartbeat loop. It runs while the analysis is working.
+        while not analysis_task.done():
+            try:
+                # Wait for the task to finish, but with a timeout
+                await asyncio.wait_for(asyncio.shield(analysis_task), timeout=10.0)
+            except asyncio.TimeoutError:
+                # If we time out, it means the task is still running.
+                # Send a heartbeat to keep the connection alive.
+                print("[HEARTBEAT] Sending heartbeat...")
+                yield "event: heartbeat\\ndata: {}\\n\\n"
+
+        # The task is done. Get the results and stream them back.
+        results = analysis_task.result()
+        for result_line in results:
+            yield result_line
 
     return Response(_generate(), mimetype="text/event-stream")
 
