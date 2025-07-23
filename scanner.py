@@ -37,7 +37,7 @@ def find_priority_page(discovered_links: list, keywords: list) -> str or None:
     return None
 
 # -----------------------------------------------------------------------------------
-# UNIFIED Fetching and Screenshot Function (THIS WAS MISSING)
+# UNIFIED Fetching and Screenshot Function
 # -----------------------------------------------------------------------------------
 
 def fetch_content_and_screenshot(url: str):
@@ -50,19 +50,19 @@ def fetch_content_and_screenshot(url: str):
         api_key = os.getenv("SCREENSHOT_API_KEY")
         if not api_key:
             print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
-            return None, None # Return a tuple of two Nones
+            return None, None
 
         api_url = "https://shot.screenshotapi.net/screenshot"
         params = {
             "token": api_key,
             "url": url,
-            "output": "json", # We now ask for a JSON response
+            "output": "json",
             "file_type": "png",
             "width": 1280,
             "height": 1024,
             "wait_for_event": "networkidle",
             "hide_cookie_banners": "true",
-            "html": "true" # This tells the API to include the HTML in its response
+            "html": "true"
         }
         
         response = requests.get(api_url, params=params, timeout=120)
@@ -70,7 +70,6 @@ def fetch_content_and_screenshot(url: str):
         
         data = response.json()
         
-        # The API returns a URL to the image, so we download it.
         screenshot_response = requests.get(data["screenshot"], timeout=60)
         screenshot_response.raise_for_status()
         screenshot_b64 = base64.b64encode(screenshot_response.content).decode('utf-8')
@@ -274,6 +273,8 @@ def run_full_scan_stream(url: str, cache: dict):
             if found_url and found_url not in found_urls:
                 priority_pages.append(found_url)
                 found_urls.add(found_url)
+        
+        # --- THIS IS THE STRATEGIC COMPROMISE: CRAWL 5 PAGES ---
         while len(priority_pages) < 5:
             for link_url, _ in discovered_links:
                 if len(priority_pages) >= 5: break
@@ -289,11 +290,21 @@ def run_full_scan_stream(url: str, cache: dict):
         for i, page_url in enumerate(priority_pages):
             yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
-            screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
+            # --- THIS IS THE STRATEGIC COMPROMISE: ONLY SCREENSHOT 3 PAGES ---
+            screenshot_b64, page_html = None, None
+            if i < 3:
+                screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
+            else:
+                # For pages 4 and 5, we still need the text content
+                try:
+                    res = requests.get(page_url, timeout=15)
+                    res.raise_for_status()
+                    page_html = res.text
+                except Exception as e:
+                    print(f"[WARN] Failed to fetch text for {page_url}: {e}")
             
             if screenshot_b64:
-                if page_url == cleaned_url: 
-                    homepage_screenshot_b64 = screenshot_b64
+                if page_url == cleaned_url: homepage_screenshot_b64 = screenshot_b64
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
                 yield {'type': 'screenshot_ready', 'id': image_id, 'url': page_url}
