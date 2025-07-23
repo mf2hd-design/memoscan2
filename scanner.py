@@ -164,20 +164,35 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
                 os.environ[key] = value
 
 # -----------------------------------------------------------------------------------
-# Final, Synchronous Streaming Orchestrator
+# Final, Synchronous Streaming Orchestrator (With Heartbeat)
 # -----------------------------------------------------------------------------------
+
 def run_full_scan_stream(url: str):
     try:
         yield "data: [STATUS] Request received! Your brand analysis is starting now. This can take up to 90 seconds, so we appreciate your patience.\\n\\n"
+        
         brand_data = crawl_and_screenshot(url)
+        
         yield "data: [STATUS] Data collection complete. Analyzing with AI...\\n\\n"
+        
         if not brand_data["text_corpus"] and not brand_data["screenshot_b64"]:
             yield "data: [ERROR] Could not gather any content or visuals from the URL. Cannot perform analysis.\\n\\n"
             return
+
+        # --- THIS LOOP IS THE ONLY PART THAT HAS CHANGED ---
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
+            # Send a "heartbeat" status update BEFORE the slow network call.
+            # This keeps the proxy connection alive.
+            yield f"data: [STATUS] Analyzing key: {key}...\\n\\n"
+            
+            # This is the slow part.
             key_name, result_json = analyze_memorability_key(key, prompt, brand_data["text_corpus"], brand_data["screenshot_b64"])
+            
+            # Send the actual result.
             yield f"data: {{\"key\": \"{key_name}\", \"analysis\": {result_json}}}\\n\\n"
+        
         yield "data: [COMPLETE] Analysis finished.\\n\\n"
+
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
         yield f"data: [ERROR] A critical error occurred during the scan: {e}\\n\\n"
