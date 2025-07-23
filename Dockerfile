@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 10000
 
 # The command to run when the container starts. This is a standard synchronous worker.
-CMD ["gunicorn", "--timeout", "180", "-b", "0.0.0.0:10000", "app:app"]
+CMD ["gunicorn", "--timeout", "300", "-b", "0.0.0.0:10000", "app:app"]
