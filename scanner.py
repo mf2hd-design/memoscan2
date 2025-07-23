@@ -41,7 +41,19 @@ def take_screenshot_via_api(url: str):
             print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
             return None
         api_url = "https://shot.screenshotapi.net/screenshot"
-        params = {"token": api_key, "url": url, "full_page": "true", "output": "image", "file_type": "png", "wait_for_event": "load"}
+        
+        # --- THIS IS THE CRITICAL FIX ---
+        # We change 'wait_for_event' from 'load' to 'networkidle'.
+        # This tells the API to wait until the page has finished its dynamic loading.
+        params = {
+            "token": api_key,
+            "url": url,
+            "full_page": "true",
+            "output": "image",
+            "file_type": "png",
+            "wait_for_event": "networkidle"
+        }
+        
         response = requests.get(api_url, params=params, timeout=120)
         response.raise_for_status()
         print("[API Screenshot] Screenshot successful.")
@@ -181,11 +193,8 @@ def run_full_scan_stream(url: str, cache: dict):
         screenshot_b64 = take_screenshot_via_api(cleaned_url)
         
         if screenshot_b64:
-            # Generate a unique ID for the screenshot.
             image_id = str(uuid.uuid4())
-            # Store the screenshot data in the shared cache.
             cache[image_id] = screenshot_b64
-            # Yield a message with the ID, so the frontend can fetch the image.
             yield {'type': 'screenshot_ready', 'id': image_id}
         
         yield {'type': 'status', 'message': 'Step 3/4: Crawling website and social media...'}
