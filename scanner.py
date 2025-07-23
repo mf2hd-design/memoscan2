@@ -28,12 +28,21 @@ def _is_same_domain(home: str, test: str) -> bool:
     """Checks if a test URL is on the same domain as the home URL."""
     return urlparse(home).netloc == urlparse(test).netloc
 
+def find_priority_page(discovered_links: list, keywords: list) -> str or None:
+    """Searches a list of discovered links for the best match based on keywords."""
+    for link_url, link_text in discovered_links:
+        # Check both the link URL and the visible text of the link for keywords
+        for keyword in keywords:
+            if keyword in link_url.lower() or keyword in link_text.lower():
+                return link_url  # Return the first match found
+    return None
+
 # -----------------------------------------------------------------------------------
 # Screenshot API Function
 # -----------------------------------------------------------------------------------
 
 def take_screenshot_via_api(url: str):
-    """Takes a screenshot using an external API, with a more resilient request."""
+    """Takes a screenshot using an external API."""
     print(f"[API Screenshot] Requesting screenshot for {url}")
     try:
         api_key = os.getenv("SCREENSHOT_API_KEY")
@@ -41,8 +50,6 @@ def take_screenshot_via_api(url: str):
             print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
             return None
         api_url = "https://shot.screenshotapi.net/screenshot"
-        
-        # Using a fixed viewport size is much faster and more reliable than 'full_page'.
         params = {
             "token": api_key,
             "url": url,
@@ -53,7 +60,6 @@ def take_screenshot_via_api(url: str):
             "wait_for_event": "networkidle",
             "hide_cookie_banners": "true"
         }
-        
         response = requests.get(api_url, params=params, timeout=120)
         response.raise_for_status()
         print(f"[API Screenshot] Screenshot for {url} successful.")
@@ -67,14 +73,13 @@ def take_screenshot_via_api(url: str):
 # -----------------------------------------------------------------------------------
 
 def get_social_media_text(soup, base_url):
-    """A simple function that finds social links, scrapes them, and returns a single block of text."""
+    """Finds social links, scrapes them, and returns a single block of text."""
     social_text = ""
     social_links = {
         'twitter': soup.find('a', href=re.compile(r'twitter\.com/')),
         'linkedin': soup.find('a', href=re.compile(r'linkedin\.com/company/'))
     }
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    
+    headers = {"User-Agent": "Mozilla/5.0"}
     for platform, link_tag in social_links.items():
         if link_tag:
             url = urljoin(base_url, link_tag['href'])
@@ -141,25 +146,20 @@ def call_openai_for_synthesis(corpus):
             if value is not None:
                 os.environ[key] = value
 
-def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots: dict, brand_summary):
-    """Analyzes a single memorability key using the full context AND multiple screenshots."""
+def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_b64, brand_summary):
+    """Analyzes a single memorability key using the full context."""
     print(f"[AI] Analyzing key: {key_name}")
     proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
     original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
-        
-        content = []
-        if screenshots:
-            for url, b64_data in screenshots.items():
-                content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_data}"}})
-                content.append({"type": "text", "text": f"--- Screenshot from: {url} ---"})
-
-        content.extend([
+        content = [
             {"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"},
             {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"}
-        ])
+        ]
+        if screenshot_b64:
+            content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}})
         
         system_prompt = f"""You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
         {prompt_template}
@@ -167,7 +167,7 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots
         Your response MUST be a JSON object with the following keys:
         - "score": An integer from 0 to 100.
         - "analysis": A comprehensive analysis of **at least five sentences** explaining your score, based on the specific criteria provided.
-        - "evidence": A single, direct quote from the text or a specific visual observation from **one of the provided screenshots**. **You must reference the screenshot's URL in your evidence** (e.g., "In the screenshot from example.com/about, the color palette is...").
+        - "evidence": A single, direct quote from the text or a specific visual observation from the provided homepage screenshot.
         - "confidence": An integer from 1 to 5.
         - "confidence_rationale": A brief explanation for your confidence score.
         - "recommendation": A concise, actionable recommendation for how the brand could improve its score for this specific key.
@@ -227,66 +227,96 @@ def call_openai_for_executive_summary(all_analyses):
 def run_full_scan_stream(url: str, cache: dict):
     """The main generator function that orchestrates the entire scan process."""
     try:
-        yield {'type': 'status', 'message': 'Step 1/4: Initializing scan...'}
+        yield {'type': 'status', 'message': 'Step 1/5: Initializing scan...'}
         cleaned_url = _clean_url(url)
-        
-        yield {'type': 'status', 'message': 'Step 2/4: Crawling website and capturing screenshots...'}
-        text_corpus, social_corpus = "", ""
-        screenshots = {}
-        visited, queue = set(), [cleaned_url]
         headers = {"User-Agent": "Mozilla/5.0"}
-        page_count = 0
 
-        while queue and page_count < 3:
-            current_url = queue.pop(0)
-            if current_url in visited: continue
-            visited.add(current_url)
-            page_count += 1
+        # --- PASS 1: DISCOVERY ---
+        yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
+        homepage_res = requests.get(cleaned_url, headers=headers, timeout=15)
+        homepage_res.raise_for_status()
+        homepage_soup = BeautifulSoup(homepage_res.text, "html.parser")
+        
+        discovered_links = []
+        for a in homepage_soup.find_all("a", href=True):
+            link_url = urljoin(cleaned_url, a["href"])
+            if _is_same_domain(cleaned_url, link_url):
+                discovered_links.append((link_url, a.get_text(strip=True)))
+
+        # --- PASS 2: TARGETED SEARCH ---
+        yield {'type': 'status', 'message': 'Identifying key pages (About, Products, etc.)...'}
+        
+        KEYWORD_MAP = {
+            "About Us": ["about", "company", "who we are", "mission", "our story"],
+            "Products/Services": ["products", "services", "solutions", "what we do", "platform", "offerings"],
+            "News": ["news", "press", "blog", "media", "insights", "resources"],
+            "Investor Relations": ["investors", "ir", "relations"]
+        }
+        
+        priority_pages = [cleaned_url]
+        found_urls = {cleaned_url}
+
+        for page_type, keywords in KEYWORD_MAP.items():
+            found_url = find_priority_page(discovered_links, keywords)
+            if found_url and found_url not in found_urls:
+                yield {'type': 'status', 'message': f'Found "{page_type}" page: {found_url}'}
+                priority_pages.append(found_url)
+                found_urls.add(found_url)
+
+        for link_url, _ in discovered_links:
+            if len(priority_pages) >= 5:
+                break
+            if link_url not in found_urls:
+                priority_pages.append(link_url)
+                found_urls.add(link_url)
+
+        # --- PASS 3: EXECUTION ---
+        yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
+        text_corpus, social_corpus = "", ""
+        homepage_screenshot_b64 = None
+        
+        for i, page_url in enumerate(priority_pages):
+            yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
-            yield {'type': 'status', 'message': f'Analyzing page {page_count}/3: {current_url.split("?")[0]}'}
-            
-            screenshot_b64 = take_screenshot_via_api(current_url)
+            screenshot_b64 = take_screenshot_via_api(page_url)
             if screenshot_b64:
+                if page_url == cleaned_url:
+                    homepage_screenshot_b64 = screenshot_b64
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
-                screenshots[current_url] = screenshot_b64
-                yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
+                yield {'type': 'screenshot_ready', 'id': image_id, 'url': page_url}
 
             try:
-                res = requests.get(current_url, headers=headers, timeout=10)
+                res = requests.get(page_url, headers=headers, timeout=10)
                 res.raise_for_status()
                 soup = BeautifulSoup(res.text, "html.parser")
                 
-                if current_url == cleaned_url:
+                if page_url == cleaned_url:
                     social_corpus = get_social_media_text(soup, cleaned_url)
                     if social_corpus:
                          yield {'type': 'status', 'message': 'Social media text captured.'}
 
                 for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
                     tag.decompose()
-                text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
-                
-                for a in soup.find_all("a", href=True):
-                    link = urljoin(current_url, a["href"])
-                    if _is_same_domain(cleaned_url, link) and link not in visited and len(queue) < 10:
-                        queue.append(link)
+                text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + soup.get_text(" ", strip=True)
             except Exception as e:
-                print(f"[WARN] Failed to crawl {current_url}: {e}")
+                print(f"[WARN] Failed to crawl {page_url}: {e}")
 
         full_corpus = (text_corpus + social_corpus)[:25000]
         
-        yield {'type': 'status', 'message': 'Step 3/4: Performing AI analysis...'}
+        yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
         brand_summary = call_openai_for_synthesis(full_corpus)
         
+        yield {'type': 'status', 'message': 'Step 4/5: Performing detailed analysis...'}
         all_results = []
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
-            key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, screenshots, brand_summary)
+            key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
             yield result_obj
         
-        yield {'type': 'status', 'message': 'Step 4/4: Generating Executive Summary...'}
+        yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
         summary_text = call_openai_for_executive_summary(all_results)
         yield {'type': 'summary', 'text': summary_text}
         
