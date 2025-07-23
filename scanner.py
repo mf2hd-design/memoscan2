@@ -29,11 +29,11 @@ def _is_same_domain(home: str, test: str) -> bool:
     return urlparse(home).netloc == urlparse(test).netloc
 
 # -----------------------------------------------------------------------------------
-# Screenshot API Function (UPDATED)
+# Screenshot API Function
 # -----------------------------------------------------------------------------------
 
 def take_screenshot_via_api(url: str):
-    """Takes a screenshot using an external API, now with cookie banner blocking."""
+    """Takes a screenshot using an external API, with a more resilient request."""
     print(f"[API Screenshot] Requesting screenshot for {url}")
     try:
         api_key = os.getenv("SCREENSHOT_API_KEY")
@@ -42,14 +42,16 @@ def take_screenshot_via_api(url: str):
             return None
         api_url = "https://shot.screenshotapi.net/screenshot"
         
-        # --- THE FIX: ADDED 'hide_cookie_banners' and removed 'full_page' for reliability ---
+        # Using a fixed viewport size is much faster and more reliable than 'full_page'.
         params = {
             "token": api_key,
             "url": url,
             "output": "image",
             "file_type": "png",
+            "width": 1280,
+            "height": 1024,
             "wait_for_event": "networkidle",
-            "hide_cookie_banners": "true" # This is the new parameter
+            "hide_cookie_banners": "true"
         }
         
         response = requests.get(api_url, params=params, timeout=120)
@@ -61,7 +63,7 @@ def take_screenshot_via_api(url: str):
         return None
 
 # -----------------------------------------------------------------------------------
-# Social Media Scraping Function (Unchanged)
+# Social Media Scraping Function
 # -----------------------------------------------------------------------------------
 
 def get_social_media_text(soup, base_url):
@@ -90,21 +92,54 @@ def get_social_media_text(soup, base_url):
     return social_text
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Functions (UPDATED FOR MULTI-SCREENSHOT)
+# AI Analysis Functions
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
-    "Emotion": "Analyze the Emotion key...", # Full prompts are assumed here
-    "Attention": "Analyze the Attention key...",
-    "Story": "Analyze the Story key...",
-    "Involvement": "Analyze the Involvement key...",
-    "Repetition": "Analyze the Repetition key...",
-    "Consistency": "Analyze the Consistency key..."
+    "Emotion": """
+        Analyze the **Emotion** key. This is the primary key; without it, nothing is memorable.
+        - **Your analysis must cover:** How the brand connects with audiences on an emotional level. Does it evoke warmth, trust, joy, or admiration? Does it use meaningful experiences, human stories, or mission-driven language? Is there a clear emotional reward for the user?
+    """,
+    "Attention": """
+        Analyze the **Attention** key. This is a stimulus key.
+        - **Your analysis must cover:** How the brand stands out and sustains interest. Evaluate its distinctiveness. Does it use surprising visuals or headlines? Does it create an authentic and engaging journey for the user, avoiding clichés and overuse of calls to action?
+    """,
+    "Story": """
+        Analyze the **Story** key. This is a stimulus key.
+        - **Your analysis must cover:** The clarity and power of the brand's narrative. Is there an authentic story that explains who the brand is and what it promises? Does this story build trust and pique curiosity more effectively than just facts and figures alone?
+    """,
+    "Involvement": """
+        Analyze the **Involvement** key. This is a stimulus key.
+        - **Your analysis must cover:** How the brand makes the audience feel like active participants. Does it connect to what is meaningful for them? Does it foster a sense of community or belonging? Does it make people feel included and empowered?
+    """,
+    "Repetition": """
+        Analyze the **Repetition** key. This is a reinforcement key.
+        - **Your analysis must cover:** The strategic reuse of brand elements. Are key symbols, taglines, colors, or experiences repeated consistently across touchpoints to reinforce memory and create new associations? Is this repetition thoughtful, or does it risk overexposure?
+    """,
+    "Consistency": """
+        Analyze the **Consistency** key. This is a reinforcement key.
+        - **Your analysis must cover:** The coherence of the brand across all touchpoints. Do the tone, message, and design feel aligned? Does this create a sense of familiarity, allowing the user's brain to recognize patterns and anticipate what to expect?
+    """
 }
 
 def call_openai_for_synthesis(corpus):
-    # This function is unchanged
-    pass
+    """Performs the AI pre-processing step to create a brand summary."""
+    print("[AI] Synthesizing brand overview...")
+    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+    original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
+    try:
+        http_client = httpx.Client(proxies=None)
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
+        synthesis_prompt = f"Analyze the following text from a company's website and social media. Provide a concise, one-paragraph summary of the brand's mission, tone, and primary offerings. This summary will be used as context for further analysis.\n\n---\n{corpus}\n---"
+        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": synthesis_prompt}], temperature=0.2)
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[ERROR] AI synthesis failed: {e}")
+        return "Could not generate brand summary due to an error."
+    finally:
+        for key, value in original_proxies.items():
+            if value is not None:
+                os.environ[key] = value
 
 def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots: dict, brand_summary):
     """Analyzes a single memorability key using the full context AND multiple screenshots."""
@@ -115,12 +150,11 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
         
-        # --- THE FIX: Build a list of multiple images for the AI ---
         content = []
-        for url, b64_data in screenshots.items():
-            content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_data}"}})
-            # Add a text label so the AI knows which image is which
-            content.append({"type": "text", "text": f"--- Screenshot from: {url} ---"})
+        if screenshots:
+            for url, b64_data in screenshots.items():
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_data}"}})
+                content.append({"type": "text", "text": f"--- Screenshot from: {url} ---"})
 
         content.extend([
             {"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"},
@@ -152,14 +186,43 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshots
         return key_name, error_response
     finally:
         for key, value in original_proxies.items():
-            if value is not None: os.environ[key] = value
+            if value is not None:
+                os.environ[key] = value
 
 def call_openai_for_executive_summary(all_analyses):
-    # This function is unchanged
-    pass
+    """Generates the final executive summary based on all individual key analyses."""
+    print("[AI] Generating Executive Summary...")
+    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+    original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
+    try:
+        http_client = httpx.Client(proxies=None)
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
+        
+        analyses_text = "\n\n".join([f"Key: {data['key']}\nScore: {data['analysis']['score']}\nAnalysis: {data['analysis']['analysis']}" for data in all_analyses])
+        
+        summary_prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
+        1.  **Overall Summary:** A brief, high-level overview of the brand's memorability performance.
+        2.  **Key Strengths:** Identify the 2-3 strongest keys for the brand and explain why.
+        3.  **Primary Weaknesses:** Identify the 2-3 weakest keys and explain the impact.
+        4.  **Strategic Focus:** State the single most important key the brand should focus on to improve its overall memorability.
+
+        Here are the individual analyses to synthesize:
+        ---
+        {analyses_text}
+        ---
+        """
+        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": summary_prompt}], temperature=0.3)
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[ERROR] AI summary failed: {e}")
+        return "Could not generate the executive summary due to an error."
+    finally:
+        for key, value in original_proxies.items():
+            if value is not None:
+                os.environ[key] = value
 
 # -----------------------------------------------------------------------------------
-# Main Orchestrator Function (UPDATED FOR MULTI-SCREENSHOT)
+# Main Orchestrator Function
 # -----------------------------------------------------------------------------------
 def run_full_scan_stream(url: str, cache: dict):
     """The main generator function that orchestrates the entire scan process."""
@@ -168,14 +231,13 @@ def run_full_scan_stream(url: str, cache: dict):
         cleaned_url = _clean_url(url)
         
         yield {'type': 'status', 'message': 'Step 2/4: Crawling website and capturing screenshots...'}
-        
         text_corpus, social_corpus = "", ""
-        screenshots = {} # Dictionary to hold all screenshots for the AI
+        screenshots = {}
         visited, queue = set(), [cleaned_url]
         headers = {"User-Agent": "Mozilla/5.0"}
         page_count = 0
 
-        while queue and page_count < 3: # Limit to 3 pages/screenshots to manage time/cost
+        while queue and page_count < 3:
             current_url = queue.pop(0)
             if current_url in visited: continue
             visited.add(current_url)
@@ -183,12 +245,11 @@ def run_full_scan_stream(url: str, cache: dict):
             
             yield {'type': 'status', 'message': f'Analyzing page {page_count}/3: {current_url.split("?")[0]}'}
             
-            # --- THE FIX: Take screenshot INSIDE the loop ---
             screenshot_b64 = take_screenshot_via_api(current_url)
             if screenshot_b64:
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
-                screenshots[current_url] = screenshot_b64 # Save for AI
+                screenshots[current_url] = screenshot_b64
                 yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
 
             try:
