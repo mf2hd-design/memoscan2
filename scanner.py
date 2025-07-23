@@ -6,7 +6,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# This new function calls the external screenshot API
+# -----------------------------------------------------------------------------------
+# Helper functions that were mistakenly deleted (RESTORED)
+# -----------------------------------------------------------------------------------
+
+def _clean_url(url: str) -> str:
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.split("#")[0]
+
+def _is_same_domain(home: str, test: str) -> bool:
+    return urlparse(home).netloc == urlparse(test).netloc
+
+
+# -----------------------------------------------------------------------------------
+# Screenshot API function
+# -----------------------------------------------------------------------------------
+
 def take_screenshot_via_api(url: str):
     """
     Takes a screenshot of a URL using an external API service.
@@ -31,8 +48,8 @@ def take_screenshot_via_api(url: str):
             "wait_for_event": "load"
         }
         
-        response = requests.get(api_url, params=params, timeout=120) # 2 minute timeout for the API call
-        response.raise_for_status() # Will raise an exception for 4xx/5xx responses
+        response = requests.get(api_url, params=params, timeout=120)
+        response.raise_for_status()
         
         print("[API Screenshot] Screenshot successful.")
         return base64.b64encode(response.content).decode('utf-8')
@@ -41,11 +58,13 @@ def take_screenshot_via_api(url: str):
         print(f"[ERROR] Could not take screenshot via API: {e}")
         return None
 
-# The original crawl_and_screenshot function is now much simpler.
+# -----------------------------------------------------------------------------------
+# Data Collection Logic (now using the API)
+# -----------------------------------------------------------------------------------
+
 def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15000):
     cleaned_url = _clean_url(start_url)
     
-    # --- The Playwright block is replaced with this single API call ---
     screenshot_b64 = take_screenshot_via_api(cleaned_url)
     
     visited, queue, text_corpus = set(), [cleaned_url], ""
@@ -96,7 +115,7 @@ def crawl_and_screenshot(start_url: str, max_pages: int = 5, max_chars: int = 15
 
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Logic - This part remains the same
+# AI Analysis Logic (Unchanged)
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
