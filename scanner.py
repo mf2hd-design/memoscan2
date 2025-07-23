@@ -3,12 +3,13 @@ import re
 import requests
 import json
 import base64
+import uuid
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from dotenv import load_dotenv
 import httpx
-import gevent # Import the gevent library
+import gevent
 
 load_dotenv()
 
@@ -170,7 +171,7 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, screenshot_
 # -----------------------------------------------------------------------------------
 # Main Orchestrator Function
 # -----------------------------------------------------------------------------------
-def run_full_scan_stream(url: str):
+def run_full_scan_stream(url: str, cache: dict):
     """The main generator function that orchestrates the entire scan process."""
     try:
         yield {'type': 'status', 'message': 'Step 1/4: Initializing scan...'}
@@ -180,14 +181,12 @@ def run_full_scan_stream(url: str):
         screenshot_b64 = take_screenshot_via_api(cleaned_url)
         
         if screenshot_b64:
-            yield {'type': 'screenshot_start'}
-            chunk_size = 16 * 1024  # 16KB chunks
-            for i in range(0, len(screenshot_b64), chunk_size):
-                yield {'type': 'screenshot_chunk', 'data': screenshot_b64[i:i + chunk_size]}
-                # --- THIS IS THE CRITICAL FIX ---
-                # Add a cooperative sleep to allow the network buffer to flush.
-                gevent.sleep(0) 
-            yield {'type': 'screenshot_end'}
+            # Generate a unique ID for the screenshot.
+            image_id = str(uuid.uuid4())
+            # Store the screenshot data in the shared cache.
+            cache[image_id] = screenshot_b64
+            # Yield a message with the ID, so the frontend can fetch the image.
+            yield {'type': 'screenshot_ready', 'id': image_id}
         
         yield {'type': 'status', 'message': 'Step 3/4: Crawling website and social media...'}
         text_corpus, social_corpus = "", ""
