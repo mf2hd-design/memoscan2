@@ -246,15 +246,13 @@ def run_full_scan_stream(url: str, cache: dict):
         yield {'type': 'status', 'message': 'Step 1/5: Initializing scan...'}
         cleaned_url = _clean_url(url)
 
+        # --- PASS 1: DISCOVERY & HOMEPAGE ANALYSIS ---
         yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
         
-        # --- THIS IS THE CORRECTED LOGIC ---
-        # 1. Fetch the homepage content AND screenshot together.
         homepage_screenshot_b64, homepage_html = fetch_content_and_screenshot(cleaned_url)
         if not homepage_html:
             raise Exception("Could not fetch homepage content. The site may be blocking automation.")
         
-        # 2. Immediately cache the homepage screenshot if it exists.
         if homepage_screenshot_b64:
             image_id = str(uuid.uuid4())
             cache[image_id] = homepage_screenshot_b64
@@ -268,6 +266,13 @@ def run_full_scan_stream(url: str, cache: dict):
             if _is_same_domain(cleaned_url, link_url):
                 discovered_links.append((link_url, a.get_text(strip=True)))
 
+        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
+        if social_corpus:
+             yield {'type': 'status', 'message': 'Social media text captured.'}
+        else:
+             yield {'type': 'status', 'message': 'No social media links found.'}
+
+        # --- PASS 2: BUILD PRIORITY QUEUE ---
         yield {'type': 'status', 'message': 'Identifying key pages...'}
         KEYWORD_MAP = {
             "About Us": ["about", "company", "who we are", "mission", "our story"],
@@ -291,29 +296,21 @@ def run_full_scan_stream(url: str, cache: dict):
                     found_urls.add(link_url)
             if len(priority_pages) < 5: break
 
+        # --- PASS 3: CRAWL & COLLECT TEXT FROM ALL PAGES ---
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
-        text_corpus, social_corpus = "", ""
+        text_corpus = ""
         
         for i, page_url in enumerate(priority_pages):
             yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
-            # 3. For subsequent pages, only fetch if it's not the homepage we already did.
             if page_url == cleaned_url:
                 page_html = homepage_html
             else:
-                screenshot_b64, page_html = fetch_content_and_screenshot(page_url)
-                if screenshot_b64:
-                    image_id = str(uuid.uuid4())
-                    cache[image_id] = screenshot_b64
-                    yield {'type': 'screenshot_ready', 'id': image_id, 'url': page_url}
-
+                # We only need the HTML here, not the screenshot
+                _, page_html = fetch_content_and_screenshot(page_url)
+            
             if page_html:
                 soup = BeautifulSoup(page_html, "html.parser")
-                if page_url == cleaned_url:
-                    social_corpus = get_social_media_text(soup, cleaned_url)
-                    if social_corpus:
-                         yield {'type': 'status', 'message': 'Social media text captured.'}
-
                 for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + soup.get_text(" ", strip=True)
