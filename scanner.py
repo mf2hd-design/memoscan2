@@ -1,49 +1,69 @@
-import os, re, json, time, base64, uuid
+import os
+import re
+import json
+import time
+import base64
+import uuid
 from collections import deque
 from urllib.parse import urljoin
 
-import httpx, requests, tldextract
+import httpx
+import requests
+import tldextract
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
 
-# -----------------------------------------------------------------------------------
+# ===================================================================================
 # CONFIG
-# -----------------------------------------------------------------------------------
+# ===================================================================================
 class Config:
-    SITE_BUDGET_SECS       = int(os.getenv("SITE_BUDGET_SECS", 60))
-    SITE_MAX_BUDGET_SECS   = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
-    CRAWL_MAX_PAGES        = int(os.getenv("CRAWL_MAX_PAGES", 5))
-    CRAWL_MAX_DEPTH        = int(os.getenv("CRAWL_MAX_DEPTH", 2))
-    BASIC_TIMEOUT_SECS     = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
-    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
-    SCRAPINGBEE_MAX_RETRIES  = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))
-    SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
-    SCRAPINGBEE_PROXY_MODE   = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
+    # Budgets
+    SITE_BUDGET_SECS        = int(os.getenv("SITE_BUDGET_SECS", 60))
+    SITE_MAX_BUDGET_SECS    = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
 
-    RENDER_MIN_LINKS      = int(os.getenv("RENDER_MIN_LINKS", 15))
-    RENDER_MIN_TEXT_BYTES = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
-    SPA_SIGNALS           = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
+    # Crawl
+    CRAWL_MAX_PAGES         = int(os.getenv("CRAWL_MAX_PAGES", 5))
+    CRAWL_MAX_DEPTH         = int(os.getenv("CRAWL_MAX_DEPTH", 2))
 
+    # Timeouts
+    BASIC_TIMEOUT_SECS      = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
+    SCRAPINGBEE_TIMEOUT_SECS= int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
+
+    # ScrapingBee retries/backoff
+    SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))
+    SCRAPINGBEE_BACKOFF_SECS= float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
+    SCRAPINGBEE_PROXY_MODE  = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
+
+    # Render heuristics
+    RENDER_MIN_LINKS        = int(os.getenv("RENDER_MIN_LINKS", 15))
+    RENDER_MIN_TEXT_BYTES   = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
+    SPA_SIGNALS             = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
+
+    # Socials (must-detect)
     SOCIAL_PLATFORMS = {
         "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
-        "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+"),
+        "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+")
     }
+
+    # Avoid putting these on the crawl queue
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
+    # Kill CSS nodes in extracted HTML (for text corpus only)
     COOKIE_GDPR_KILL_SELECTORS = [
         "[id*='cookie']", "[class*='cookie']",
         "[id*='consent']", "[class*='consent']",
         "[id*='gdpr']",   "[class*='gdpr']",
         "[id*='privacy']", "[class*='privacy']",
-        "iframe[src*='consent']","iframe[src*='cookie']"
+        "iframe[src*='consent']", "iframe[src*='cookie']"
     ]
 
-# -----------------------------------------------------------------------------------
+
+# ===================================================================================
 # HELPERS
-# -----------------------------------------------------------------------------------
+# ===================================================================================
 def _reg_domain(u: str) -> str:
     e = tldextract.extract(u)
     return f"{e.domain}.{e.suffix}".lower()
@@ -56,123 +76,250 @@ def _clean_url(url: str) -> str:
         url = "https://" + url.strip()
     return url.split("#")[0]
 
-# -----------------------------------------------------------------------------------
+
+# ===================================================================================
 # FETCHERS
-# -----------------------------------------------------------------------------------
+# ===================================================================================
 class FetchResult:
     def __init__(self, url, html, status_code, from_renderer):
-        self.url, self.html, self.status_code, self.from_renderer = url, html or "", status_code, from_renderer
+        self.url = url
+        self.html = html or ""
+        self.status_code = status_code
+        self.from_renderer = from_renderer
+
 
 _basic_client = httpx.Client(
     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-    follow_redirects=True, timeout=Config.BASIC_TIMEOUT_SECS
+    follow_redirects=True,
+    timeout=Config.BASIC_TIMEOUT_SECS
 )
+
 
 def basic_fetcher(url: str) -> FetchResult:
     print(f"[BasicFetcher] {url}")
     try:
-        r = _basic_client.get(url); r.raise_for_status()
+        r = _basic_client.get(url)
+        r.raise_for_status()
         return FetchResult(str(r.url), r.text, r.status_code, False)
     except Exception as e:
         print(f"[BasicFetcher] ERROR {e}")
         return FetchResult(url, "", 500, False)
 
-# ----- ScrapingBee js_scenario (CSS + XPath, all optional) -----
+
+# ---------- ScrapingBee scenario building (CSS only + small JS helpers) ----------
 CSS_CLICK_SELECTORS = [
-    "#onetrust-accept-btn-handler",".onetrust-accept-btn-handler",
+    "#onetrust-accept-btn-handler",
+    ".onetrust-accept-btn-handler",
     "#CybotCookiebotDialogBodyLevelButtonAccept",
-    "#cookie-accept",".cookie-accept",".cookies-accept",
-    ".cc-allow",".cky-btn-accept",
+    "#cookie-accept",
+    ".cookie-accept",
+    ".cookies-accept",
+    ".cc-allow",
+    ".cky-btn-accept",
     "[data-testid='cookie-accept']",
-    "button[aria-label='Accept']","button[aria-label='Accept all']",
-    "button[name='accept']","button#accept","button#acceptAll",
-    "button.consent-accept","button.cookie-accept",
-    "[id*='accept'][class*='cookie']","[class*='accept'][class*='cookie']"
+    "button[aria-label='Accept']",
+    "button[aria-label='Accept all']",
+    "button[name='accept']",
+    "button#accept",
+    "button#acceptAll",
+    "button.consent-accept",
+    "button.cookie-accept",
+    "[id*='accept'][class*='cookie']",
+    "[class*='accept'][class*='cookie']"
 ]
 
-TEXT_WORDS = ["accept", "allow", "agree", "zulassen", "permitirlas", "accept all", "i agree"]
-XPATH_CLICK_SELECTORS = [
-    f"//button[contains(translate(normalize-space(text()),'ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÜÑÄÖÜẞ','abcdefghijklmnopqrstuvwxyzáéíóúüñäöüß'), '{w}')]"
-    for w in TEXT_WORDS
+TEXT_WORDS = [
+    "accept", "accept all", "allow", "agree",
+    "zulassen", "permitirlas", "ok", "got it"
 ]
 
-def make_js_scenario() -> dict:
-    instr = [{"wait": 1200}]
-    instr += [{"click": sel, "optional": True} for sel in CSS_CLICK_SELECTORS]
-    instr += [{"click": xp,  "optional": True} for xp in XPATH_CLICK_SELECTORS]
-    instr.append({"wait": 400})
-    return {"instructions": instr}
 
-def _bee_params(url, render_js, screenshot, js_scen, wait):
+def make_js_scenario(include_cookie_scripts: bool) -> dict:
+    """
+    Build a ScrapingBee-compatible js_scenario:
+      - waits
+      - optional CSS clicks
+      - JS that searches by innerText for cookie words
+      - JS that nukes overlays
+    """
+    if not include_cookie_scripts:
+        return {"instructions": [{"wait": 1000}]}
+
+    instructions = [{"wait": 1200}]
+
+    # Optional CSS clicks
+    for sel in CSS_CLICK_SELECTORS:
+        instructions.append({
+            "click": sel,
+            "optional": True
+        })
+
+    # Script to click by text content
+    words_json = json.dumps(TEXT_WORDS)
+    script_click_by_text = f"""
+        (function() {{
+          const words = {words_json}.map(w => w.toLowerCase());
+          function matchText(el) {{
+            const t = (el.innerText || el.textContent || "").toLowerCase().trim();
+            return words.some(w => t.includes(w));
+          }}
+          const candidates = Array.from(document.querySelectorAll("button, a, input[type=button], input[type=submit], div, span"));
+          for (const el of candidates) {{
+            try {{
+              if (matchText(el)) {{
+                el.click();
+              }}
+            }} catch(e) {{}}
+          }}
+        }})();
+    """
+
+    instructions.append({"script": {"code": script_click_by_text}, "optional": True})
+
+    # Script to hide common overlays
+    kill_selectors = Config.COOKIE_GDPR_KILL_SELECTORS
+    kill_json = json.dumps(kill_selectors)
+    script_hide = f"""
+        (function(){{
+          try {{
+            const kill = {kill_json};
+            document.querySelectorAll(kill.join(',')).forEach(el => {{
+              el.style.cssText = 'display:none!important;visibility:hidden!important;opacity:0!important;';
+            }});
+            document.body.style.overflow = 'auto';
+          }} catch(e) {{}}
+        }})();
+    """
+    instructions.append({"script": {"code": script_hide}, "optional": True})
+    instructions.append({"wait": 400})
+
+    return {"instructions": instructions}
+
+
+def _bee_params(url: str, *, render_js: bool, screenshot: bool, with_js: bool, wait_ms: int):
     p = {
         "api_key": os.getenv("SCRAPINGBEE_API_KEY"),
         "url": url,
         "render_js": render_js,
-        "wait": wait,
+        "wait": wait_ms
     }
-    if js_scen and render_js:
-        p["js_scenario"] = json.dumps(make_js_scenario())
+    # Use js_scenario only for first try (with_js=True)
+    if with_js and render_js:
+        p["js_scenario"] = json.dumps(make_js_scenario(include_cookie_scripts=True))
+    elif render_js:
+        p["js_scenario"] = json.dumps(make_js_scenario(include_cookie_scripts=False))
+
+    # Screenshot options
     if screenshot:
-        p.update({"screenshot": True,"block_resources": False,
-                  "window_width": 1280,"window_height": 1024,
-                  "screenshot_full_page": False})
+        p.update({
+            "screenshot": True,
+            "window_width": 1280,
+            "window_height": 1024,
+            "screenshot_full_page": False
+        })
+        # DO NOT block resources for screenshots or the banner CSS might not load
+        p["block_resources"] = False
     else:
+        # We can safely block some resources for HTML
         p["block_resources"] = True
+
+    # proxy mode if we need it
     mode = Config.SCRAPINGBEE_PROXY_MODE
-    if mode=="premium": p["premium_proxy"]=True
-    if mode=="stealth": p["stealth_proxy"]=True
+    if mode == "premium":
+        p["premium_proxy"] = True
+    elif mode == "stealth":
+        p["stealth_proxy"] = True
+
     return p
 
-def _bee_call(url, *, render_js, screenshot):
-    if screenshot: render_js = True
-    for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES+1):
+
+def _bee_call(url: str, *, render_js: bool, screenshot: bool):
+    """
+    Try once WITH js_scenario (cookie killer).
+    If 4xx/5xx => retry ONCE WITHOUT js_scenario (gracefully degrade).
+    """
+    if screenshot:
+        render_js = True  # screenshot always after JS
+
+    tries = Config.SCRAPINGBEE_MAX_RETRIES + 1
+    for attempt in range(tries):
+        with_js = (attempt == 0)  # only first attempt uses the heavy js_scenario
+        params = _bee_params(url, render_js=render_js, screenshot=screenshot, with_js=with_js,
+                             wait_ms=1000 if with_js else 3000)
         try:
-            params=_bee_params(url, render_js, screenshot, attempt==0, 1000 if attempt==0 else 3000)
-            r=requests.get("https://app.scrapingbee.com/api/v1/",params=params,
-                           timeout=(10,Config.SCRAPINGBEE_TIMEOUT_SECS))
-            if r.status_code<400: return r
-            print(f"[ScrapingBee] HTTP {r.status_code} attempt={attempt} {r.text[:300]}")
+            r = requests.get(
+                "https://app.scrapingbee.com/api/v1/",
+                params=params,
+                timeout=(10, Config.SCRAPINGBEE_TIMEOUT_SECS)
+            )
+            if r.status_code < 400:
+                return r
+            print(f"[ScrapingBee] HTTP {r.status_code} attempt={attempt} body={r.text[:400]}")
         except requests.RequestException as e:
             print(f"[ScrapingBee] EXC attempt={attempt} {e}")
-        if attempt<Config.SCRAPINGBEE_MAX_RETRIES:
-            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS*(attempt+1))
+
+        if attempt < tries - 1:
+            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS * (attempt + 1))
+
     return None
 
-def scrapingbee_html_fetcher(url, render_js) -> FetchResult:
+
+def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
     print(f"[ScrapingBeeHTML] {url} (render_js={render_js})")
-    r=_bee_call(url, render_js=render_js, screenshot=False)
-    if not r: return FetchResult(url,"",500,render_js)
-    return FetchResult(url,r.text,r.status_code,render_js)
+    r = _bee_call(url, render_js=render_js, screenshot=False)
+    if not r:
+        return FetchResult(url, "", 500, render_js)
+    return FetchResult(url, r.text, r.status_code, render_js)
 
-def scrapingbee_screenshot_fetcher(url, render_js) -> str|None:
-    print(f"[ScrapingBeeScreenshot] {url}")
-    r=_bee_call(url, render_js=True, screenshot=True)
-    return None if not r else base64.b64encode(r.content).decode()
 
-# -----------------------------------------------------------------------------------
+def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str | None:
+    print(f"[ScrapingBeeScreenshot] {url} (render_js={render_js})")
+    r = _bee_call(url, render_js=True, screenshot=True)  # force render for screenshot
+    if not r:
+        return None
+    # ScrapingBee returns raw image bytes here
+    return base64.b64encode(r.content).decode("utf-8")
+
+
+# ===================================================================================
 # POLICY & EXTRACT
-# -----------------------------------------------------------------------------------
-def render_policy(res:FetchResult):
-    if res.status_code>=400: return True,"http_error"
-    soup=BeautifulSoup(res.html,"lxml")
-    if len(soup.get_text(" ",strip=True))<Config.RENDER_MIN_TEXT_BYTES: return True,"small_text"
-    if len(soup.find_all("a",href=True))<Config.RENDER_MIN_LINKS: return True,"few_links"
-    if any(sig in res.html.lower() for sig in Config.SPA_SIGNALS): return True,"spa_signal"
-    return False,"ok"
+# ===================================================================================
+def render_policy(result: FetchResult) -> (bool, str):
+    if result.status_code >= 400:
+        return True, "http_error"
 
-def _strip_cookie_nodes(soup):
+    soup = BeautifulSoup(result.html, "lxml")
+    visible_text_len = len(soup.get_text(" ", strip=True))
+    if visible_text_len < Config.RENDER_MIN_TEXT_BYTES:
+        return True, "small_text"
+    if len(soup.find_all("a", href=True)) < Config.RENDER_MIN_LINKS:
+        return True, "few_links"
+    lower = result.html.lower()
+    for sig in Config.SPA_SIGNALS:
+        if sig in lower:
+            return True, "spa_signal"
+    return False, "ok"
+
+
+def _strip_cookie_nodes(soup: BeautifulSoup):
     for sel in Config.COOKIE_GDPR_KILL_SELECTORS:
-        for el in soup.select(sel): el.decompose()
+        for el in soup.select(sel):
+            el.decompose()
 
-def social_extractor(soup,base):
-    out={}
-    for k,pat in Config.SOCIAL_PLATFORMS.items():
-        links={t['href'] for t in soup.find_all("a",href=pat)}
-        if links: out[k]=urljoin(base,min(links,key=len))
+
+def social_extractor(soup: BeautifulSoup, base_url: str) -> dict:
+    out = {}
+    for platform, pattern in Config.SOCIAL_PLATFORMS.items():
+        links = {tag['href'] for tag in soup.find_all('a', href=pattern)}
+        if links:
+            best = min(links, key=len)
+            out[platform] = urljoin(base_url, best)
     return out
-# -----------------------------------------------------------------------------------
-# LLM PHASE
-# -----------------------------------------------------------------------------------
+
+
+# ===================================================================================
+# LLM HELPERS
+# ===================================================================================
 MEMORABILITY_KEYS_PROMPTS = {
     "Emotion": """
         Analyze the **Emotion** key. This is the primary key; without it, nothing is memorable.
@@ -201,29 +348,18 @@ MEMORABILITY_KEYS_PROMPTS = {
 }
 
 
-def _strip_proxies_temporarily():
-    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-    original = {k: os.environ.pop(k, None) for k in proxy_keys}
-    return proxy_keys, original
-
-
-def _restore_proxies(proxy_keys, original):
-    for k in proxy_keys:
-        if original[k] is not None:
-            os.environ[k] = original[k]
-
-
 def call_openai_for_synthesis(corpus: str) -> str:
     print("[AI] Synthesizing brand overview...")
-    proxy_keys, original = _strip_proxies_temporarily()
+    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+    original = {k: os.environ.pop(k, None) for k in proxy_keys}
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
+
         prompt = (
             "Analyze the following text from a company's website and social media. "
             "Provide a concise, one-paragraph summary of the brand's mission, tone, and primary offerings. "
-            "This summary will be used as context for further analysis.\n\n---\n"
-            f"{corpus}\n---"
+            "This summary will be used as context for further analysis.\n\n---\n" + corpus + "\n---"
         )
         resp = client.chat.completions.create(
             model="gpt-4o",
@@ -235,47 +371,49 @@ def call_openai_for_synthesis(corpus: str) -> str:
         print(f"[ERROR] AI synthesis failed: {e}")
         return "Could not generate brand summary due to an error."
     finally:
-        _restore_proxies(proxy_keys, original)
+        for k, v in original.items():
+            if v is not None:
+                os.environ[k] = v
 
 
 def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_screenshot_b64, brand_summary):
     print(f"[AI] Analyzing key: {key_name}")
-    proxy_keys, original = _strip_proxies_temporarily()
+    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+    original = {k: os.environ.pop(k, None) for k in proxy_keys}
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
 
         content = [
             {"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"},
-            {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"},
+            {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"}
         ]
         if homepage_screenshot_b64:
             content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{homepage_screenshot_b64}"}})
 
         system_prompt = f"""You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
-{prompt_template}
+        {prompt_template}
 
-Your response MUST be a JSON object with the following keys:
-- "score": An integer from 0 to 100.
-- "analysis": A comprehensive analysis of **at least five sentences** explaining your score, based on the specific criteria provided.
-- "evidence": A single, direct quote from the text or a specific visual observation from the provided homepage screenshot.
-- "confidence": An integer from 1 to 5.
-- "confidence_rationale": A brief explanation for your confidence score.
-- "recommendation": A concise, actionable recommendation for how the brand could improve its score for this specific key.
-"""
+        Your response MUST be a JSON object with the following keys:
+        - "score": An integer from 0 to 100.
+        - "analysis": A comprehensive analysis of **at least five sentences** explaining your score, based on the specific criteria provided.
+        - "evidence": A single, direct quote from the text or a specific visual observation from the provided homepage screenshot.
+        - "confidence": An integer from 1 to 5.
+        - "confidence_rationale": A brief explanation for your confidence score.
+        - "recommendation": A concise, actionable recommendation for how the brand could improve its score for this specific key.
+        """
+
         resp = client.chat.completions.create(
             model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content},
-            ],
+            messages=[{"role": "system", "content": system_prompt},
+                      {"role": "user", "content": content}],
             response_format={"type": "json_object"},
-            temperature=0.3,
+            temperature=0.3
         )
         return key_name, json.loads(resp.choices[0].message.content)
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
-        return key_name, {
+        error_response = {
             "score": 0,
             "analysis": "Analysis failed due to a server error.",
             "evidence": str(e),
@@ -283,13 +421,17 @@ Your response MUST be a JSON object with the following keys:
             "confidence_rationale": "System error.",
             "recommendation": "Resolve the technical error to proceed."
         }
+        return key_name, error_response
     finally:
-        _restore_proxies(proxy_keys, original)
+        for k, v in original.items():
+            if v is not None:
+                os.environ[k] = v
 
 
 def call_openai_for_executive_summary(all_analyses):
     print("[AI] Generating Executive Summary...")
-    proxy_keys, original = _strip_proxies_temporarily()
+    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
+    original = {k: os.environ.pop(k, None) for k in proxy_keys}
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
@@ -298,20 +440,20 @@ def call_openai_for_executive_summary(all_analyses):
             [f"Key: {d['key']}\nScore: {d['analysis']['score']}\nAnalysis: {d['analysis']['analysis']}"
              for d in all_analyses]
         )
-        prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
-1. **Overall Summary** – brief, high-level overview.
-2. **Key Strengths** – the 2-3 strongest keys and why.
-3. **Primary Weaknesses** – the 2-3 weakest keys and the impact.
-4. **Strategic Focus** – the single most important key to improve.
+        summary_prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
+        1. **Overall Summary:** A brief, high-level overview of the brand's memorability performance.
+        2. **Key Strengths:** Identify the 2-3 strongest keys for the brand and explain why.
+        3. **Primary Weaknesses:** Identify the 2-3 weakest keys and explain the impact.
+        4. **Strategic Focus:** State the single most important key the brand should focus on to improve its overall memorability.
 
-Analyses:
----
-{analyses_text}
----
-"""
+        Here are the individual analyses to synthesize:
+        ---
+        {analyses_text}
+        ---
+        """
         resp = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": summary_prompt}],
             temperature=0.3
         )
         return resp.choices[0].message.content
@@ -319,12 +461,14 @@ Analyses:
         print(f"[ERROR] AI summary failed: {e}")
         return "Could not generate the executive summary due to an error."
     finally:
-        _restore_proxies(proxy_keys, original)
+        for k, v in original.items():
+            if v is not None:
+                os.environ[k] = v
 
 
-# -----------------------------------------------------------------------------------
-# MAIN ORCHESTRATOR (STREAM)
-# -----------------------------------------------------------------------------------
+# ===================================================================================
+# MAIN ORCHESTRATOR
+# ===================================================================================
 def run_full_scan_stream(url: str, cache: dict):
     start_time = time.time()
     budget = Config.SITE_BUDGET_SECS
@@ -335,31 +479,30 @@ def run_full_scan_stream(url: str, cache: dict):
     homepage_screenshot_b64 = None
     socials_found = False
 
-    queue = deque([(_clean_url(url), 0)])
-    seen_urls = {_clean_url(url)}
+    q = deque([(_clean_url(url), 0)])
+    seen = {_clean_url(url)}
 
     try:
         yield {"type": "status", "message": f"Scan initiated. Budget: {budget}s."}
 
-        while queue and len(pages_analyzed) < Config.CRAWL_MAX_PAGES:
+        while q and len(pages_analyzed) < Config.CRAWL_MAX_PAGES:
             elapsed = time.time() - start_time
             if elapsed > budget:
                 yield {"type": "status", "message": "Time budget exceeded. Finalizing analysis."}
                 break
 
-            current_url, depth = queue.popleft()
+            current_url, depth = q.popleft()
             yield {"type": "status", "message": f"Analyzing page {len(pages_analyzed)+1}/{Config.CRAWL_MAX_PAGES}: {current_url}"}
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-
             final_result = basic_result
+
             if should_render:
                 yield {"type": "status", "message": f"Basic fetch insufficient ({reason}). Escalating to JS renderer..."}
-                rendered_result = scrapingbee_html_fetcher(current_url, render_js=True)
-                if 200 <= rendered_result.status_code < 400 and rendered_result.html.strip():
-                    final_result = rendered_result
+                final_result = scrapingbee_html_fetcher(current_url, render_js=True)
 
+            # Take screenshot (rendered) for every page (you can change to only homepage to save credits)
             screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
@@ -370,20 +513,24 @@ def run_full_scan_stream(url: str, cache: dict):
 
             if final_result.html:
                 soup = BeautifulSoup(final_result.html, "lxml")
-                _strip_cookie_nodes(soup)
                 print(f"[DEBUG] Links found on {current_url}: {len(soup.find_all('a', href=True))} (rendered={final_result.from_renderer})")
 
+                # Strip cookie/consent nodes from text corpus
+                _strip_cookie_nodes(soup)
+
+                # first page — try socials
                 if len(pages_analyzed) == 0:
                     found = social_extractor(soup, current_url)
                     if found:
                         socials_found = True
                         yield {"type": "status", "message": f"Found social links: {list(found.values())}"}
 
+                # append text
                 for tag in soup(["script", "style"]):
                     tag.decompose()
-
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
+                # enqueue next level pages
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         href = a.get("href")
@@ -391,16 +538,16 @@ def run_full_scan_stream(url: str, cache: dict):
                             continue
                         if Config.BINARY_RE.search(href):
                             continue
-                        link_url = _clean_url(urljoin(current_url, href))
-                        if not _is_same_domain(url, link_url) or link_url in seen_urls:
+                        next_url = _clean_url(urljoin(current_url, href))
+                        if not _is_same_domain(url, next_url) or next_url in seen:
                             continue
 
-                        remaining_slots = Config.CRAWL_MAX_PAGES - (len(pages_analyzed) + len(queue))
+                        remaining_slots = Config.CRAWL_MAX_PAGES - (len(pages_analyzed) + len(q))
                         if remaining_slots <= 0:
                             break
 
-                        queue.append((link_url, depth + 1))
-                        seen_urls.add(link_url)
+                        q.append((next_url, depth + 1))
+                        seen.add(next_url)
 
             pages_analyzed.append(final_result)
 
