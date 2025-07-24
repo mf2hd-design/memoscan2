@@ -21,26 +21,27 @@ load_dotenv()
 # ===================================================================================
 class Config:
     # Budgets
-    SITE_BUDGET_SECS        = int(os.getenv("SITE_BUDGET_SECS", 60))
-    SITE_MAX_BUDGET_SECS    = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
+    SITE_BUDGET_SECS         = int(os.getenv("SITE_BUDGET_SECS", 60))
+    SITE_MAX_BUDGET_SECS     = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
 
     # Crawl
-    CRAWL_MAX_PAGES         = int(os.getenv("CRAWL_MAX_PAGES", 5))
-    CRAWL_MAX_DEPTH         = int(os.getenv("CRAWL_MAX_DEPTH", 2))
+    CRAWL_MAX_PAGES          = int(os.getenv("CRAWL_MAX_PAGES", 5))
+    CRAWL_MAX_DEPTH          = int(os.getenv("CRAWL_MAX_DEPTH", 2))
 
     # Timeouts
-    BASIC_TIMEOUT_SECS      = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
-    SCRAPINGBEE_TIMEOUT_SECS= int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
+    BASIC_TIMEOUT_SECS       = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
+    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
 
     # ScrapingBee retries/backoff
-    SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))
-    SCRAPINGBEE_BACKOFF_SECS= float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
-    SCRAPINGBEE_PROXY_MODE  = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
+    SCRAPINGBEE_MAX_RETRIES  = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))
+    SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
+    SCRAPINGBEE_PROXY_MODE   = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
+    SCRAPINGBEE_ALLOW_SCRIPT = os.getenv("SCRAPINGBEE_ALLOW_SCRIPT", "true").lower() == "true"
 
     # Render heuristics
-    RENDER_MIN_LINKS        = int(os.getenv("RENDER_MIN_LINKS", 15))
-    RENDER_MIN_TEXT_BYTES   = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
-    SPA_SIGNALS             = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
+    RENDER_MIN_LINKS         = int(os.getenv("RENDER_MIN_LINKS", 15))
+    RENDER_MIN_TEXT_BYTES    = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
+    SPA_SIGNALS              = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
 
     # Socials (must-detect)
     SOCIAL_PLATFORMS = {
@@ -106,7 +107,7 @@ def basic_fetcher(url: str) -> FetchResult:
         return FetchResult(url, "", 500, False)
 
 
-# ---------- ScrapingBee scenario building (CSS only + small JS helpers) ----------
+# ---------- ScrapingBee scenario building ----------
 CSS_CLICK_SELECTORS = [
     "#onetrust-accept-btn-handler",
     ".onetrust-accept-btn-handler",
@@ -125,74 +126,92 @@ CSS_CLICK_SELECTORS = [
     "button.consent-accept",
     "button.cookie-accept",
     "[id*='accept'][class*='cookie']",
-    "[class*='accept'][class*='cookie']"
+    "[class*='accept'][class*='cookie']",
+    # Some aria-label translations (will miss many, fallback to text search below)
+    "button[aria-label='Zulassen']",
+    "button[aria-label='Permitirlas']",
 ]
 
 TEXT_WORDS = [
-    "accept", "accept all", "allow", "agree",
-    "zulassen", "permitirlas", "ok", "got it"
+    "accept", "agree", "allow", "zulassen", "permitirlas",
+    "alle akzeptieren", "accept all", "accept cookies", "akzeptieren",
+    "i agree", "consent", "permit", "permite", "permitir"
 ]
 
+def _escape_for_js(lst):
+    return json.dumps(lst)
 
-def make_js_scenario(include_cookie_scripts: bool) -> dict:
-    """
-    Build a ScrapingBee-compatible js_scenario:
-      - waits
-      - optional CSS clicks
-      - JS that searches by innerText for cookie words
-      - JS that nukes overlays
-    """
-    if not include_cookie_scripts:
-        return {"instructions": [{"wait": 1000}]}
+def build_cookie_script() -> str:
+    # JS string that:
+    # 1) clicks by CSS selectors
+    # 2) clicks by text search (buttons/links/div[role=button])
+    # 3) hides any leftover overlays
+    css_list = _escape_for_js(CSS_CLICK_SELECTORS)
+    words_list = _escape_for_js(TEXT_WORDS)
 
-    instructions = [{"wait": 1200}]
-
-    # Optional CSS clicks
-    for sel in CSS_CLICK_SELECTORS:
-        instructions.append({
-            "click": sel,
-            "optional": True
-        })
-
-    # Script to click by text content
-    words_json = json.dumps(TEXT_WORDS)
-    script_click_by_text = f"""
-        (function() {{
-          const words = {words_json}.map(w => w.toLowerCase());
-          function matchText(el) {{
-            const t = (el.innerText || el.textContent || "").toLowerCase().trim();
-            return words.some(w => t.includes(w));
-          }}
-          const candidates = Array.from(document.querySelectorAll("button, a, input[type=button], input[type=submit], div, span"));
-          for (const el of candidates) {{
-            try {{
-              if (matchText(el)) {{
-                el.click();
-              }}
-            }} catch(e) {{}}
-          }}
-        }})();
-    """
-
-    instructions.append({"script": {"code": script_click_by_text}, "optional": True})
-
-    # Script to hide common overlays
-    kill_selectors = Config.COOKIE_GDPR_KILL_SELECTORS
-    kill_json = json.dumps(kill_selectors)
-    script_hide = f"""
-        (function(){{
+    script = f"""
+    (function() {{
+      try {{
+        const cssSelectors = {css_list};
+        const words = {words_list}.map(w => w.toLowerCase());
+        // 1) CSS based clicks
+        cssSelectors.forEach(sel => {{
           try {{
-            const kill = {kill_json};
-            document.querySelectorAll(kill.join(',')).forEach(el => {{
-              el.style.cssText = 'display:none!important;visibility:hidden!important;opacity:0!important;';
-            }});
-            document.body.style.overflow = 'auto';
+            const el = document.querySelector(sel);
+            if (el) el.click();
           }} catch(e) {{}}
-        }})();
+        }});
+        // 2) Text based clicks
+        const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+        for (const el of candidates) {{
+          const txt = (el.textContent || '').trim().toLowerCase();
+          if (!txt) continue;
+          if (words.some(w => txt.includes(w))) {{
+            try {{ el.click(); }} catch(e) {{}}
+          }}
+        }}
+        // 3) Hide overlays
+        const kill = [
+          "[id*='cookie']", "[class*='cookie']",
+          "[id*='consent']", "[class*='consent']",
+          "[id*='gdpr']",   "[class*='gdpr']",
+          "[id*='privacy']", "[class*='privacy']",
+          "iframe[src*='consent']", "iframe[src*='cookie']"
+        ];
+        document.querySelectorAll(kill.join(',')).forEach(el => {{
+          try {{
+            el.style.setProperty('display', 'none', 'important');
+            el.style.setProperty('visibility', 'hidden', 'important');
+            el.style.setProperty('opacity', '0', 'important');
+          }} catch(e) {{}}
+        }});
+        document.body && (document.body.style.overflow = 'auto');
+      }} catch(e) {{}}
+    }})();
     """
-    instructions.append({"script": {"code": script_hide}, "optional": True})
-    instructions.append({"wait": 400})
+    # Minify a bit to reduce chances of 400 because of long payload
+    return " ".join(line.strip() for line in script.splitlines() if line.strip())
 
+
+def make_js_scenario() -> dict:
+    """
+    If SCRAPINGBEE_ALLOW_SCRIPT=true: use wait + script + wait.
+    Else: a minimal fallback with only wait/click (optional) that should validate on all plans.
+    """
+    if Config.SCRAPINGBEE_ALLOW_SCRIPT:
+        return {
+            "instructions": [
+                {"wait": 1500},
+                {"script": build_cookie_script()},
+                {"wait": 500}
+            ]
+        }
+
+    # Fallback (no script)
+    instructions = [{"wait": 1500}]
+    for sel in CSS_CLICK_SELECTORS:
+        instructions.append({"click": sel, "optional": True})
+    instructions.append({"wait": 500})
     return {"instructions": instructions}
 
 
@@ -200,14 +219,13 @@ def _bee_params(url: str, *, render_js: bool, screenshot: bool, with_js: bool, w
     p = {
         "api_key": os.getenv("SCRAPINGBEE_API_KEY"),
         "url": url,
-        "render_js": render_js,
+        # ScrapingBee accepts true/false as booleans, keep them as bool
+        "render_js": True if render_js else False,
         "wait": wait_ms
     }
-    # Use js_scenario only for first try (with_js=True)
+
     if with_js and render_js:
-        p["js_scenario"] = json.dumps(make_js_scenario(include_cookie_scripts=True))
-    elif render_js:
-        p["js_scenario"] = json.dumps(make_js_scenario(include_cookie_scripts=False))
+        p["js_scenario"] = json.dumps(make_js_scenario())
 
     # Screenshot options
     if screenshot:
@@ -215,15 +233,13 @@ def _bee_params(url: str, *, render_js: bool, screenshot: bool, with_js: bool, w
             "screenshot": True,
             "window_width": 1280,
             "window_height": 1024,
-            "screenshot_full_page": False
+            "screenshot_full_page": False,
         })
-        # DO NOT block resources for screenshots or the banner CSS might not load
         p["block_resources"] = False
     else:
-        # We can safely block some resources for HTML
         p["block_resources"] = True
 
-    # proxy mode if we need it
+    # proxy mode if needed
     mode = Config.SCRAPINGBEE_PROXY_MODE
     if mode == "premium":
         p["premium_proxy"] = True
@@ -235,17 +251,19 @@ def _bee_params(url: str, *, render_js: bool, screenshot: bool, with_js: bool, w
 
 def _bee_call(url: str, *, render_js: bool, screenshot: bool):
     """
-    Try once WITH js_scenario (cookie killer).
-    If 4xx/5xx => retry ONCE WITHOUT js_scenario (gracefully degrade).
+    Try once WITH js_scenario.
+    If 4xx/5xx => retry ONCE WITHOUT it.
     """
     if screenshot:
-        render_js = True  # screenshot always after JS
+        render_js = True  # screenshot should reflect JS state
 
     tries = Config.SCRAPINGBEE_MAX_RETRIES + 1
     for attempt in range(tries):
-        with_js = (attempt == 0)  # only first attempt uses the heavy js_scenario
-        params = _bee_params(url, render_js=render_js, screenshot=screenshot, with_js=with_js,
-                             wait_ms=1000 if with_js else 3000)
+        with_js = (attempt == 0)
+        params = _bee_params(
+            url, render_js=render_js, screenshot=screenshot, with_js=with_js,
+            wait_ms=2000 if with_js else 2500
+        )
         try:
             r = requests.get(
                 "https://app.scrapingbee.com/api/v1/",
@@ -277,7 +295,6 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str | None:
     r = _bee_call(url, render_js=True, screenshot=True)  # force render for screenshot
     if not r:
         return None
-    # ScrapingBee returns raw image bytes here
     return base64.b64encode(r.content).decode("utf-8")
 
 
@@ -502,7 +519,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 yield {"type": "status", "message": f"Basic fetch insufficient ({reason}). Escalating to JS renderer..."}
                 final_result = scrapingbee_html_fetcher(current_url, render_js=True)
 
-            # Take screenshot (rendered) for every page (you can change to only homepage to save credits)
+            # Take screenshot (rendered) for every page (or only homepage if you prefer)
             screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
@@ -573,7 +590,7 @@ def run_full_scan_stream(url: str, cache: dict):
             yield result_obj
 
         yield {"type": "status", "message": "Generating Executive Summary..."}
-        summary_text = call_openai_for_executive_summary(all_results)
+        summary_text = call_openai_for_executive_summary(all_analyses=all_results)
         yield {"type": "summary", "text": summary_text}
         yield {"type": "complete", "message": "Analysis finished."}
 
