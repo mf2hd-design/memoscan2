@@ -89,57 +89,52 @@ def basic_fetcher(url: str) -> FetchResult:
         print(f"[BasicFetcher] ERROR for {url}: {e}")
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
-def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool = False):
-    """
-    Uses ScrapingBee for JavaScript rendering and/or screenshots.
-    Returns (FetchResult, screenshot_b64_or_None).
-    """
-    if get_screenshot:
-        render_js = True
-
-    print(f"[ScrapingBeeFetcher] Fetching {url} (render_js={render_js}, screenshot={get_screenshot})")
+def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
+    """Uses ScrapingBee to get HTML, rendering JS if necessary."""
+    print(f"[ScrapingBeeHTML] Fetching {url} (render_js={render_js})")
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
-    if not api_key:
-        return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=render_js), None
+    if not api_key: return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=render_js)
 
     params = {
         "api_key": api_key,
         "url": url,
         "render_js": "true" if render_js else "false",
-        "block_resources": "image,media,font",
+        "block_resources": "true",
+        "wait": "networkidle",
     }
-    
-    html = ""
-    screenshot_b64 = None
-    
     try:
-        if get_screenshot:
-            screenshot_params = params.copy()
-            screenshot_params.update({
-                "screenshot": "true",
-                "screenshot_full_page": "false",
-                "window_width": 1280,
-                "window_height": 1024,
-            })
-            res_screenshot = requests.get("https://app.scrapingbee.com/api/v1/", params=screenshot_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
-            res_screenshot.raise_for_status()
-            screenshot_b64 = base64.b64encode(res_screenshot.content).decode('utf-8')
-
-        # Always get HTML, even if we just took a screenshot
-        html_params = params.copy()
-        html_params["screenshot"] = "false"
-        res_html = requests.get("https://app.scrapingbee.com/api/v1/", params=html_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
-        res_html.raise_for_status()
-        html = res_html.text
-
-        return FetchResult(url, html, 200, from_renderer=render_js), screenshot_b64
-
+        res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+        res.raise_for_status()
+        return FetchResult(url, res.text, res.status_code, from_renderer=render_js)
     except requests.exceptions.HTTPError as he:
-        print(f"[ScrapingBeeFetcher] HTTP ERROR for {url}: {he.response.status_code} {he.response.text[:500]}")
-        return FetchResult(url, f"Failed via ScrapingBee: {he.response.text}", he.response.status_code, from_renderer=render_js), None
+        print(f"[ScrapingBeeHTML] HTTP ERROR for {url}: {he.response.status_code} {he.response.text[:500]}")
+        return FetchResult(url, f"Failed via ScrapingBee: {he.response.text}", he.response.status_code, from_renderer=render_js)
     except Exception as e:
-        print(f"[ScrapingBeeFetcher] ERROR for {url}: {e}")
-        return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js), None
+        print(f"[ScrapingBeeHTML] ERROR for {url}: {e}")
+        return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js)
+
+def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str or None:
+    """Uses ScrapingBee to get a screenshot, rendering JS if necessary."""
+    print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js={render_js})")
+    api_key = os.getenv("SCRAPINGBEE_API_KEY")
+    if not api_key: return None
+
+    params = {
+        "api_key": api_key, "url": url, "render_js": "true" if render_js else "false",
+        "screenshot": "true", "response_format": "base64", "format": "png",
+        "window_width": 1280, "window_height": 1024,
+        "block_resources": "false", "wait": "networkidle",
+    }
+    try:
+        res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+        res.raise_for_status()
+        return res.text # Already base64 encoded
+    except requests.exceptions.HTTPError as he:
+        print(f"[ScrapingBeeScreenshot] HTTP ERROR for {url}: {he.response.status_code} {he.response.text[:500]}")
+        return None
+    except Exception as e:
+        print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
+        return None
 
 def render_policy(result: FetchResult) -> (bool, str):
     """Decides if we need to use ScrapingBee based on improved heuristics."""
@@ -319,15 +314,13 @@ def run_full_scan_stream(url: str, cache: dict):
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            final_result = basic_result
             
+            final_result = basic_result
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
-                rendered_result, _ = scrapingbee_fetcher(current_url, render_js=True, get_screenshot=False)
-                if 200 <= rendered_result.status_code < 400 and rendered_result.html.strip():
-                    final_result = rendered_result
+                final_result = scrapingbee_html_fetcher(current_url, render_js=True)
 
-            _, screenshot_b64 = scrapingbee_fetcher(current_url, render_js=final_result.from_renderer, get_screenshot=True)
+            screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
                     homepage_screenshot_b64 = screenshot_b64
