@@ -1,4 +1,3 @@
-# scanner.py
 import os
 import re
 import json
@@ -30,7 +29,7 @@ class Config:
     # Networking
     BASIC_TIMEOUT_SECS = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
     SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
-    SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 2))
+    SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))  # 0 = no retry, 1 = 1 retry, etc.
     SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
     # none|premium|stealth
     SCRAPINGBEE_PROXY_MODE = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")
@@ -46,6 +45,16 @@ class Config:
         "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+"),
     }
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
+
+    # Remove these from the DOM text we feed to the LLM (in case banners survived)
+    COOKIE_GDPR_KILL_SELECTORS = [
+        "[id*='cookie']", "[class*='cookie']",
+        "[id*='consent']", "[class*='consent']",
+        "[id*='gdpr']",   "[class*='gdpr']",
+        "[id*='privacy']", "[class*='privacy']",
+        "iframe[src*='consent']",
+        "iframe[src*='cookie']"
+    ]
 
 
 # -----------------------------------------------------------------------------------
@@ -63,10 +72,6 @@ def _clean_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     return url.split("#")[0]
-
-def guess_cmp_cookie(reg_domain: str):
-    # Stub for pre-consent cookie injection (return a cookie string if you have a mapping per domain)
-    return None
 
 
 # -----------------------------------------------------------------------------------
@@ -100,46 +105,25 @@ def basic_fetcher(url: str) -> FetchResult:
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
 
-# -------- ScrapingBee js_scenario (evaluate + optional clicks) --------
-def make_js_scenario() -> dict:
-    cookie_selectors = [
-        "#onetrust-accept-btn-handler",
-        ".onetrust-accept-btn-handler",
-        ".cookie-accept", ".cookies-accept", ".cc-allow", ".cky-btn-accept",
-        "button[aria-label='Accept']",
-        "button[aria-label='Accept all']",
-        "button[name='accept']",
-        "[data-testid='cookie-accept']"
-    ]
+# -------- ScrapingBee js_scenario (click-only + optional=True) --------
+CLICK_SELECTORS = [
+    "#onetrust-accept-btn-handler",
+    ".onetrust-accept-btn-handler",
+    ".cookie-accept", ".cookies-accept", ".cc-allow", ".cky-btn-accept",
+    "button[aria-label='Accept']",
+    "button[aria-label='Accept all']",
+    "button[name='accept']",
+    "[data-testid='cookie-accept']",
+    "button:has-text('Accept')",         # ScrapingBee supports Playwright-like selectors
+    "button:has-text('Accept All')",
+    "button:has-text('I agree')",
+    "button:has-text('Agree')"
+]
 
+def make_js_scenario_click_only() -> dict:
     instructions = [{"wait": 1200}]
-    for sel in cookie_selectors:
+    for sel in CLICK_SELECTORS:
         instructions.append({"click": sel, "optional": True})
-
-    instructions.append({"wait": 300})
-
-    # Final kill pass: hide any left-over consent UI
-    instructions.append({
-        "evaluate": """
-          (() => {
-            const kill = [
-              "[id*=cookie]", "[class*=cookie]",
-              "[id*=consent]", "[class*=consent]",
-              "[id*=gdpr]",   "[class*=gdpr]",
-              "[id*=privacy]","[class*=privacy]",
-              "iframe[src*='consent']",
-              "iframe[src*='cookie']"
-            ];
-            try {
-              document.querySelectorAll(kill.join(',')).forEach(el => {
-                el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;";
-              });
-              document.body.style.overflow = "auto";
-            } catch(e) {}
-          })();
-        """
-    })
-
     instructions.append({"wait": 400})
     return {"instructions": instructions}
 
@@ -148,16 +132,12 @@ def build_scrapingbee_params(
     url: str,
     render_js: bool,
     want_screenshot: bool,
-    include_cookies: bool = False,
-    use_js_scenario: bool = True,
-    wait_ms: int = 1000,
+    use_js_scenario: bool,
+    wait_ms: int,
 ) -> dict:
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
     if not api_key:
         raise RuntimeError("SCRAPINGBEE_API_KEY not set")
-
-    e = tldextract.extract(url)
-    reg_domain = f"{e.domain}.{e.suffix}".lower()
 
     params: dict = {
         "api_key": api_key,
@@ -166,14 +146,9 @@ def build_scrapingbee_params(
         "wait": wait_ms,
     }
 
-    # Only add js_scenario for JS-rendered requests
     if use_js_scenario and render_js:
-        params["js_scenario"] = json.dumps(make_js_scenario())
-
-    if include_cookies:
-        ck = guess_cmp_cookie(reg_domain)
-        if ck:
-            params["cookies"] = ck
+        # ScrapingBee expects a JSON string for js_scenario
+        params["js_scenario"] = json.dumps(make_js_scenario_click_only())
 
     if want_screenshot:
         params.update({
@@ -196,12 +171,11 @@ def build_scrapingbee_params(
 
 
 def _bee_request(url: str, *, render_js: bool, want_screenshot: bool,
-                 include_cookies: bool, wait_ms: int, use_js_scenario: bool) -> requests.Response:
+                 use_js_scenario: bool, wait_ms: int) -> requests.Response:
     params = build_scrapingbee_params(
-        url,
+        url=url,
         render_js=render_js,
         want_screenshot=want_screenshot,
-        include_cookies=include_cookies,
         use_js_scenario=use_js_scenario,
         wait_ms=wait_ms
     )
@@ -213,28 +187,22 @@ def _bee_request(url: str, *, render_js: bool, want_screenshot: bool,
 
 
 def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
-    """
-    Try:
-      1) with js_scenario (if render_js=True)
-      2) without js_scenario
-    All screenshot calls will force render_js=True.
-    """
+    # Always render_js for screenshots
     if want_screenshot and not render_js:
         render_js = True
 
-    for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES + 1):
-        include_cookies = False
+    attempts = Config.SCRAPINGBEE_MAX_RETRIES + 1
+    for attempt in range(attempts):
         wait_ms = 1000 if attempt == 0 else 3000
-        use_js = (attempt == 0)  # first try: with scenario, second: without
+        use_js = (attempt == 0)  # first try with js_scenario, second without
 
         try:
             res = _bee_request(
                 url,
                 render_js=render_js,
                 want_screenshot=want_screenshot,
-                include_cookies=include_cookies,
-                wait_ms=wait_ms,
-                use_js_scenario=use_js
+                use_js_scenario=use_js,
+                wait_ms=wait_ms
             )
             if res.status_code < 400:
                 return res
@@ -242,7 +210,7 @@ def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
         except requests.exceptions.RequestException as e:
             print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
 
-        if attempt < Config.SCRAPINGBEE_MAX_RETRIES:
+        if attempt < attempts - 1:
             time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS * (attempt + 1))
 
     return None
@@ -261,14 +229,12 @@ def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
 
 
 def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str:
-    # Always render JS for screenshots
-    render_js = True
+    render_js = True  # force for screenshots
     print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js={render_js})")
     try:
         res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=True)
         if not res or res.status_code >= 400:
             return None
-        # Binary PNG → base64
         return base64.b64encode(res.content).decode("utf-8")
     except Exception as e:
         print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
@@ -296,6 +262,15 @@ def render_policy(result: FetchResult):
             return True, "spa_signal"
 
     return False, "ok"
+
+
+def _strip_cookie_nodes(soup: BeautifulSoup):
+    try:
+        for sel in Config.COOKIE_GDPR_KILL_SELECTORS:
+            for el in soup.select(sel):
+                el.decompose()
+    except Exception:
+        pass
 
 
 def social_extractor(soup: BeautifulSoup, base_url: str) -> dict:
@@ -508,6 +483,7 @@ def run_full_scan_stream(url: str, cache: dict):
 
             if final_result.html:
                 soup = BeautifulSoup(final_result.html, "lxml")
+                _strip_cookie_nodes(soup)
                 print(f"[DEBUG] Links found on {current_url}: {len(soup.find_all('a', href=True))} (rendered={final_result.from_renderer})")
 
                 if len(pages_analyzed) == 0:
