@@ -10,7 +10,6 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 from dotenv import load_dotenv
 import httpx
-import gevent
 from collections import deque
 
 load_dotenv()
@@ -24,7 +23,7 @@ class Config:
     CRAWL_MAX_PAGES = int(os.getenv("CRAWL_MAX_PAGES", 5))
     CRAWL_MAX_DEPTH = int(os.getenv("CRAWL_MAX_DEPTH", 2))
     BASIC_TIMEOUT_SECS = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
-    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 25))
+    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
     RENDER_MIN_LINKS = int(os.getenv("RENDER_MIN_LINKS", 15))
     RENDER_MIN_TEXT_BYTES = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
     SPA_SIGNALS = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
@@ -32,10 +31,20 @@ class Config:
         "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
         "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+")
     }
+    BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
 # -----------------------------------------------------------------------------------
-# HELPER FUNCTIONS (THIS SECTION WAS MISSING)
+# HELPER FUNCTIONS
 # -----------------------------------------------------------------------------------
+
+def _host(u: str) -> str:
+    """Normalizes a hostname by removing 'www.' and lowercasing."""
+    host = urlparse(u).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+def _is_same_domain(home: str, test: str) -> bool:
+    """Checks if two URLs belong to the same normalized domain."""
+    return _host(home) == _host(test)
 
 def _clean_url(url: str) -> str:
     """Cleans and standardizes a URL."""
@@ -43,10 +52,6 @@ def _clean_url(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     return url.split("#")[0]
-
-def _is_same_domain(home: str, test: str) -> bool:
-    """Checks if a test URL is on the same domain as the home URL."""
-    return urlparse(home).netloc == urlparse(test).netloc
 
 def find_priority_page(discovered_links: list, keywords: list) -> str or None:
     """Searches a list of discovered links for the best match based on keywords."""
@@ -89,6 +94,9 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
     Uses ScrapingBee for JavaScript rendering and/or screenshots.
     Returns (FetchResult, screenshot_b64_or_None).
     """
+    if get_screenshot:
+        render_js = True
+
     print(f"[ScrapingBeeFetcher] Fetching {url} (render_js={render_js}, screenshot={get_screenshot})")
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
     if not api_key:
@@ -101,52 +109,56 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
         "block_resources": "image,media,font",
     }
     
-    if get_screenshot:
-        params.update({
-            "screenshot": "true",
-            "screenshot_full_page": "false",
-            "window_width": 1280,
-            "window_height": 1024,
-        })
+    html = ""
+    screenshot_b64 = None
     
     try:
-        res = requests.get(
-            "https://app.scrapingbee.com/api/v1/",
-            params=params,
-            timeout=Config.SCRAPINGBEE_TIMEOUT_SECS
-        )
-        res.raise_for_status()
-
-        screenshot_b64 = None
-        html = ""
-
-        # ScrapingBee returns binary for screenshot, text for HTML
+        # If we need a screenshot, we must make a dedicated call for it.
         if get_screenshot:
-            screenshot_b64 = base64.b64encode(res.content).decode('utf-8')
-        else:
-            html = res.text
+            screenshot_params = params.copy()
+            screenshot_params.update({
+                "screenshot": "true",
+                "screenshot_full_page": "false",
+                "window_width": 1280,
+                "window_height": 1024,
+            })
+            res_screenshot = requests.get("https://app.scrapingbee.com/api/v1/", params=screenshot_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+            res_screenshot.raise_for_status()
+            screenshot_b64 = base64.b64encode(res_screenshot.content).decode('utf-8')
 
-        return FetchResult(url, html, res.status_code, from_renderer=render_js), screenshot_b64
+        # If we need HTML (always, unless we only wanted a screenshot), get it.
+        # This ensures we get HTML even if the screenshot call was separate.
+        if not get_screenshot or render_js:
+            html_params = params.copy()
+            html_params["screenshot"] = "false"
+            res_html = requests.get("https://app.scrapingbee.com/api/v1/", params=html_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+            res_html.raise_for_status()
+            html = res_html.text
+
+        return FetchResult(url, html, 200, from_renderer=render_js), screenshot_b64
 
     except Exception as e:
         print(f"[ScrapingBeeFetcher] ERROR for {url}: {e}")
         return FetchResult(url, f"Failed to fetch via ScrapingBee: {e}", 500, from_renderer=render_js), None
 
 def render_policy(result: FetchResult) -> (bool, str):
-    """Decides if we need to use ScrapingBee based on heuristics."""
+    """Decides if we need to use ScrapingBee based on your improved heuristics."""
     if result.status_code >= 400:
         return True, "http_error"
-    if len(result.html.encode('utf-8')) < Config.RENDER_MIN_TEXT_BYTES:
-        return True, "small_text"
-    
+
     soup = BeautifulSoup(result.html, "lxml")
-    if len(soup.find_all("a")) < Config.RENDER_MIN_LINKS:
+    visible_text_len = len(soup.get_text(" ", strip=True))
+    if visible_text_len < Config.RENDER_MIN_TEXT_BYTES:
+        return True, "small_text"
+
+    if len(soup.find_all("a", href=True)) < Config.RENDER_MIN_LINKS:
         return True, "few_links"
-    
+
+    lower_html = result.html.lower()
     for signal in Config.SPA_SIGNALS:
-        if signal in result.html:
+        if signal in lower_html:
             return True, "spa_signal"
-    
+
     return False, "ok"
 
 def social_extractor(soup, base_url):
@@ -315,15 +327,16 @@ def run_full_scan_stream(url: str, cache: dict):
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            
             final_result = basic_result
+            
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
                 rendered_result, _ = scrapingbee_fetcher(current_url, render_js=True, get_screenshot=False)
                 if 200 <= rendered_result.status_code < 400 and rendered_result.html.strip():
                     final_result = rendered_result
 
-            _, screenshot_b64 = scrapingbee_fetcher(current_url, render_js=final_result.from_renderer, get_screenshot=True)
+            # Screenshot is now a separate, guaranteed-rendered call.
+            _, screenshot_b64 = scrapingbee_fetcher(current_url, get_screenshot=True)
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
                     homepage_screenshot_b64 = screenshot_b64
@@ -345,11 +358,21 @@ def run_full_scan_stream(url: str, cache: dict):
 
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
-                        link_url = _clean_url(urljoin(current_url, a["href"]))
-                        if _is_same_domain(url, link_url) and link_url not in seen_urls:
-                            if len(seen_urls) < 200:
-                                queue.append((link_url, depth + 1))
-                                seen_urls.add(link_url)
+                        href = a.get("href")
+                        if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+                            continue
+                        if Config.BINARY_RE.search(href):
+                            continue
+                        link_url = _clean_url(urljoin(current_url, href))
+                        if not _is_same_domain(url, link_url) or link_url in seen_urls:
+                            continue
+                        
+                        remaining_slots = Config.CRAWL_MAX_PAGES - (len(pages_analyzed) + len(queue))
+                        if remaining_slots <= 0:
+                            break
+                        
+                        queue.append((link_url, depth + 1))
+                        seen_urls.add(link_url)
             
             pages_analyzed.append(final_result)
 
