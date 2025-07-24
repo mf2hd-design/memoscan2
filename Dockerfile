@@ -1,20 +1,23 @@
 # Use an official, slim Python image.
 FROM python:3.11-slim
 
+# Set environment variables
 ENV PYTHONUNBUFFERED True
+
+# Set the working directory inside the container
 WORKDIR /app
 
+# Copy the requirements file into the container
 COPY requirements.txt .
+
+# Install the Python packages
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy the rest of your application code into the container
 COPY . .
 
-# EXPOSE is mainly for documentation; the CMD line is what matters.
+# Tell Render which port the container is listening on.
 EXPOSE 10000
 
-#
-# --- THE FIX ---
-# Switch from the default 'sync' worker to the 'gevent' worker,
-# which is designed for streaming and long-lived connections.
-#
-CMD gunicorn --timeout 300 -k gevent -b 0.0.0.0:${PORT} app:app
+# The command to run when the container starts.
+CMD gunicorn -k gevent -b 0.0.0.0:${PORT} app:app
