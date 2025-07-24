@@ -379,4 +379,4 @@ def run_full_scan_stream(url: str, cache: dict):
 
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
-        yield {'type': 'error', 'message': f'A critical error occurred: {e}'}```
+        yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
