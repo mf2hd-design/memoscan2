@@ -21,16 +21,16 @@ load_dotenv()
 # ===================================================================================
 class Config:
     # Budgets
-    SITE_BUDGET_SECS         = int(os.getenv("SITE_BUDGET_SECS", 60))
-    SITE_MAX_BUDGET_SECS     = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
+    SITE_BUDGET_SECS         = int(os.getenv("SITE_BUDGET_SECS", 120))
+    SITE_MAX_BUDGET_SECS     = int(os.getenv("SITE_MAX_BUDGET_SECS", 150))
 
     # Crawl
     CRAWL_MAX_PAGES          = int(os.getenv("CRAWL_MAX_PAGES", 5))
     CRAWL_MAX_DEPTH          = int(os.getenv("CRAWL_MAX_DEPTH", 2))
 
     # Timeouts
-    BASIC_TIMEOUT_SECS       = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
-    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
+    BASIC_TIMEOUT_SECS       = int(os.getenv("BASIC_TIMEOUT_SECS", 20))
+    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 60))
 
     # ScrapingBee retries/backoff
     SCRAPINGBEE_MAX_RETRIES  = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))
