@@ -4,6 +4,7 @@ import requests
 import json
 import base64
 import uuid
+import time
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 from openai import OpenAI
@@ -14,126 +15,105 @@ import gevent
 load_dotenv()
 
 # -----------------------------------------------------------------------------------
-# Helper Functions
+# SECTION 5: CONFIGURATION
 # -----------------------------------------------------------------------------------
-
-def _clean_url(url: str) -> str:
-    """Cleans and standardizes a URL."""
-    url = url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-    return url.split("#")[0]
-
-def _is_same_domain(home: str, test: str) -> bool:
-    """Checks if a test URL is on the same domain as the home URL."""
-    return urlparse(home).netloc == urlparse(test).netloc
-
-def find_priority_page(discovered_links: list, keywords: list) -> str or None:
-    """Searches a list of discovered links for the best match based on keywords."""
-    for link_url, link_text in discovered_links:
-        for keyword in keywords:
-            if keyword in link_url.lower() or keyword in link_text.lower():
-                return link_url
-    return None
-
-# -----------------------------------------------------------------------------------
-# UNIFIED Fetching and Screenshot Function
-# -----------------------------------------------------------------------------------
-
-def fetch_content_and_screenshot(url: str):
-    """
-    Uses the screenshot API to get both the screenshot AND the rendered HTML.
-    This bypasses anti-bot protections that block simple 'requests.get()'.
-    """
-    print(f"[API] Fetching content and screenshot for {url}")
-    try:
-        api_key = os.getenv("SCREENSHOT_API_KEY")
-        if not api_key:
-            print("[ERROR] SCREENSHOT_API_KEY environment variable not set.")
-            return None, None
-
-        api_url = "https://shot.screenshotapi.net/screenshot"
-        
-        # --- THIS IS THE CRITICAL FIX ---
-        # Add a 'delay' of 5 seconds to ensure all JavaScript has finished rendering
-        # before the API captures the HTML.
-        params = {
-            "token": api_key,
-            "url": url,
-            "output": "json",
-            "file_type": "png",
-            "width": 1280,
-            "height": 1024,
-            "wait_for_event": "networkidle",
-            "hide_cookie_banners": "true",
-            "html": "true",
-            "delay": 5000 # Wait 5 seconds after network idle
-        }
-        
-        response = requests.get(api_url, params=params, timeout=180) # Increased timeout
-        response.raise_for_status()
-        
-        data = response.json()
-        
-        screenshot_response = requests.get(data["screenshot"], timeout=60)
-        screenshot_response.raise_for_status()
-        screenshot_b64 = base64.b64encode(screenshot_response.content).decode('utf-8')
-        
-        html_content = data.get("html", "")
-        
-        print(f"[API] Successfully fetched content for {url}.")
-        return screenshot_b64, html_content
-
-    except requests.exceptions.RequestException as e:
-        print(f"[ERROR] API fetch failed for {url}: {e}")
-        return None, None
-
-# -----------------------------------------------------------------------------------
-# Social Media Scraping Function
-# -----------------------------------------------------------------------------------
-
-def get_social_media_text(soup, base_url):
-    """Finds all potential social media links, intelligently selects the best one, and scrapes its content."""
-    social_text = ""
-    social_platforms = {
-        'twitter': re.compile(r'twitter\.com/'),
-        'linkedin': re.compile(r'linkedin\.com/')
+class Config:
+    SITE_BUDGET_SECS = int(os.getenv("SITE_BUDGET_SECS", 60))
+    SITE_MAX_BUDGET_SECS = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
+    CRAWL_MAX_PAGES = int(os.getenv("CRAWL_MAX_PAGES", 5))
+    CRAWL_MAX_DEPTH = int(os.getenv("CRAWL_MAX_DEPTH", 2))
+    BASIC_TIMEOUT_SECS = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
+    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 25))
+    RENDER_MIN_LINKS = int(os.getenv("RENDER_MIN_LINKS", 15))
+    RENDER_MIN_TEXT_BYTES = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
+    SPA_SIGNALS = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
+    SOCIAL_PLATFORMS = {
+        "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
+        "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+")
     }
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    for platform, pattern in social_platforms.items():
-        candidate_tags = soup.find_all('a', href=pattern)
-        best_url = None
-        
-        if candidate_tags:
-            good_links = [
-                tag['href'] for tag in candidate_tags 
-                if 'intent' not in tag['href'] and 
-                   'share' not in tag['href'] and 
-                   '/p/' not in tag['href']
-            ]
-            
-            if good_links:
-                best_url = sorted(good_links, key=len)[0]
-
-        if best_url:
-            full_url = urljoin(base_url, best_url)
-            print(f"[Scanner] Found and scraping best {platform.capitalize()} link: {full_url}")
-            try:
-                res = requests.get(full_url, headers=headers, timeout=15)
-                if res.ok:
-                    social_soup = BeautifulSoup(res.text, "html.parser")
-                    for tag in social_soup(["script", "style", "nav", "footer", "header", "aside"]):
-                        tag.decompose()
-                    social_text += f"\n\n--- Social Media Content ({platform.capitalize()}) ---\n"
-                    social_text += social_soup.get_text(" ", strip=True)[:2000]
-            except Exception as e:
-                print(f"[WARN] Failed to scrape {platform}: {e}")
-                
-    return social_text
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Functions
+# SECTION 4: ARCHITECTURE (Fetchers, Policy, Extractor)
+# -----------------------------------------------------------------------------------
+
+class FetchResult:
+    def __init__(self, url, html, status_code, from_renderer):
+        self.url = url
+        self.html = html or ""
+        self.status_code = status_code
+        self.from_renderer = from_renderer
+
+def basic_fetcher(url: str) -> FetchResult:
+    """Performs a simple, fast HTTP GET request."""
+    print(f"[BasicFetcher] Fetching {url}")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    try:
+        with httpx.Client(headers=headers, follow_redirects=True) as client:
+            res = client.get(url, timeout=Config.BASIC_TIMEOUT_SECS)
+            res.raise_for_status()
+            return FetchResult(url, res.text, res.status_code, from_renderer=False)
+    except Exception as e:
+        print(f"[BasicFetcher] ERROR for {url}: {e}")
+        return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
+
+def scrapingbee_fetcher(url: str, get_screenshot: bool = False):
+    """Uses ScrapingBee for JavaScript rendering and screenshots."""
+    print(f"[ScrapingBeeFetcher] Fetching {url} (screenshot: {get_screenshot})")
+    api_key = os.getenv("SCRAPINGBEE_API_KEY")
+    if not api_key: return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=True), None
+    
+    params = {
+        "api_key": api_key,
+        "url": url,
+        "render_js": "true",
+        "block_ads": "true",
+        "block_resources": "image,media,font",
+        "screenshot": "true" if get_screenshot else "false",
+        "window_width": 1280,
+        "window_height": 1024,
+    }
+    try:
+        res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+        res.raise_for_status()
+        
+        screenshot_b64 = base64.b64encode(res.content).decode('utf-8') if get_screenshot else None
+        
+        html = res.headers.get("Spb-Resolved-Url") and res.text or ""
+        
+        return FetchResult(url, html, res.status_code, from_renderer=True), screenshot_b64
+    except Exception as e:
+        print(f"[ScrapingBeeFetcher] ERROR for {url}: {e}")
+        return FetchResult(url, f"Failed to fetch via ScrapingBee: {e}", 500, from_renderer=True), None
+
+def render_policy(result: FetchResult) -> (bool, str):
+    """Decides if we need to use ScrapingBee based on heuristics."""
+    if result.status_code >= 400:
+        return True, "http_error"
+    if len(result.html) < Config.RENDER_MIN_TEXT_BYTES:
+        return True, "small_text"
+    
+    soup = BeautifulSoup(result.html, "html.parser")
+    if len(soup.find_all("a")) < Config.RENDER_MIN_LINKS:
+        return True, "few_links"
+    
+    for signal in Config.SPA_SIGNALS:
+        if signal in result.html:
+            return True, "spa_signal"
+    
+    return False, "ok"
+
+def social_extractor(soup, base_url):
+    """Finds the best social media profile links."""
+    found_socials = {}
+    for platform, pattern in Config.SOCIAL_PLATFORMS.items():
+        links = {tag['href'] for tag in soup.find_all('a', href=pattern)}
+        if links:
+            best_link = min(links, key=len)
+            found_socials[platform] = urljoin(base_url, best_link)
+    return found_socials
+
+# -----------------------------------------------------------------------------------
+# AI Analysis Functions (COMPLETE AND UNTRUNCATED)
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -259,93 +239,90 @@ def call_openai_for_executive_summary(all_analyses):
                 os.environ[key] = value
 
 # -----------------------------------------------------------------------------------
-# Main Orchestrator Function
+# Main Orchestrator
 # -----------------------------------------------------------------------------------
 def run_full_scan_stream(url: str, cache: dict):
-    """The main generator function that orchestrates the entire scan process."""
+    start_time = time.time()
+    budget = Config.SITE_BUDGET_SECS
+    escalated = False
+    
+    pages_analyzed = []
+    text_corpus = ""
+    social_corpus = ""
+    homepage_screenshot_b64 = None
+    socials_found = False
+    
+    queue = [(_clean_url(url), 0)]
+    seen_urls = {_clean_url(url)}
+
     try:
-        yield {'type': 'status', 'message': 'Step 1/5: Initializing scan...'}
-        cleaned_url = _clean_url(url)
+        yield {'type': 'status', 'message': f'Scan initiated. Budget: {budget}s.'}
 
-        yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
-        homepage_screenshot_b64, homepage_html = fetch_content_and_screenshot(cleaned_url)
-        if not homepage_html:
-            raise Exception("Could not fetch homepage content. The site may be blocking automation.")
-        
-        if homepage_screenshot_b64:
-            image_id = str(uuid.uuid4())
-            cache[image_id] = homepage_screenshot_b64
-            yield {'type': 'screenshot_ready', 'id': image_id, 'url': cleaned_url}
+        while queue and len(pages_analyzed) < Config.CRAWL_MAX_PAGES:
+            elapsed = time.time() - start_time
+            if elapsed > budget:
+                yield {'type': 'status', 'message': 'Time budget exceeded. Finalizing analysis.'}
+                break
 
-        homepage_soup = BeautifulSoup(homepage_html, "html.parser")
-        
-        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
-        if social_corpus:
-             yield {'type': 'status', 'message': 'Social media text captured.'}
-        else:
-             yield {'type': 'status', 'message': 'No social media links found.'}
+            current_url, depth = queue.pop(0)
+            yield {'type': 'status', 'message': f'Analyzing page {len(pages_analyzed) + 1}/{Config.CRAWL_MAX_PAGES}: {current_url}'}
 
-        discovered_links = []
-        for a in homepage_soup.find_all("a", href=True):
-            link_url = urljoin(cleaned_url, a["href"])
-            if _is_same_domain(cleaned_url, link_url):
-                discovered_links.append((link_url, a.get_text(strip=True)))
-
-        yield {'type': 'status', 'message': 'Identifying key pages...'}
-        KEYWORD_MAP = {
-            "About Us": ["about", "company", "who we are", "mission", "our story"],
-            "Products/Services": ["products", "services", "solutions", "what we do", "platform", "offerings"],
-            "News": ["news", "press", "blog", "media", "insights", "resources"],
-            "Investor Relations": ["investors", "ir", "relations"]
-        }
-        priority_pages = [cleaned_url]
-        found_urls = {cleaned_url}
-        for page_type, keywords in KEYWORD_MAP.items():
-            found_url = find_priority_page(discovered_links, keywords)
-            if found_url and found_url not in found_urls:
-                priority_pages.append(found_url)
-                found_urls.add(found_url)
-        
-        while len(priority_pages) < 5:
-            for link_url, _ in discovered_links:
-                if len(priority_pages) >= 5: break
-                if link_url not in found_urls:
-                    priority_pages.append(link_url)
-                    found_urls.add(link_url)
-            if len(priority_pages) < 5: break
-
-        yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
-        text_corpus = ""
-        
-        for i, page_url in enumerate(priority_pages):
-            yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
+            basic_result = basic_fetcher(current_url)
+            should_render, reason = render_policy(basic_result)
             
-            if page_url == cleaned_url:
-                page_html = homepage_html
-            else:
-                _, page_html = fetch_content_and_screenshot(page_url)
-            
-            if page_html:
-                soup = BeautifulSoup(page_html, "html.parser")
-                for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
-                    tag.decompose()
-                text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + soup.get_text(" ", strip=True)
+            final_result = basic_result
+            if should_render:
+                yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
+                rendered_result, _ = scrapingbee_fetcher(current_url, get_screenshot=False)
+                if rendered_result and rendered_result.html:
+                    final_result = rendered_result
 
-        full_corpus = (text_corpus + social_corpus)[:30000]
+            _, screenshot_b64 = scrapingbee_fetcher(current_url, get_screenshot=True)
+            if screenshot_b64:
+                if len(pages_analyzed) == 0: homepage_screenshot_b64 = screenshot_b64
+                image_id = str(uuid.uuid4())
+                cache[image_id] = screenshot_b64
+                yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
+
+            if final_result.html:
+                soup = BeautifulSoup(final_result.html, "html.parser")
+                if len(pages_analyzed) == 0:
+                    found = social_extractor(soup, current_url)
+                    if found:
+                        socials_found = True
+                        yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
+
+                for tag in soup(["script", "style", "nav", "footer", "aside", "header"]): tag.decompose()
+                text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
+                
+                if depth < Config.CRAWL_MAX_DEPTH:
+                    for a in soup.find_all("a", href=True):
+                        link_url = _clean_url(urljoin(current_url, a["href"]))
+                        if _is_same_domain(url, link_url) and link_url not in seen_urls:
+                            queue.append((link_url, depth + 1))
+                            seen_urls.add(link_url)
+            
+            pages_analyzed.append(final_result)
+
+            if not escalated and elapsed < Config.SITE_BUDGET_SECS:
+                pages_rendered_by_bee = sum(1 for p in pages_analyzed if p.from_renderer)
+                if len(pages_analyzed) >= 3 and pages_rendered_by_bee >= 2 and not socials_found:
+                    budget = Config.SITE_MAX_BUDGET_SECS
+                    escalated = True
+                    yield {'type': 'status', 'message': f'Warning: High JS usage and no socials found. Escalating budget to {budget}s.'}
+
+        yield {'type': 'status', 'message': 'Crawl complete. Starting AI analysis...'}
+        brand_summary = call_openai_for_synthesis(text_corpus)
         
-        yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
-        brand_summary = call_openai_for_synthesis(full_corpus)
-        
-        yield {'type': 'status', 'message': 'Step 4/5: Performing detailed analysis...'}
         all_results = []
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
-            key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
+            key_name, result_json = analyze_memorability_key(key, prompt, text_corpus, homepage_screenshot_b64, brand_summary)
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
             yield result_obj
         
-        yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
+        yield {'type': 'status', 'message': 'Generating Executive Summary...'}
         summary_text = call_openai_for_executive_summary(all_results)
         yield {'type': 'summary', 'text': summary_text}
         
