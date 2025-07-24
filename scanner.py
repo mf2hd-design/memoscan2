@@ -1,13 +1,12 @@
-# scanner.py  (Option B: js_scenario steps are OPTIONAL so ScrapingBee won't 500 on missing selectors)
-
+# scanner.py
 import os
 import re
 import json
+import time
 import base64
 import uuid
-import time
-from urllib.parse import urljoin, urlparse
 from collections import deque
+from urllib.parse import urljoin, urlparse
 
 import httpx
 import requests
@@ -19,245 +18,77 @@ from openai import OpenAI
 load_dotenv()
 
 # -----------------------------------------------------------------------------------
-# SECTION 5: CONFIGURATION
+# CONFIG
 # -----------------------------------------------------------------------------------
 class Config:
+    # Crawl / time budgets
     SITE_BUDGET_SECS = int(os.getenv("SITE_BUDGET_SECS", 60))
     SITE_MAX_BUDGET_SECS = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
     CRAWL_MAX_PAGES = int(os.getenv("CRAWL_MAX_PAGES", 5))
     CRAWL_MAX_DEPTH = int(os.getenv("CRAWL_MAX_DEPTH", 2))
 
+    # Networking
     BASIC_TIMEOUT_SECS = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
-
-    # ScrapingBee
-    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 60))  # read timeout
+    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
     SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 2))
-    SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 2.0))
+    SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
     SCRAPINGBEE_PROXY_MODE = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
 
+    # Heuristics
     RENDER_MIN_LINKS = int(os.getenv("RENDER_MIN_LINKS", 15))
     RENDER_MIN_TEXT_BYTES = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
-
     SPA_SIGNALS = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
 
+    # Regex
     SOCIAL_PLATFORMS = {
-        "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
-        "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+")
+        "twitter": re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
+        "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+"),
     }
-
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
-# Always force-render homepage so we get a clean DOM and a first screenshot
-FORCE_RENDER_HOMEPAGE = True
 
 # -----------------------------------------------------------------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # -----------------------------------------------------------------------------------
+def _reg_domain(u: str) -> str:
+    e = tldextract.extract(u)
+    return f"{e.domain}.{e.suffix}".lower()
+
+def _is_same_domain(home: str, test: str) -> bool:
+    return _reg_domain(home) == _reg_domain(test)
 
 def _clean_url(url: str) -> str:
-    """Cleans and standardizes a URL."""
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
     return url.split("#")[0]
 
-def _reg_domain(u: str) -> str:
-    """Return the registrable domain (example.com, example.co.uk)."""
-    u = _clean_url(u)
-    e = tldextract.extract(u)
-    if not e.suffix:
-        host = urlparse(u).netloc.lower()
-        return host[4:] if host.startswith("www.") else host
-    return f"{e.domain}.{e.suffix}".lower()
-
-def _is_same_domain(home: str, test: str) -> bool:
-    """Checks if two URLs belong to the same registrable domain."""
-    return _reg_domain(home) == _reg_domain(test)
-
-def find_priority_page(discovered_links: list, keywords: list):
-    """Searches a list of discovered links for the best match based on keywords."""
-    for link_url, link_text in discovered_links:
-        for keyword in keywords:
-            if keyword in link_url.lower() or keyword in link_text.lower():
-                return link_url
+def guess_cmp_cookie(reg_domain: str) -> str | None:
+    # Stub: return None by default. You can implement per-CMP cookie strings here.
     return None
 
-# -----------------------------------------------------------------------------------
-# GDPR / Cookie banner handling
-# -----------------------------------------------------------------------------------
-
-COMMON_CONSENT_COOKIES = {
-    # OneTrust-style permissive cookie (best effort)
-    "onetrust": (
-        "OptanonConsent=isIABGlobal=false&datestamp=2024-01-01T00:00:00.000Z"
-        "&version=6.17.0&hosts=&consentId=00000000-0000-0000-0000-000000000000"
-        "&interactionCount=0&landingPath=NotLandingPage&groups=1%3A1,2%3A1,3%3A1,4%3A1; "
-        "OptanonAlertBoxClosed=2024-01-01T00:00:00.000Z"
-    )
-}
-
-def guess_cmp_cookie(domain: str):
-    # For now always return OneTrust fallback; extend later with heuristics.
-    return COMMON_CONSENT_COOKIES["onetrust"]
-
-def make_optional_js_scenario() -> dict:
-    """
-    Option B: keep click steps but mark them optional so missing selectors don't 500.
-    """
-    cookie_selectors = [
-        "#onetrust-accept-btn-handler",
-        "button[aria-label='Accept']",
-        "button[aria-label='Accept all']",
-        "button:has-text('Accept All')",
-        "button:has-text('I agree')",
-        ".cookie-accept", ".cookies-accept", ".cc-allow", ".cky-btn-accept"
-    ]
-
-    instructions = [{"wait": 1000}]
-
-    # One optional click per selector
-    for sel in cookie_selectors:
-        instructions.append({
-            "click": sel,
-            "optional": True
-        })
-
-    # Optional cleanup
-    instructions.extend([
-        {"wait": 300},
-        {
-            "evaluate": """
-                (function(){
-                  const kill = [
-                    "[id*=cookie]", "[class*=cookie]",
-                    "[id*=consent]", "[class*=consent]",
-                    "[id*=gdpr]", "[class*=gdpr]",
-                    "[id*=privacy]", "[class*=privacy]",
-                    "iframe[src*='consent']", "iframe[src*='cookie']"
-                  ];
-                  try {
-                    document.querySelectorAll(kill.join(',')).forEach(el => {
-                      el.style.cssText = 'display:none!important;visibility:hidden!important;opacity:0!important;';
-                    });
-                    document.body.style.overflow = 'auto';
-                  } catch(e) {}
-                })();
-            """,
-            "optional": True
-        },
-        {"wait": 400}
-    ])
-
-    return {"instructions": instructions}
-
-def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, include_cookies: bool = False) -> dict:
-    """
-    include_cookies defaults to False now because many sites rejected them (500 "Invalid cookie fields").
-    """
-    api_key = os.getenv("SCRAPINGBEE_API_KEY")
-    e = tldextract.extract(url)
-    reg_domain = f"{e.domain}.{e.suffix}".lower()
-
-    params = {
-        "api_key": api_key,
-        "url": url,
-        "render_js": "true" if render_js else "false",
-        "wait": 1000,  # default, overridden per retry
-        "js_scenario": json.dumps(make_optional_js_scenario()),  # Option B here
-    }
-
-    if include_cookies:
-        consent_cookie = guess_cmp_cookie(reg_domain)
-        if consent_cookie:
-            params["cookies"] = consent_cookie
-
-    if want_screenshot:
-        params.update({
-            "screenshot": "true",
-            "block_resources": "false",   # do not block images when screenshotting
-            "window_width": 1280,
-            "window_height": 1024,
-            "screenshot_full_page": "false",
-        })
-    else:
-        params["block_resources"] = "true"  # speed up HTML
-
-    # Optional premium / stealth proxies
-    mode = Config.SCRAPINGBEE_PROXY_MODE
-    if mode == "premium":
-        params["premium_proxy"] = "true"
-    elif mode == "stealth":
-        params["stealth_proxy"] = "true"
-
-    return params
-
-def _bee_request(url: str, *, render_js: bool, want_screenshot: bool, include_cookies: bool, wait_ms: int) -> requests.Response:
-    params = build_scrapingbee_params(url, render_js, want_screenshot, include_cookies=include_cookies)
-    params["wait"] = wait_ms
-    return requests.get(
-        "https://app.scrapingbee.com/api/v1/",
-        params=params,
-        timeout=(10, Config.SCRAPINGBEE_TIMEOUT_SECS)  # (connect, read)
-    )
-
-def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
-    """
-    Retry matrix:
-      1) include_cookies=False, wait=1000
-      2) include_cookies=False, wait=3000
-      (optionally more if you bump SCRAPINGBEE_MAX_RETRIES)
-    """
-    for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES + 1):
-        include_cookies = False  # default to False
-        wait_ms = 1000 if attempt == 0 else 3000
-
-        # (Optional) On the very last attempt, unblock resources – some sites need it
-        unblock_on_last = (attempt == Config.SCRAPINGBEE_MAX_RETRIES)
-
-        try:
-            res = _bee_request(url, render_js=render_js, want_screenshot=want_screenshot,
-                               include_cookies=include_cookies, wait_ms=wait_ms)
-
-            if unblock_on_last and res.status_code >= 400:
-                # Try once more with block_resources=false (handled via params in build_scrapingbee_params
-                # if you want a togglable flag, you can add it, but for now we just let the status speak)
-                pass
-
-            if res.status_code < 400:
-                return res
-
-            body = (res.text or "")[:1000]
-            if "No element matches selector" in body:
-                print(f"[ScrapingBee] Missing selector (optional) – continuing. attempt={attempt}")
-            else:
-                print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={body}")
-        except requests.exceptions.RequestException as e:
-            print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
-
-        if attempt < Config.SCRAPINGBEE_MAX_RETRIES:
-            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS * (attempt + 1))
-
-    return None
 
 # -----------------------------------------------------------------------------------
-# SECTION 4: ARCHITECTURE (Fetchers, Policy, Extractor)
+# FETCH CORE
 # -----------------------------------------------------------------------------------
-
 class FetchResult:
-    def __init__(self, url, html, status_code, from_renderer):
+    def __init__(self, url: str, html: str, status_code: int, from_renderer: bool):
         self.url = url
         self.html = html or ""
         self.status_code = status_code
         self.from_renderer = from_renderer
 
+
 _basic_client = httpx.Client(
-    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"},
+    headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    },
     follow_redirects=True,
-    timeout=Config.BASIC_TIMEOUT_SECS
+    timeout=Config.BASIC_TIMEOUT_SECS,
 )
 
+
 def basic_fetcher(url: str) -> FetchResult:
-    """Performs a simple, fast HTTP GET request."""
     print(f"[BasicFetcher] Fetching {url}")
     try:
         res = _basic_client.get(url)
@@ -267,34 +98,181 @@ def basic_fetcher(url: str) -> FetchResult:
         print(f"[BasicFetcher] ERROR for {url}: {e}")
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
+
+# -------- ScrapingBee js_scenario (with optional only on clicks) --------
+def make_js_scenario() -> dict:
+    cookie_selectors = [
+        "#onetrust-accept-btn-handler",
+        ".onetrust-accept-btn-handler",
+        ".cookie-accept", ".cookies-accept", ".cc-allow", ".cky-btn-accept",
+        "button[aria-label='Accept']",
+        "button[aria-label='Accept all']",
+        "button[name='accept']",
+        "[data-testid='cookie-accept']"
+    ]
+
+    instructions = [{"wait": 1200}]
+    for sel in cookie_selectors:
+        instructions.append({"click": sel, "optional": True})
+
+    instructions.append({"wait": 300})
+
+    instructions.append({
+        "script": {
+            "code": """
+            (() => {
+              const kill = [
+                "[id*=cookie]", "[class*=cookie]",
+                "[id*=consent]", "[class*=consent]",
+                "[id*=gdpr]",   "[class*=gdpr]",
+                "[id*=privacy]","[class*=privacy]",
+                "iframe[src*='consent']",
+                "iframe[src*='cookie']"
+              ];
+              try {
+                document.querySelectorAll(kill.join(',')).forEach(el => {
+                  el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;";
+                });
+                document.body.style.overflow = "auto";
+              } catch(e) {}
+            })();
+            """
+        }
+    })
+
+    instructions.append({"wait": 400})
+    return {"instructions": instructions}
+
+
+def build_scrapingbee_params(
+    url: str,
+    render_js: bool,
+    want_screenshot: bool,
+    include_cookies: bool = False,
+    use_js_scenario: bool = True,
+    wait_ms: int = 1000,
+) -> dict:
+    api_key = os.getenv("SCRAPINGBEE_API_KEY")
+    if not api_key:
+        raise RuntimeError("SCRAPINGBEE_API_KEY not set")
+
+    e = tldextract.extract(url)
+    reg_domain = f"{e.domain}.{e.suffix}".lower()
+
+    params: dict = {
+        "api_key": api_key,
+        "url": url,
+        "render_js": "true" if render_js else "false",
+        "wait": wait_ms,
+    }
+
+    if use_js_scenario:
+        params["js_scenario"] = json.dumps(make_js_scenario())
+
+    if include_cookies:
+        ck = guess_cmp_cookie(reg_domain)
+        if ck:
+            params["cookies"] = ck
+
+    if want_screenshot:
+        params.update({
+            "screenshot": "true",
+            "block_resources": "false",
+            "window_width": 1280,
+            "window_height": 1024,
+            "screenshot_full_page": "false",
+        })
+    else:
+        params["block_resources"] = "true"
+
+    mode = Config.SCRAPINGBEE_PROXY_MODE
+    if mode == "premium":
+        params["premium_proxy"] = "true"
+    elif mode == "stealth":
+        params["stealth_proxy"] = "true"
+
+    return params
+
+
+def _bee_request(url: str, *, render_js: bool, want_screenshot: bool,
+                 include_cookies: bool, wait_ms: int, use_js_scenario: bool) -> requests.Response:
+    params = build_scrapingbee_params(
+        url,
+        render_js=render_js,
+        want_screenshot=want_screenshot,
+        include_cookies=include_cookies,
+        use_js_scenario=use_js_scenario,
+        wait_ms=wait_ms
+    )
+    return requests.get(
+        "https://app.scrapingbee.com/api/v1/",
+        params=params,
+        timeout=(10, Config.SCRAPINGBEE_TIMEOUT_SECS),
+    )
+
+
+def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
+    """
+    Try:
+      1) with js_scenario
+      2) without js_scenario (schema / validation / 400s)
+    """
+    for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES + 1):
+        include_cookies = False
+        wait_ms = 1000 if attempt == 0 else 3000
+        use_js = (attempt == 0)
+
+        try:
+            res = _bee_request(
+                url,
+                render_js=render_js,
+                want_screenshot=want_screenshot,
+                include_cookies=include_cookies,
+                wait_ms=wait_ms,
+                use_js_scenario=use_js
+            )
+            if res.status_code < 400:
+                return res
+            body = (res.text or "")[:500]
+            print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={body}")
+        except requests.exceptions.RequestException as e:
+            print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
+
+        if attempt < Config.SCRAPINGBEE_MAX_RETRIES:
+            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS * (attempt + 1))
+
+    return None
+
+
 def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
-    """Uses ScrapingBee to get HTML, rendering JS if necessary, with retries/backoff."""
     print(f"[ScrapingBeeHTML] Fetching {url} (render_js={render_js})")
-    api_key = os.getenv("SCRAPINGBEE_API_KEY")
-    if not api_key:
-        return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=False)
+    try:
+        res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=False)
+        if not res:
+            return FetchResult(url, "Failed via ScrapingBee after retries.", 500, from_renderer=render_js)
+        return FetchResult(url, res.text, res.status_code, from_renderer=render_js)
+    except Exception as e:
+        print(f"[ScrapingBeeHTML] ERROR for {url}: {e}")
+        return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js)
 
-    res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=False)
-    if res is None:
-        return FetchResult(url, "ScrapingBee timed out / failed after retries", 504, from_renderer=False)
 
-    return FetchResult(url, res.text, res.status_code, from_renderer=True)
-
-def scrapingbee_screenshot_fetcher(url: str, render_js: bool):
-    """Uses ScrapingBee to get a screenshot, always rendered so js_scenario can run."""
-    print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js=True)")
-    api_key = os.getenv("SCRAPINGBEE_API_KEY")
-    if not api_key:
+def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str | None:
+    print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js={render_js})")
+    try:
+        res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=True)
+        if not res or res.status_code >= 400:
+            return None
+        # ScrapingBee returns binary screenshot (PNG). Encode to base64 for the UI.
+        return base64.b64encode(res.content).decode("utf-8")
+    except Exception as e:
+        print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
         return None
 
-    # Force render_js=True for screenshots to make sure js_scenario executes
-    res = _bee_call_with_retries(url, render_js=True, want_screenshot=True)
-    if res is None:
-        return None
-    return base64.b64encode(res.content).decode("utf-8")
 
-def render_policy(result: FetchResult):
-    """Decides if we need to use ScrapingBee based on improved heuristics."""
+# -----------------------------------------------------------------------------------
+# RENDER POLICY & EXTRACTORS
+# -----------------------------------------------------------------------------------
+def render_policy(result: FetchResult) -> (bool, str):
     if result.status_code >= 400:
         return True, "http_error"
 
@@ -313,20 +291,20 @@ def render_policy(result: FetchResult):
 
     return False, "ok"
 
-def social_extractor(soup, base_url):
-    """Finds the best social media profile links."""
+
+def social_extractor(soup: BeautifulSoup, base_url: str) -> dict:
     found_socials = {}
     for platform, pattern in Config.SOCIAL_PLATFORMS.items():
-        links = {tag['href'] for tag in soup.find_all('a', href=pattern)}
+        links = {tag["href"] for tag in soup.find_all("a", href=pattern)}
         if links:
             best_link = min(links, key=len)
             found_socials[platform] = urljoin(base_url, best_link)
     return found_socials
 
-# -----------------------------------------------------------------------------------
-# AI Analysis Functions
-# -----------------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------------
+# LLM PHASE
+# -----------------------------------------------------------------------------------
 MEMORABILITY_KEYS_PROMPTS = {
     "Emotion": """
         Analyze the **Emotion** key. This is the primary key; without it, nothing is memorable.
@@ -354,46 +332,54 @@ MEMORABILITY_KEYS_PROMPTS = {
     """
 }
 
-def call_openai_for_synthesis(corpus):
-    """Performs the AI pre-processing step to create a brand summary."""
-    print("[AI] Synthesizing brand overview...")
+
+def _strip_proxies_temporarily():
     proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-    original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
+    original = {k: os.environ.pop(k, None) for k in proxy_keys}
+    return proxy_keys, original
+
+
+def _restore_proxies(proxy_keys, original):
+    for k in proxy_keys:
+        if original[k] is not None:
+            os.environ[k] = original[k]
+
+
+def call_openai_for_synthesis(corpus: str) -> str:
+    print("[AI] Synthesizing brand overview...")
+    proxy_keys, original = _strip_proxies_temporarily()
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
-        synthesis_prompt = (
+        prompt = (
             "Analyze the following text from a company's website and social media. "
             "Provide a concise, one-paragraph summary of the brand's mission, tone, and primary offerings. "
             "This summary will be used as context for further analysis.\n\n---\n"
             f"{corpus}\n---"
         )
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": synthesis_prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
-        return response.choices[0].message.content
+        return resp.choices[0].message.content
     except Exception as e:
         print(f"[ERROR] AI synthesis failed: {e}")
         return "Could not generate brand summary due to an error."
     finally:
-        for key, value in original_proxies.items():
-            if value is not None:
-                os.environ[key] = value
+        _restore_proxies(proxy_keys, original)
+
 
 def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_screenshot_b64, brand_summary):
-    """Analyzes a single memorability key using the full context."""
     print(f"[AI] Analyzing key: {key_name}")
-    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-    original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
+    proxy_keys, original = _strip_proxies_temporarily()
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
 
         content = [
             {"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"},
-            {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"}
+            {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"},
         ]
         if homepage_screenshot_b64:
             content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{homepage_screenshot_b64}"}})
@@ -409,20 +395,19 @@ Your response MUST be a JSON object with the following keys:
 - "confidence_rationale": A brief explanation for your confidence score.
 - "recommendation": A concise, actionable recommendation for how the brand could improve its score for this specific key.
 """
-
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content}
+                {"role": "user", "content": content},
             ],
             response_format={"type": "json_object"},
-            temperature=0.3
+            temperature=0.3,
         )
-        return key_name, json.loads(response.choices[0].message.content)
+        return key_name, json.loads(resp.choices[0].message.content)
     except Exception as e:
         print(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
-        error_response = {
+        return key_name, {
             "score": 0,
             "analysis": "Analysis failed due to a server error.",
             "evidence": str(e),
@@ -430,113 +415,90 @@ Your response MUST be a JSON object with the following keys:
             "confidence_rationale": "System error.",
             "recommendation": "Resolve the technical error to proceed."
         }
-        return key_name, error_response
     finally:
-        for key, value in original_proxies.items():
-            if value is not None:
-                os.environ[key] = value
+        _restore_proxies(proxy_keys, original)
+
 
 def call_openai_for_executive_summary(all_analyses):
-    """Generates the final executive summary based on all individual key analyses."""
     print("[AI] Generating Executive Summary...")
-    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-    original_proxies = {key: os.environ.pop(key, None) for key in proxy_keys}
+    proxy_keys, original = _strip_proxies_temporarily()
     try:
         http_client = httpx.Client(proxies=None)
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
 
-        analyses_text = "\n\n".join([
-            f"Key: {data['key']}\nScore: {data['analysis']['score']}\nAnalysis: {data['analysis']['analysis']}"
-            for data in all_analyses
-        ])
+        analyses_text = "\n\n".join(
+            [f"Key: {d['key']}\nScore: {d['analysis']['score']}\nAnalysis: {d['analysis']['analysis']}"
+             for d in all_analyses]
+        )
+        prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
+1. **Overall Summary** – brief, high-level overview.
+2. **Key Strengths** – the 2-3 strongest keys and why.
+3. **Primary Weaknesses** – the 2-3 weakest keys and the impact.
+4. **Strategic Focus** – the single most important key to improve.
 
-        summary_prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
-1. **Overall Summary:** A brief, high-level overview of the brand's memorability performance.
-2. **Key Strengths:** Identify the 2-3 strongest keys for the brand and explain why.
-3. **Primary Weaknesses:** Identify the 2-3 weakest keys and explain the impact.
-4. **Strategic Focus:** State the single most important key the brand should focus on to improve its overall memorability.
-
-Here are the individual analyses to synthesize:
+Analyses:
 ---
 {analyses_text}
 ---
 """
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="gpt-4o",
-            messages=[{"role": "user", "content": summary_prompt}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
-        return response.choices[0].message.content
+        return resp.choices[0].message.content
     except Exception as e:
         print(f"[ERROR] AI summary failed: {e}")
         return "Could not generate the executive summary due to an error."
     finally:
-        for key, value in original_proxies.items():
-            if value is not None:
-                os.environ[key] = value
+        _restore_proxies(proxy_keys, original)
+
 
 # -----------------------------------------------------------------------------------
-# Main Orchestrator
+# MAIN ORCHESTRATOR (STREAM)
 # -----------------------------------------------------------------------------------
 def run_full_scan_stream(url: str, cache: dict):
     start_time = time.time()
     budget = Config.SITE_BUDGET_SECS
     escalated = False
 
-    pages_analyzed = []
+    pages_analyzed: list[FetchResult] = []
     text_corpus = ""
     homepage_screenshot_b64 = None
     socials_found = False
 
-    start_url = _clean_url(url)
-    queue = deque([(start_url, 0)])
-    seen_urls = {start_url}
+    queue = deque([(_clean_url(url), 0)])
+    seen_urls = {_clean_url(url)}
 
     try:
-        yield {'type': 'status', 'message': f'Scan initiated. Budget: {budget}s.'}
+        yield {"type": "status", "message": f"Scan initiated. Budget: {budget}s."}
 
         while queue and len(pages_analyzed) < Config.CRAWL_MAX_PAGES:
             elapsed = time.time() - start_time
             if elapsed > budget:
-                yield {'type': 'status', 'message': 'Time budget exceeded. Finalizing analysis.'}
+                yield {"type": "status", "message": "Time budget exceeded. Finalizing analysis."}
                 break
 
             current_url, depth = queue.popleft()
-            yield {'type': 'status', 'message': f'Analyzing page {len(pages_analyzed) + 1}/{Config.CRAWL_MAX_PAGES}: {current_url}'}
+            yield {"type": "status", "message": f"Analyzing page {len(pages_analyzed)+1}/{Config.CRAWL_MAX_PAGES}: {current_url}"}
 
             basic_result = basic_fetcher(current_url)
+            should_render, reason = render_policy(basic_result)
+
             final_result = basic_result
+            if should_render:
+                yield {"type": "status", "message": f"Basic fetch insufficient ({reason}). Escalating to JS renderer..."}
+                rendered_result = scrapingbee_html_fetcher(current_url, render_js=True)
+                if 200 <= rendered_result.status_code < 400 and rendered_result.html.strip():
+                    final_result = rendered_result
 
-            if len(pages_analyzed) == 0 and FORCE_RENDER_HOMEPAGE:
-                yield {'type': 'status', 'message': 'Force-rendering homepage with ScrapingBee...'}
-                rendered = scrapingbee_html_fetcher(current_url, render_js=True)
-                if 200 <= rendered.status_code < 400 and rendered.html.strip():
-                    final_result = rendered
-            else:
-                should_render, reason = render_policy(basic_result)
-                if should_render:
-                    yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
-                    rendered = scrapingbee_html_fetcher(current_url, render_js=True)
-                    if 200 <= rendered.status_code < 400 and rendered.html.strip():
-                        final_result = rendered
-
-            # Screenshots: render_js=True so js_scenario can click banners away
-            if len(pages_analyzed) == 0:
-                screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=True)
-            else:
-                screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
-
+            screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
                     homepage_screenshot_b64 = screenshot_b64
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
-                yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
-
-            if final_result.status_code >= 400:
-                # Do not parse error body as HTML
-                pages_analyzed.append(final_result)
-                continue
+                yield {"type": "screenshot_ready", "id": image_id, "url": current_url}
 
             if final_result.html:
                 soup = BeautifulSoup(final_result.html, "lxml")
@@ -546,10 +508,11 @@ def run_full_scan_stream(url: str, cache: dict):
                     found = social_extractor(soup, current_url)
                     if found:
                         socials_found = True
-                        yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
+                        yield {"type": "status", "message": f"Found social links: {list(found.values())}"}
 
                 for tag in soup(["script", "style"]):
                     tag.decompose()
+
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
                 if depth < Config.CRAWL_MAX_DEPTH:
@@ -578,24 +541,26 @@ def run_full_scan_stream(url: str, cache: dict):
                 if len(pages_analyzed) >= 3 and pages_rendered_by_bee >= 2 and not socials_found:
                     budget = Config.SITE_MAX_BUDGET_SECS
                     escalated = True
-                    yield {'type': 'status', 'message': f'High JS usage and no socials found → escalating budget to {budget}s.'}
+                    yield {"type": "status", "message": f"High JS usage and no socials found → escalating budget to {budget}s."}
 
-        yield {'type': 'status', 'message': 'Crawl complete. Starting AI analysis...'}
+        yield {"type": "status", "message": "Crawl complete. Starting AI analysis..."}
         brand_summary = call_openai_for_synthesis(text_corpus)
 
         all_results = []
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
-            yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
-            key_name, result_json = analyze_memorability_key(key, prompt, text_corpus, homepage_screenshot_b64, brand_summary)
-            result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
+            yield {"type": "status", "message": f"Analyzing key: {key}..."}
+            key_name, result_json = analyze_memorability_key(
+                key, prompt, text_corpus, homepage_screenshot_b64, brand_summary
+            )
+            result_obj = {"type": "result", "key": key_name, "analysis": result_json}
             all_results.append(result_obj)
             yield result_obj
 
-        yield {'type': 'status', 'message': 'Generating Executive Summary...'}
+        yield {"type": "status", "message": "Generating Executive Summary..."}
         summary_text = call_openai_for_executive_summary(all_results)
-        yield {'type': 'summary', 'text': summary_text}
-        yield {'type': 'complete', 'message': 'Analysis finished.'}
+        yield {"type": "summary", "text": summary_text}
+        yield {"type": "complete", "message": "Analysis finished."}
 
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
-        yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
+        yield {"type": "error", "message": f"A critical error occurred: {e}"}
