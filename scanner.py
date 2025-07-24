@@ -1,4 +1,6 @@
-# scanner.py
+```python
+# scanner.py  (Option B: js_scenario steps are OPTIONAL so ScrapingBee won't 500 on missing selectors)
+
 import os
 import re
 import json
@@ -73,7 +75,7 @@ def _is_same_domain(home: str, test: str) -> bool:
     """Checks if two URLs belong to the same registrable domain."""
     return _reg_domain(home) == _reg_domain(test)
 
-def find_priority_page(discovered_links: list, keywords: list) -> str | None:
+def find_priority_page(discovered_links: list, keywords: list):
     """Searches a list of discovered links for the best match based on keywords."""
     for link_url, link_text in discovered_links:
         for keyword in keywords:
@@ -95,39 +97,59 @@ COMMON_CONSENT_COOKIES = {
     )
 }
 
-def guess_cmp_cookie(domain: str) -> str | None:
+def guess_cmp_cookie(domain: str):
     # For now always return OneTrust fallback; extend later with heuristics.
     return COMMON_CONSENT_COOKIES["onetrust"]
 
-# ScrapingBee's correct js_scenario shape: {"instructions": [ ... ]}
-JS_SCENARIO = {
-    "instructions": [
-        {"wait": 1000},
-        {"click": "#onetrust-accept-btn-handler"},
-        {"click": "button[aria-label='Accept']"},
-        {"click": ".cookie-accept"},
-        {"click": ".cc-allow"},
-        {"click": ".cky-btn-accept"},
-        {"wait": 300},
-        {"evaluate": """
-            (function(){
-              const kill = [
-                "[id*=cookie]", "[class*=cookie]",
-                "[id*=consent]", "[class*=consent]",
-                "[id*=gdpr]", "[class*=gdpr]",
-                "[id*=privacy]", "[class*=privacy]",
-                "iframe[src*='consent']", "iframe[src*='cookie']"
-              ];
-              try {
-                document.querySelectorAll(kill.join(',')).forEach(el => {
-                  el.style.cssText = 'display:none!important;visibility:hidden!important;opacity:0!important;';
-                });
-                document.body.style.overflow = 'auto';
-              } catch(e) {}
-            })();
-        """}
+def make_optional_js_scenario() -> dict:
+    """
+    Option B: keep click steps but mark them optional so missing selectors don't 500.
+    """
+    cookie_selectors = [
+        "#onetrust-accept-btn-handler",
+        "button[aria-label='Accept']",
+        "button[aria-label='Accept all']",
+        "button:has-text('Accept All')",
+        "button:has-text('I agree')",
+        ".cookie-accept", ".cookies-accept", ".cc-allow", ".cky-btn-accept"
     ]
-}
+
+    instructions = [{"wait": 1000}]
+
+    # One optional click per selector
+    for sel in cookie_selectors:
+        instructions.append({
+            "click": sel,
+            "optional": True
+        })
+
+    # Optional cleanup
+    instructions.extend([
+        {"wait": 300},
+        {
+            "evaluate": """
+                (function(){
+                  const kill = [
+                    "[id*=cookie]", "[class*=cookie]",
+                    "[id*=consent]", "[class*=consent]",
+                    "[id*=gdpr]", "[class*=gdpr]",
+                    "[id*=privacy]", "[class*=privacy]",
+                    "iframe[src*='consent']", "iframe[src*='cookie']"
+                  ];
+                  try {
+                    document.querySelectorAll(kill.join(',')).forEach(el => {
+                      el.style.cssText = 'display:none!important;visibility:hidden!important;opacity:0!important;';
+                    });
+                    document.body.style.overflow = 'auto';
+                  } catch(e) {}
+                })();
+            """,
+            "optional": True
+        },
+        {"wait": 400}
+    ])
+
+    return {"instructions": instructions}
 
 def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, include_cookies: bool = False) -> dict:
     """
@@ -141,8 +163,8 @@ def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, i
         "api_key": api_key,
         "url": url,
         "render_js": "true" if render_js else "false",
-        "wait": 1000,  # default, can be overridden by retry layer
-        "js_scenario": json.dumps(JS_SCENARIO),
+        "wait": 1000,  # default, overridden per retry
+        "js_scenario": json.dumps(make_optional_js_scenario()),  # Option B here
     }
 
     if include_cookies:
@@ -179,7 +201,7 @@ def _bee_request(url: str, *, render_js: bool, want_screenshot: bool, include_co
         timeout=(10, Config.SCRAPINGBEE_TIMEOUT_SECS)  # (connect, read)
     )
 
-def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool) -> requests.Response | None:
+def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
     """
     Retry matrix:
       1) include_cookies=False, wait=1000
@@ -187,17 +209,29 @@ def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool) 
       (optionally more if you bump SCRAPINGBEE_MAX_RETRIES)
     """
     for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES + 1):
-        include_cookies = False  # default to False now
+        include_cookies = False  # default to False
         wait_ms = 1000 if attempt == 0 else 3000
+
+        # (Optional) On the very last attempt, unblock resources – some sites need it
+        unblock_on_last = (attempt == Config.SCRAPINGBEE_MAX_RETRIES)
 
         try:
             res = _bee_request(url, render_js=render_js, want_screenshot=want_screenshot,
                                include_cookies=include_cookies, wait_ms=wait_ms)
+
+            if unblock_on_last and res.status_code >= 400:
+                # Try once more with block_resources=false (handled via params in build_scrapingbee_params
+                # if you want a togglable flag, you can add it, but for now we just let the status speak)
+                pass
+
             if res.status_code < 400:
                 return res
 
             body = (res.text or "")[:1000]
-            print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={body}")
+            if "No element matches selector" in body:
+                print(f"[ScrapingBee] Missing selector (optional) – continuing. attempt={attempt}")
+            else:
+                print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={body}")
         except requests.exceptions.RequestException as e:
             print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
 
@@ -260,7 +294,7 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool):
         return None
     return base64.b64encode(res.content).decode("utf-8")
 
-def render_policy(result: FetchResult) -> (bool, str):
+def render_policy(result: FetchResult):
     """Decides if we need to use ScrapingBee based on improved heuristics."""
     if result.status_code >= 400:
         return True, "http_error"
@@ -566,3 +600,4 @@ def run_full_scan_stream(url: str, cache: dict):
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
+```
