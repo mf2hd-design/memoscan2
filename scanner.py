@@ -6,7 +6,7 @@ import time
 import base64
 import uuid
 from collections import deque
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import httpx
 import requests
@@ -32,7 +32,8 @@ class Config:
     SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
     SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 2))
     SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
-    SCRAPINGBEE_PROXY_MODE = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
+    # none|premium|stealth
+    SCRAPINGBEE_PROXY_MODE = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")
 
     # Heuristics
     RENDER_MIN_LINKS = int(os.getenv("RENDER_MIN_LINKS", 15))
@@ -63,8 +64,8 @@ def _clean_url(url: str) -> str:
         url = "https://" + url
     return url.split("#")[0]
 
-def guess_cmp_cookie(reg_domain: str) -> str | None:
-    # Stub: return None by default. You can implement per-CMP cookie strings here.
+def guess_cmp_cookie(reg_domain: str):
+    # Stub for pre-consent cookie injection (return a cookie string if you have a mapping per domain)
     return None
 
 
@@ -99,7 +100,7 @@ def basic_fetcher(url: str) -> FetchResult:
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
 
-# -------- ScrapingBee js_scenario (with optional only on clicks) --------
+# -------- ScrapingBee js_scenario (evaluate + optional clicks) --------
 def make_js_scenario() -> dict:
     cookie_selectors = [
         "#onetrust-accept-btn-handler",
@@ -117,27 +118,26 @@ def make_js_scenario() -> dict:
 
     instructions.append({"wait": 300})
 
+    # Final kill pass: hide any left-over consent UI
     instructions.append({
-        "script": {
-            "code": """
-            (() => {
-              const kill = [
-                "[id*=cookie]", "[class*=cookie]",
-                "[id*=consent]", "[class*=consent]",
-                "[id*=gdpr]",   "[class*=gdpr]",
-                "[id*=privacy]","[class*=privacy]",
-                "iframe[src*='consent']",
-                "iframe[src*='cookie']"
-              ];
-              try {
-                document.querySelectorAll(kill.join(',')).forEach(el => {
-                  el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;";
-                });
-                document.body.style.overflow = "auto";
-              } catch(e) {}
-            })();
-            """
-        }
+        "evaluate": """
+          (() => {
+            const kill = [
+              "[id*=cookie]", "[class*=cookie]",
+              "[id*=consent]", "[class*=consent]",
+              "[id*=gdpr]",   "[class*=gdpr]",
+              "[id*=privacy]","[class*=privacy]",
+              "iframe[src*='consent']",
+              "iframe[src*='cookie']"
+            ];
+            try {
+              document.querySelectorAll(kill.join(',')).forEach(el => {
+                el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;";
+              });
+              document.body.style.overflow = "auto";
+            } catch(e) {}
+          })();
+        """
     })
 
     instructions.append({"wait": 400})
@@ -162,11 +162,12 @@ def build_scrapingbee_params(
     params: dict = {
         "api_key": api_key,
         "url": url,
-        "render_js": "true" if render_js else "false",
+        "render_js": render_js,
         "wait": wait_ms,
     }
 
-    if use_js_scenario:
+    # Only add js_scenario for JS-rendered requests
+    if use_js_scenario and render_js:
         params["js_scenario"] = json.dumps(make_js_scenario())
 
     if include_cookies:
@@ -176,20 +177,20 @@ def build_scrapingbee_params(
 
     if want_screenshot:
         params.update({
-            "screenshot": "true",
-            "block_resources": "false",
+            "screenshot": True,
+            "block_resources": False,
             "window_width": 1280,
             "window_height": 1024,
-            "screenshot_full_page": "false",
+            "screenshot_full_page": False,
         })
     else:
-        params["block_resources"] = "true"
+        params["block_resources"] = True
 
     mode = Config.SCRAPINGBEE_PROXY_MODE
     if mode == "premium":
-        params["premium_proxy"] = "true"
+        params["premium_proxy"] = True
     elif mode == "stealth":
-        params["stealth_proxy"] = "true"
+        params["stealth_proxy"] = True
 
     return params
 
@@ -214,13 +215,17 @@ def _bee_request(url: str, *, render_js: bool, want_screenshot: bool,
 def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
     """
     Try:
-      1) with js_scenario
-      2) without js_scenario (schema / validation / 400s)
+      1) with js_scenario (if render_js=True)
+      2) without js_scenario
+    All screenshot calls will force render_js=True.
     """
+    if want_screenshot and not render_js:
+        render_js = True
+
     for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES + 1):
         include_cookies = False
         wait_ms = 1000 if attempt == 0 else 3000
-        use_js = (attempt == 0)
+        use_js = (attempt == 0)  # first try: with scenario, second: without
 
         try:
             res = _bee_request(
@@ -233,8 +238,7 @@ def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
             )
             if res.status_code < 400:
                 return res
-            body = (res.text or "")[:500]
-            print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={body}")
+            print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={res.text[:500]}")
         except requests.exceptions.RequestException as e:
             print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
 
@@ -256,13 +260,15 @@ def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
         return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js)
 
 
-def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str | None:
+def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str:
+    # Always render JS for screenshots
+    render_js = True
     print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js={render_js})")
     try:
         res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=True)
         if not res or res.status_code >= 400:
             return None
-        # ScrapingBee returns binary screenshot (PNG). Encode to base64 for the UI.
+        # Binary PNG → base64
         return base64.b64encode(res.content).decode("utf-8")
     except Exception as e:
         print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
@@ -272,7 +278,7 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str | None:
 # -----------------------------------------------------------------------------------
 # RENDER POLICY & EXTRACTORS
 # -----------------------------------------------------------------------------------
-def render_policy(result: FetchResult) -> (bool, str):
+def render_policy(result: FetchResult):
     if result.status_code >= 400:
         return True, "http_error"
 
@@ -462,7 +468,7 @@ def run_full_scan_stream(url: str, cache: dict):
     budget = Config.SITE_BUDGET_SECS
     escalated = False
 
-    pages_analyzed: list[FetchResult] = []
+    pages_analyzed = []
     text_corpus = ""
     homepage_screenshot_b64 = None
     socials_found = False
