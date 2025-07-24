@@ -113,7 +113,6 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
     screenshot_b64 = None
     
     try:
-        # If we need a screenshot, we must make a dedicated call for it.
         if get_screenshot:
             screenshot_params = params.copy()
             screenshot_params.update({
@@ -126,39 +125,32 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
             res_screenshot.raise_for_status()
             screenshot_b64 = base64.b64encode(res_screenshot.content).decode('utf-8')
 
-        # If we need HTML (always, unless we only wanted a screenshot), get it.
-        # This ensures we get HTML even if the screenshot call was separate.
-        if not get_screenshot or render_js:
-            html_params = params.copy()
-            html_params["screenshot"] = "false"
-            res_html = requests.get("https://app.scrapingbee.com/api/v1/", params=html_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
-            res_html.raise_for_status()
-            html = res_html.text
+        # Always get HTML, even if we just took a screenshot
+        html_params = params.copy()
+        html_params["screenshot"] = "false"
+        res_html = requests.get("https://app.scrapingbee.com/api/v1/", params=html_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+        res_html.raise_for_status()
+        html = res_html.text
 
         return FetchResult(url, html, 200, from_renderer=render_js), screenshot_b64
 
+    except requests.exceptions.HTTPError as he:
+        print(f"[ScrapingBeeFetcher] HTTP ERROR for {url}: {he.response.status_code} {he.response.text[:500]}")
+        return FetchResult(url, f"Failed via ScrapingBee: {he.response.text}", he.response.status_code, from_renderer=render_js), None
     except Exception as e:
         print(f"[ScrapingBeeFetcher] ERROR for {url}: {e}")
-        return FetchResult(url, f"Failed to fetch via ScrapingBee: {e}", 500, from_renderer=render_js), None
+        return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js), None
 
 def render_policy(result: FetchResult) -> (bool, str):
-    """Decides if we need to use ScrapingBee based on your improved heuristics."""
-    if result.status_code >= 400:
-        return True, "http_error"
-
+    """Decides if we need to use ScrapingBee based on improved heuristics."""
+    if result.status_code >= 400: return True, "http_error"
     soup = BeautifulSoup(result.html, "lxml")
     visible_text_len = len(soup.get_text(" ", strip=True))
-    if visible_text_len < Config.RENDER_MIN_TEXT_BYTES:
-        return True, "small_text"
-
-    if len(soup.find_all("a", href=True)) < Config.RENDER_MIN_LINKS:
-        return True, "few_links"
-
+    if visible_text_len < Config.RENDER_MIN_TEXT_BYTES: return True, "small_text"
+    if len(soup.find_all("a", href=True)) < Config.RENDER_MIN_LINKS: return True, "few_links"
     lower_html = result.html.lower()
     for signal in Config.SPA_SIGNALS:
-        if signal in lower_html:
-            return True, "spa_signal"
-
+        if signal in lower_html: return True, "spa_signal"
     return False, "ok"
 
 def social_extractor(soup, base_url):
@@ -335,8 +327,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 if 200 <= rendered_result.status_code < 400 and rendered_result.html.strip():
                     final_result = rendered_result
 
-            # Screenshot is now a separate, guaranteed-rendered call.
-            _, screenshot_b64 = scrapingbee_fetcher(current_url, get_screenshot=True)
+            _, screenshot_b64 = scrapingbee_fetcher(current_url, render_js=final_result.from_renderer, get_screenshot=True)
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
                     homepage_screenshot_b64 = screenshot_b64
@@ -346,6 +337,8 @@ def run_full_scan_stream(url: str, cache: dict):
 
             if final_result.html:
                 soup = BeautifulSoup(final_result.html, "lxml")
+                print(f"[DEBUG] Links found on {current_url}: {len(soup.find_all('a', href=True))} (rendered={final_result.from_renderer})")
+
                 if len(pages_analyzed) == 0:
                     found = social_extractor(soup, current_url)
                     if found:
