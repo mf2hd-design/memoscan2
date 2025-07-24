@@ -1,3 +1,4 @@
+# scanner.py
 import os
 import re
 import json
@@ -24,18 +25,28 @@ class Config:
     SITE_MAX_BUDGET_SECS = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
     CRAWL_MAX_PAGES = int(os.getenv("CRAWL_MAX_PAGES", 5))
     CRAWL_MAX_DEPTH = int(os.getenv("CRAWL_MAX_DEPTH", 2))
+
     BASIC_TIMEOUT_SECS = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
-    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
+
+    # ScrapingBee
+    SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 60))  # read timeout
+    SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 2))
+    SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 2.0))
+    SCRAPINGBEE_PROXY_MODE = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
+
     RENDER_MIN_LINKS = int(os.getenv("RENDER_MIN_LINKS", 15))
     RENDER_MIN_TEXT_BYTES = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
+
     SPA_SIGNALS = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
+
     SOCIAL_PLATFORMS = {
         "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
         "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+")
     }
+
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
-# Force-render the homepage once (recommended to ensure full DOM/screenshot)
+# Always force-render homepage so we get a clean DOM and a first screenshot
 FORCE_RENDER_HOMEPAGE = True
 
 # -----------------------------------------------------------------------------------
@@ -91,18 +102,13 @@ def guess_cmp_cookie(domain: str) -> str | None:
 # ScrapingBee's correct js_scenario shape: {"instructions": [ ... ]}
 JS_SCENARIO = {
     "instructions": [
-        {"wait": 1500},
-
-        # Try a few common consent buttons (ScrapingBee will ignore if not found)
+        {"wait": 1000},
         {"click": "#onetrust-accept-btn-handler"},
         {"click": "button[aria-label='Accept']"},
         {"click": ".cookie-accept"},
         {"click": ".cc-allow"},
         {"click": ".cky-btn-accept"},
-
-        {"wait": 500},
-
-        # Hide leftovers and restore scrolling
+        {"wait": 300},
         {"evaluate": """
             (function(){
               const kill = [
@@ -114,9 +120,7 @@ JS_SCENARIO = {
               ];
               try {
                 document.querySelectorAll(kill.join(',')).forEach(el => {
-                  el.style.setProperty('display', 'none', 'important');
-                  el.style.setProperty('visibility', 'hidden', 'important');
-                  el.style.setProperty('opacity', '0', 'important');
+                  el.style.cssText = 'display:none!important;visibility:hidden!important;opacity:0!important;';
                 });
                 document.body.style.overflow = 'auto';
               } catch(e) {}
@@ -125,7 +129,10 @@ JS_SCENARIO = {
     ]
 }
 
-def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, include_cookies: bool = True) -> dict:
+def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, include_cookies: bool = False) -> dict:
+    """
+    include_cookies defaults to False now because many sites rejected them (500 "Invalid cookie fields").
+    """
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
     e = tldextract.extract(url)
     reg_domain = f"{e.domain}.{e.suffix}".lower()
@@ -134,11 +141,10 @@ def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, i
         "api_key": api_key,
         "url": url,
         "render_js": "true" if render_js else "false",
-        "wait": 3000,  # integer milliseconds
+        "wait": 1000,  # default, can be overridden by retry layer
         "js_scenario": json.dumps(JS_SCENARIO),
     }
 
-    # Pre-seed consent cookie
     if include_cookies:
         consent_cookie = guess_cmp_cookie(reg_domain)
         if consent_cookie:
@@ -155,7 +161,50 @@ def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool, i
     else:
         params["block_resources"] = "true"  # speed up HTML
 
+    # Optional premium / stealth proxies
+    mode = Config.SCRAPINGBEE_PROXY_MODE
+    if mode == "premium":
+        params["premium_proxy"] = "true"
+    elif mode == "stealth":
+        params["stealth_proxy"] = "true"
+
     return params
+
+def _bee_request(url: str, *, render_js: bool, want_screenshot: bool, include_cookies: bool, wait_ms: int) -> requests.Response:
+    params = build_scrapingbee_params(url, render_js, want_screenshot, include_cookies=include_cookies)
+    params["wait"] = wait_ms
+    return requests.get(
+        "https://app.scrapingbee.com/api/v1/",
+        params=params,
+        timeout=(10, Config.SCRAPINGBEE_TIMEOUT_SECS)  # (connect, read)
+    )
+
+def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool) -> requests.Response | None:
+    """
+    Retry matrix:
+      1) include_cookies=False, wait=1000
+      2) include_cookies=False, wait=3000
+      (optionally more if you bump SCRAPINGBEE_MAX_RETRIES)
+    """
+    for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES + 1):
+        include_cookies = False  # default to False now
+        wait_ms = 1000 if attempt == 0 else 3000
+
+        try:
+            res = _bee_request(url, render_js=render_js, want_screenshot=want_screenshot,
+                               include_cookies=include_cookies, wait_ms=wait_ms)
+            if res.status_code < 400:
+                return res
+
+            body = (res.text or "")[:1000]
+            print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={body}")
+        except requests.exceptions.RequestException as e:
+            print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
+
+        if attempt < Config.SCRAPINGBEE_MAX_RETRIES:
+            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS * (attempt + 1))
+
+    return None
 
 # -----------------------------------------------------------------------------------
 # SECTION 4: ARCHITECTURE (Fetchers, Policy, Extractor)
@@ -186,62 +235,30 @@ def basic_fetcher(url: str) -> FetchResult:
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
 def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
-    """Uses ScrapingBee to get HTML, rendering JS if necessary, with consent handling and retry."""
+    """Uses ScrapingBee to get HTML, rendering JS if necessary, with retries/backoff."""
     print(f"[ScrapingBeeHTML] Fetching {url} (render_js={render_js})")
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
     if not api_key:
         return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=False)
 
-    def _call(include_cookies: bool):
-        params = build_scrapingbee_params(url, render_js, want_screenshot=False, include_cookies=include_cookies)
-        return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+    res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=False)
+    if res is None:
+        return FetchResult(url, "ScrapingBee timed out / failed after retries", 504, from_renderer=False)
 
-    try:
-        res = _call(include_cookies=True)
-        try:
-            res.raise_for_status()
-            return FetchResult(url, res.text, res.status_code, from_renderer=True)
-        except requests.exceptions.HTTPError as he:
-            body = he.response.text[:1000] if he.response is not None else ""
-            if "Invalid cookie fields" in body:
-                print("[ScrapingBeeHTML] Retrying without cookies…")
-                res2 = _call(include_cookies=False)
-                res2.raise_for_status()
-                return FetchResult(url, res2.text, res2.status_code, from_renderer=True)
-            print(f"[ScrapingBeeHTML] HTTP ERROR for {url}: {he.response.status_code if he.response else ''} {body}")
-            return FetchResult(url, f"Failed via ScrapingBee: {body}", he.response.status_code if he.response else 500, from_renderer=False)
-    except Exception as e:
-        print(f"[ScrapingBeeHTML] ERROR for {url}: {e}")
-        return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=False)
+    return FetchResult(url, res.text, res.status_code, from_renderer=True)
 
 def scrapingbee_screenshot_fetcher(url: str, render_js: bool):
-    """Uses ScrapingBee to get a screenshot, rendering JS if necessary, with consent handling and retry."""
-    print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js={render_js})")
+    """Uses ScrapingBee to get a screenshot, always rendered so js_scenario can run."""
+    print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js=True)")
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
     if not api_key:
         return None
 
-    def _call(include_cookies: bool):
-        params = build_scrapingbee_params(url, render_js, want_screenshot=True, include_cookies=include_cookies)
-        return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
-
-    try:
-        res = _call(include_cookies=True)
-        try:
-            res.raise_for_status()
-            return base64.b64encode(res.content).decode("utf-8")
-        except requests.exceptions.HTTPError as he:
-            body = he.response.text[:1000] if he.response is not None else ""
-            if "Invalid cookie fields" in body:
-                print("[ScrapingBeeScreenshot] Retrying without cookies…")
-                res2 = _call(include_cookies=False)
-                res2.raise_for_status()
-                return base64.b64encode(res2.content).decode("utf-8")
-            print(f"[ScrapingBeeScreenshot] HTTP ERROR for {url}: {he.response.status_code if he.response else ''} {body}")
-            return None
-    except Exception as e:
-        print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
+    # Force render_js=True for screenshots to make sure js_scenario executes
+    res = _bee_call_with_retries(url, render_js=True, want_screenshot=True)
+    if res is None:
         return None
+    return base64.b64encode(res.content).decode("utf-8")
 
 def render_policy(result: FetchResult) -> (bool, str):
     """Decides if we need to use ScrapingBee based on improved heuristics."""
@@ -470,7 +487,12 @@ def run_full_scan_stream(url: str, cache: dict):
                     if 200 <= rendered.status_code < 400 and rendered.html.strip():
                         final_result = rendered
 
-            screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
+            # Screenshots: render_js=True so js_scenario can click banners away
+            if len(pages_analyzed) == 0:
+                screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=True)
+            else:
+                screenshot_b64 = scrapingbee_screenshot_fetcher(current_url, render_js=final_result.from_renderer)
+
             if screenshot_b64:
                 if len(pages_analyzed) == 0:
                     homepage_screenshot_b64 = screenshot_b64
@@ -493,12 +515,10 @@ def run_full_scan_stream(url: str, cache: dict):
                         socials_found = True
                         yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
 
-                # Strip script/style for the text corpus
                 for tag in soup(["script", "style"]):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
-                # Enqueue more links
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         href = a.get("href")
