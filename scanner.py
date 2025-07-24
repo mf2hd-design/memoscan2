@@ -38,9 +38,12 @@ class Config:
 # HELPER FUNCTIONS
 # -----------------------------------------------------------------------------------
 
-def _host(u: str) -> str:
-    """Normalizes a hostname by removing 'www.' and lowercasing."""
+def _reg_domain(u: str) -> str:
+    """Extracts the registrable domain (e.g., 'example.com') from a URL."""
     e = tldextract.extract(u)
+    if not e.suffix:
+        host = urlparse(u).netloc.lower()
+        return host[4:] if host.startswith("www.") else host
     return f"{e.domain}.{e.suffix}".lower()
 
 def _is_same_domain(home: str, test: str) -> bool:
@@ -316,8 +319,8 @@ def run_full_scan_stream(url: str, cache: dict):
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            
             final_result = basic_result
+            
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
                 final_result = scrapingbee_html_fetcher(current_url, render_js=True)
