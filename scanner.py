@@ -84,23 +84,43 @@ def fetch_content_and_screenshot(url: str):
         return None, None
 
 # -----------------------------------------------------------------------------------
-# Social Media Scraping Function
+# Social Media Scraping Function (THIS IS THE CORRECTED LOGIC)
 # -----------------------------------------------------------------------------------
 
 def get_social_media_text(soup, base_url):
-    """Finds social links, scrapes them, and returns a single block of text."""
+    """
+    Finds all potential social media links, intelligently selects the best one,
+    and scrapes its content.
+    """
     social_text = ""
-    social_links = {
-        'twitter': soup.find('a', href=re.compile(r'twitter\.com/')),
-        'linkedin': soup.find('a', href=re.compile(r'linkedin\.com/company/'))
+    social_platforms = {
+        'twitter': re.compile(r'twitter\.com/'),
+        'linkedin': re.compile(r'linkedin\.com/') # Broadened search
     }
     headers = {"User-Agent": "Mozilla/5.0"}
-    for platform, link_tag in social_links.items():
-        if link_tag:
-            url = urljoin(base_url, link_tag['href'])
-            print(f"[Scanner] Scraping {platform.capitalize()} at {url}...")
+    
+    for platform, pattern in social_platforms.items():
+        candidate_tags = soup.find_all('a', href=pattern)
+        best_url = None
+        
+        if candidate_tags:
+            # Filter out "intent", "share", and other non-profile links
+            good_links = [
+                tag['href'] for tag in candidate_tags 
+                if 'intent' not in tag['href'] and 
+                   'share' not in tag['href'] and 
+                   '/p/' not in tag['href'] # Exclude LinkedIn posts
+            ]
+            
+            # Prioritize shorter URLs, as they are more likely to be the main profile
+            if good_links:
+                best_url = sorted(good_links, key=len)[0]
+
+        if best_url:
+            full_url = urljoin(base_url, best_url)
+            print(f"[Scanner] Found and scraping best {platform.capitalize()} link: {full_url}")
             try:
-                res = requests.get(url, headers=headers, timeout=15)
+                res = requests.get(full_url, headers=headers, timeout=15)
                 if res.ok:
                     social_soup = BeautifulSoup(res.text, "html.parser")
                     for tag in social_soup(["script", "style", "nav", "footer", "header", "aside"]):
@@ -109,6 +129,7 @@ def get_social_media_text(soup, base_url):
                     social_text += social_soup.get_text(" ", strip=True)[:2000]
             except Exception as e:
                 print(f"[WARN] Failed to scrape {platform}: {e}")
+                
     return social_text
 
 # -----------------------------------------------------------------------------------
@@ -264,6 +285,12 @@ def run_full_scan_stream(url: str, cache: dict):
             if _is_same_domain(cleaned_url, link_url):
                 discovered_links.append((link_url, a.get_text(strip=True)))
 
+        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
+        if social_corpus:
+             yield {'type': 'status', 'message': 'Social media text captured.'}
+        else:
+             yield {'type': 'status', 'message': 'No social media links found.'}
+
         yield {'type': 'status', 'message': 'Identifying key pages...'}
         KEYWORD_MAP = {
             "About Us": ["about", "company", "who we are", "mission", "our story"],
@@ -289,12 +316,7 @@ def run_full_scan_stream(url: str, cache: dict):
 
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
         text_corpus = ""
-        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
-        if social_corpus:
-             yield {'type': 'status', 'message': 'Social media text captured.'}
-        else:
-             yield {'type': 'status', 'message': 'No social media links found.'}
-
+        
         for i, page_url in enumerate(priority_pages):
             yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
@@ -321,8 +343,6 @@ def run_full_scan_stream(url: str, cache: dict):
             key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
-            # --- THIS IS THE CRITICAL FIX ---
-            # This line sends the result to the frontend immediately.
             yield result_obj
         
         yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
