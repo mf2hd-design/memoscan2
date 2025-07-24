@@ -1,6 +1,3 @@
-```python
-# scanner.py  (Option B: js_scenario steps are OPTIONAL so ScrapingBee won't 500 on missing selectors)
-
 import os
 import re
 import json
