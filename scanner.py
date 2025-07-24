@@ -35,7 +35,7 @@ class Config:
     }
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
-# Force render the homepage (recommended to ensure full DOM/screenshot)
+# Force render the homepage once (recommended)
 FORCE_RENDER_HOMEPAGE = True
 
 # -----------------------------------------------------------------------------------
@@ -62,7 +62,7 @@ def _is_same_domain(home: str, test: str) -> bool:
     """Checks if two URLs belong to the same registrable domain."""
     return _reg_domain(home) == _reg_domain(test)
 
-def find_priority_page(discovered_links: list, keywords: list) -> str or None:
+def find_priority_page(discovered_links: list, keywords: list) -> str | None:
     """Searches a list of discovered links for the best match based on keywords."""
     for link_url, link_text in discovered_links:
         for keyword in keywords:
@@ -71,7 +71,7 @@ def find_priority_page(discovered_links: list, keywords: list) -> str or None:
     return None
 
 # -----------------------------------------------------------------------------------
-# GDPR / Cookie banner handling (cookies + js_scenario)
+# GDPR / Cookie banner handling (cookies + js_scenario in correct format)
 # -----------------------------------------------------------------------------------
 
 COMMON_CONSENT_COOKIES = {
@@ -85,49 +85,45 @@ COMMON_CONSENT_COOKIES = {
 }
 
 def guess_cmp_cookie(domain: str) -> str | None:
-    # For now always return OneTrust fallback; extend later with heuristics.
+    # Simple, always return OneTrust; extend later with heuristics
     return COMMON_CONSENT_COOKIES["onetrust"]
 
-JS_SCENARIO = [
-    {"name": "wait", "args": {"duration": 1000}},
-    {"name": "script", "args": {"code": r"""
-        (function(){
-          const selectors = [
-            "button#onetrust-accept-btn-handler",
-            "button[aria-label='Accept']",
-            "button:has-text('Accept All')",
-            "button:has-text('Accept all')",
-            "button:has-text('I agree')",
-            "button:has-text('Agree')",
-            ".cookie-accept, .cookies-accept, .cc-allow, .cky-btn-accept"
-          ];
-          for (const sel of selectors) {
-            try {
-              const el = document.querySelector(sel);
-              if (el) { el.click(); console.log('Clicked consent button', sel); }
-            } catch(e){}
-          }
-        })();
-    """}},
-    {"name": "wait", "args": {"duration": 500}},
-    {"name": "script", "args": {"code": r"""
-        (function(){
-          const kill = [
-            "[id*=cookie]", "[class*=cookie]",
-            "[id*=consent]", "[class*=consent]",
-            "[id*=gdpr]", "[class*=gdpr]",
-            "[id*=privacy]", "[class*=privacy]",
-            "iframe[src*='consent']", "iframe[src*='cookie']"
-          ];
-          document.querySelectorAll(kill.join(',')).forEach(el => {
-            el.style.setProperty('display', 'none', 'important');
-            el.style.setProperty('visibility', 'hidden', 'important');
-            el.style.setProperty('opacity', '0', 'important');
-          });
-          document.body.style.overflow = 'auto';
-        })();
-    """}}
-]
+# ScrapingBee's correct js_scenario shape: {"instructions": [ ... ]}
+JS_SCENARIO = {
+    "instructions": [
+        { "wait": 1500 },
+
+        # Try a few common consent buttons (ScrapingBee will ignore if not found)
+        { "click": "#onetrust-accept-btn-handler" },
+        { "click": "button[aria-label='Accept']" },
+        { "click": ".cookie-accept" },
+        { "click": ".cc-allow" },
+        { "click": ".cky-btn-accept" },
+
+        { "wait": 500 },
+
+        # Hide any leftovers and restore scrolling
+        { "evaluate": """
+            (function(){
+              const kill = [
+                "[id*=cookie]", "[class*=cookie]",
+                "[id*=consent]", "[class*=consent]",
+                "[id*=gdpr]", "[class*=gdpr]",
+                "[id*=privacy]", "[class*=privacy]",
+                "iframe[src*='consent']", "iframe[src*='cookie']"
+              ];
+              try {
+                document.querySelectorAll(kill.join(',')).forEach(el => {
+                  el.style.setProperty('display', 'none', 'important');
+                  el.style.setProperty('visibility', 'hidden', 'important');
+                  el.style.setProperty('opacity', '0', 'important');
+                });
+                document.body.style.overflow = 'auto';
+              } catch(e) {}
+            })();
+        """ }
+    ]
+}
 
 def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool) -> dict:
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
@@ -138,11 +134,11 @@ def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool) -
         "api_key": api_key,
         "url": url,
         "render_js": "true" if render_js else "false",
-        "wait": 3000,  # integer ms
+        "wait": 3000,  # integer milliseconds
         "js_scenario": json.dumps(JS_SCENARIO),
     }
 
-    # Pre-seed consent cookie
+    # Pre-seed consent cookies (works on all plans)
     consent_cookie = guess_cmp_cookie(reg_domain)
     if consent_cookie:
         params["cookies"] = consent_cookie
@@ -150,7 +146,7 @@ def build_scrapingbee_params(url: str, render_js: bool, want_screenshot: bool) -
     if want_screenshot:
         params.update({
             "screenshot": "true",
-            "block_resources": "false",   # don't block images when screenshotting
+            "block_resources": "false",   # do not block images when screenshotting
             "window_width": 1280,
             "window_height": 1024,
             "screenshot_full_page": "false",
@@ -470,12 +466,10 @@ def run_full_scan_stream(url: str, cache: dict):
                         socials_found = True
                         yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
 
-                # Strip script/style for the text corpus
                 for tag in soup(["script", "style"]):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
-                # Enqueue more links
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         href = a.get("href")
