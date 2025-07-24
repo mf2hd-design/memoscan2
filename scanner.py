@@ -1,3 +1,5 @@
+# scanner.py  (Option B: js_scenario steps are OPTIONAL so ScrapingBee won't 500 on missing selectors)
+
 import os
 import re
 import json
@@ -597,4 +599,3 @@ def run_full_scan_stream(url: str, cache: dict):
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
-```
