@@ -16,7 +16,7 @@ from openai import OpenAI
 try:
     import tldextract
 except ImportError:
-    tldextract = None  # fallback later
+    tldextract = None  # fallback
 
 load_dotenv()
 
@@ -47,12 +47,11 @@ class Config:
 
     # ScrapingBee
     SCRAPINGBEE_API_KEY      = os.getenv("SCRAPINGBEE_API_KEY", "")
-    # Costly, off by default; only used on final retry if enabled:
+    # Costly, off by default; only use on last retry if allowed:
     SCRAPINGBEE_USE_PREMIUM  = os.getenv("SCRAPINGBEE_USE_PREMIUM", "false").lower() == "true"
     SCRAPINGBEE_USE_STEALTH  = os.getenv("SCRAPINGBEE_USE_STEALTH", "false").lower() == "true"
 
     # Screenshot options
-    SCREENSHOT_IMAGE_FORMAT  = os.getenv("SCREENSHOT_IMAGE_FORMAT", "jpeg").lower()  # 'png' or 'jpeg'
     SCREENSHOT_FULL_PAGE     = os.getenv("SCREENSHOT_FULL_PAGE", "false").lower() == "true"
 
     # Regexes
@@ -86,12 +85,6 @@ def _clean_url(url: str) -> str:
         url = "https://" + url
     return url.split("#")[0]
 
-def _safe_b64_png(data: bytes) -> str:
-    """Return a data:image/<fmt>;base64,... string (OpenAI supports png/jpeg/webp/gif)."""
-    # We’ll always expose it as png/jpeg depending on Config
-    fmt = "jpeg" if Config.SCREENSHOT_IMAGE_FORMAT == "jpeg" else "png"
-    return f"data:image/{fmt};base64,{base64.b64encode(data).decode('utf-8')}"
-
 def _is_valid_data_uri_img(uri: str) -> bool:
     return uri.startswith("data:image/png;base64,") or \
            uri.startswith("data:image/jpeg;base64,") or \
@@ -104,11 +97,6 @@ def _strip_scripts_and_styles(soup: BeautifulSoup):
     return soup
 
 def _extract_visual_hints(html: str):
-    """
-    Light-weight heuristics to give the LLM visual context:
-    - Detect common font-family declarations
-    - Extract hex colors or css vars with color values
-    """
     fonts = set()
     colors = set()
 
@@ -132,6 +120,9 @@ def _extract_visual_hints(html: str):
         "fonts": list(sorted(fonts))[:15],
         "colors": list(sorted(colors))[:15],
     }
+
+def _data_uri_from_bytes(b: bytes, fmt="png"):
+    return f"data:image/{fmt};base64,{base64.b64encode(b).decode('utf-8')}"
 
 # =====================================================================================
 # FETCHERS
@@ -170,50 +161,82 @@ def basic_fetcher(url: str) -> FetchResult:
 
 def _scrapingbee_js_scenario():
     """
-    Strictly schema-compliant js_scenario:
-    {
-      "instructions": [
-        {"wait": 1500},
-        {"click": "#selector", "optional": true},
-        {"evaluate": "some JS"}
-      ]
-    }
+    We ONLY use wait + evaluate (no click steps) to avoid schema issues.
+    The evaluate script:
+      - tries to click common selectors
+      - falls back to text-based clicking (accept/agree/allow/zulassen/permitir…)
+      - hides remaining overlays
     """
-    hide_css = (
-        "(function(){"
-        "try {"
-        "var kill=['[id*=\"cookie\"]','[class*=\"cookie\"]','[id*=\"consent\"]','[class*=\"consent\"]',"
-        "'[id*=\"gdpr\"]','[class*=\"gdpr\"]','[id*=\"privacy\"]','[class*=\"privacy\"]',"
-        "'iframe[src*=\"consent\"]','iframe[src*=\"cookie\"]'];"
-        "document.querySelectorAll(kill.join(',')).forEach(function(el){"
-        "el.style.setProperty('display','none','important');"
-        "el.style.setProperty('visibility','hidden','important');"
-        "el.style.setProperty('opacity','0','important');"
-        "});"
-        "document.body && (document.body.style.overflow='auto');"
-        "} catch(e){}"
-        "})();"
-    )
-
-    click_candidates = [
-        "#onetrust-accept-btn-handler",
-        ".onetrust-accept-btn-handler",
-        "#CybotCookiebotDialogBodyLevelButtonAccept",
-        ".cookie-accept",
-        ".cookies-accept",
-        ".cc-allow",
-        ".cky-btn-accept",
-        "button[aria-label='Accept']",
-        "button[aria-label='I agree']",
+    text_needles = [
+        "accept", "agree", "allow", "zulassen", "permitir", "consent",
+        "cookies", "ok", "got it", "dismiss", "yes"
     ]
 
-    instructions = [{"wait": 1500}]
-    for sel in click_candidates:
-        instructions.append({"click": sel, "optional": True})
-    instructions.append({"evaluate": hide_css})
-    instructions.append({"wait": 400})
+    script = f"""
+(function(){{
+  try {{
+    const needles = {json.dumps(text_needles)};
+    const tryClickByText = (tag) => {{
+      const els = document.querySelectorAll(tag);
+      for (const el of els) {{
+        const txt = (el.innerText || el.textContent || '').toLowerCase();
+        for (const n of needles) {{
+          if (txt.includes(n)) {{
+            try {{ el.click(); console.log('clicked text', txt); return true; }} catch (e) {{}}
+          }}
+        }}
+      }}
+      return false;
+    }};
 
-    return {"instructions": instructions}
+    const selectors = [
+      "#onetrust-accept-btn-handler",
+      ".onetrust-accept-btn-handler",
+      "#CybotCookiebotDialogBodyLevelButtonAccept",
+      ".cookie-accept",
+      ".cookies-accept",
+      ".cc-allow",
+      ".cky-btn-accept",
+      "button[aria-label='Accept']",
+      "button[aria-label='I agree']"
+    ];
+
+    for (const sel of selectors) {{
+      try {{
+        const el = document.querySelector(sel);
+        if (el) {{ el.click(); console.log('clicked sel', sel); }}
+      }} catch(e) {{}}
+    }}
+
+    tryClickByText('button');
+    tryClickByText('a');
+    tryClickByText('[role=button]');
+
+    const kill = [
+      "[id*='cookie']", "[class*='cookie']",
+      "[id*='consent']", "[class*='consent']",
+      "[id*='gdpr']",   "[class*='gdpr']",
+      "[id*='privacy']","[class*='privacy']",
+      "iframe[src*='consent']", "iframe[src*='cookie']"
+    ];
+    document.querySelectorAll(kill.join(',')).forEach(el => {{
+      el.style.setProperty('display','none','important');
+      el.style.setProperty('visibility','hidden','important');
+      el.style.setProperty('opacity','0','important');
+      el.removeAttribute('style'); // last resort to hide if inline style reappears
+    }});
+    document.body && (document.body.style.overflow='auto');
+  }} catch(e) {{}}
+}})();
+""".strip()
+
+    return {
+        "instructions": [
+            {"wait": 2000},
+            {"evaluate": script},
+            {"wait": 400}
+        ]
+    }
 
 def _validate_js_scenario(js):
     if not isinstance(js, dict):
@@ -225,11 +248,6 @@ def _validate_js_scenario(js):
             return False
         if "wait" in ins:
             if not isinstance(ins["wait"], int):
-                return False
-        elif "click" in ins:
-            if not isinstance(ins["click"], str):
-                return False
-            if "optional" in ins and not isinstance(ins["optional"], bool):
                 return False
         elif "evaluate" in ins:
             if not isinstance(ins["evaluate"], str):
@@ -248,11 +266,7 @@ def _scrapingbee_common_params(url: str, render_js: bool, screenshot: bool):
     }
     if screenshot:
         p["screenshot"] = "true"
-        # Only add image_format on screenshot requests (ScrapingBee supports it)
-        if Config.SCREENSHOT_IMAGE_FORMAT in ("png", "jpeg", "jpg"):
-            # ScrapingBee expects 'jpeg' not 'jpg'
-            fmt = "jpeg" if Config.SCREENSHOT_IMAGE_FORMAT in ("jpeg", "jpg") else "png"
-            p["image_format"] = fmt
+        # DO NOT SEND image_format -> Bee complains "Unknown field."
         if Config.SCREENSHOT_FULL_PAGE:
             p["screenshot_full_page"] = "true"
     return p
@@ -277,9 +291,9 @@ def _scrapingbee_request(url: str, render_js: bool, screenshot: bool, with_js: b
         try:
             p = _scrapingbee_common_params(url, render_js=render_js, screenshot=screenshot)
 
-            # attempt 0: as requested (with js_scenario if requested)
+            # attempt 0: with js_scenario
             # attempt 1: without js_scenario
-            # attempt 2: escalate proxy if enabled
+            # attempt 2: without js_scenario + proxy escalation (if allowed)
             if attempt == 0 and with_js and js_scenario:
                 p["js_scenario"] = json.dumps(js_scenario)
             elif attempt == 2:
@@ -318,7 +332,8 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool = True):
         return []
     try:
         res = _scrapingbee_request(url, render_js=render_js, screenshot=True, with_js=True, escalate_proxy=False)
-        data_uri = _safe_b64_png(res.content)
+        # Assume PNG in the data URI (Bee returns PNG by default)
+        data_uri = _data_uri_from_bytes(res.content, fmt="png")
         return [data_uri] if _is_valid_data_uri_img(data_uri) else []
     except Exception as e:
         print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
@@ -567,7 +582,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 if 200 <= rendered.status_code < 400 and rendered.html.strip():
                     final_result = rendered
 
-            # Screenshot attempt (limited quantity to LLM)
+            # Screenshot attempt (up to MAX_SCREENSHOTS_FOR_LLM)
             if len(images_for_llm) < Config.MAX_SCREENSHOTS_FOR_LLM:
                 shots = scrapingbee_screenshot_fetcher(current_url, render_js=True)
                 for data_uri in shots:
