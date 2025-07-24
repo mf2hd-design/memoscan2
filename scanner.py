@@ -100,15 +100,15 @@ def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
         "url": url,
         "render_js": "true" if render_js else "false",
         "block_resources": "true",
-        "wait": "networkidle",
     }
     try:
         res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
         res.raise_for_status()
         return FetchResult(url, res.text, res.status_code, from_renderer=render_js)
     except requests.exceptions.HTTPError as he:
-        print(f"[ScrapingBeeHTML] HTTP ERROR for {url}: {he.response.status_code} {he.response.text[:500]}")
-        return FetchResult(url, f"Failed via ScrapingBee: {he.response.text}", he.response.status_code, from_renderer=render_js)
+        body = he.response.text[:1000] if he.response is not None else ""
+        print(f"[ScrapingBeeHTML] HTTP ERROR for {url}: {he.response.status_code if he.response else ''} {body}")
+        return FetchResult(url, f"Failed via ScrapingBee: {body}", he.response.status_code if he.response else 500, from_renderer=render_js)
     except Exception as e:
         print(f"[ScrapingBeeHTML] ERROR for {url}: {e}")
         return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js)
@@ -123,14 +123,15 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str or None:
         "api_key": api_key, "url": url, "render_js": "true" if render_js else "false",
         "screenshot": "true", "response_format": "base64", "format": "png",
         "window_width": 1280, "window_height": 1024,
-        "block_resources": "false", "wait": "networkidle",
+        "block_resources": "false",
     }
     try:
         res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
         res.raise_for_status()
-        return res.text # Already base64 encoded
+        return res.text
     except requests.exceptions.HTTPError as he:
-        print(f"[ScrapingBeeScreenshot] HTTP ERROR for {url}: {he.response.status_code} {he.response.text[:500]}")
+        body = he.response.text[:1000] if he.response is not None else ""
+        print(f"[ScrapingBeeScreenshot] HTTP ERROR for {url}: {he.response.status_code if he.response else ''} {body}")
         return None
     except Exception as e:
         print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
@@ -314,8 +315,8 @@ def run_full_scan_stream(url: str, cache: dict):
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            
             final_result = basic_result
+            
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
                 final_result = scrapingbee_html_fetcher(current_url, render_js=True)
