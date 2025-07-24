@@ -1,15 +1,8 @@
-import os
-import re
-import json
-import time
-import base64
-import uuid
+import os, re, json, time, base64, uuid
 from collections import deque
 from urllib.parse import urljoin
 
-import httpx
-import requests
-import tldextract
+import httpx, requests, tldextract
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -20,42 +13,33 @@ load_dotenv()
 # CONFIG
 # -----------------------------------------------------------------------------------
 class Config:
-    # Crawl / time budgets
-    SITE_BUDGET_SECS = int(os.getenv("SITE_BUDGET_SECS", 60))
-    SITE_MAX_BUDGET_SECS = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
-    CRAWL_MAX_PAGES = int(os.getenv("CRAWL_MAX_PAGES", 5))
-    CRAWL_MAX_DEPTH = int(os.getenv("CRAWL_MAX_DEPTH", 2))
-
-    # Networking
-    BASIC_TIMEOUT_SECS = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
+    SITE_BUDGET_SECS       = int(os.getenv("SITE_BUDGET_SECS", 60))
+    SITE_MAX_BUDGET_SECS   = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
+    CRAWL_MAX_PAGES        = int(os.getenv("CRAWL_MAX_PAGES", 5))
+    CRAWL_MAX_DEPTH        = int(os.getenv("CRAWL_MAX_DEPTH", 2))
+    BASIC_TIMEOUT_SECS     = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
     SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
-    SCRAPINGBEE_MAX_RETRIES = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))  # 0 = no retry, 1 = 1 retry, etc.
+    SCRAPINGBEE_MAX_RETRIES  = int(os.getenv("SCRAPINGBEE_MAX_RETRIES", 1))
     SCRAPINGBEE_BACKOFF_SECS = float(os.getenv("SCRAPINGBEE_BACKOFF_SECS", 1.5))
-    # none|premium|stealth
-    SCRAPINGBEE_PROXY_MODE = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")
+    SCRAPINGBEE_PROXY_MODE   = os.getenv("SCRAPINGBEE_PROXY_MODE", "none")  # none|premium|stealth
 
-    # Heuristics
-    RENDER_MIN_LINKS = int(os.getenv("RENDER_MIN_LINKS", 15))
+    RENDER_MIN_LINKS      = int(os.getenv("RENDER_MIN_LINKS", 15))
     RENDER_MIN_TEXT_BYTES = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
-    SPA_SIGNALS = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
+    SPA_SIGNALS           = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
 
-    # Regex
     SOCIAL_PLATFORMS = {
-        "twitter": re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
+        "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
         "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+"),
     }
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
-    # Remove these from the DOM text we feed to the LLM (in case banners survived)
     COOKIE_GDPR_KILL_SELECTORS = [
         "[id*='cookie']", "[class*='cookie']",
         "[id*='consent']", "[class*='consent']",
         "[id*='gdpr']",   "[class*='gdpr']",
         "[id*='privacy']", "[class*='privacy']",
-        "iframe[src*='consent']",
-        "iframe[src*='cookie']"
+        "iframe[src*='consent']","iframe[src*='cookie']"
     ]
-
 
 # -----------------------------------------------------------------------------------
 # HELPERS
@@ -68,221 +52,124 @@ def _is_same_domain(home: str, test: str) -> bool:
     return _reg_domain(home) == _reg_domain(test)
 
 def _clean_url(url: str) -> str:
-    url = url.strip()
     if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+        url = "https://" + url.strip()
     return url.split("#")[0]
 
-
 # -----------------------------------------------------------------------------------
-# FETCH CORE
+# FETCHERS
 # -----------------------------------------------------------------------------------
 class FetchResult:
-    def __init__(self, url: str, html: str, status_code: int, from_renderer: bool):
-        self.url = url
-        self.html = html or ""
-        self.status_code = status_code
-        self.from_renderer = from_renderer
-
+    def __init__(self, url, html, status_code, from_renderer):
+        self.url, self.html, self.status_code, self.from_renderer = url, html or "", status_code, from_renderer
 
 _basic_client = httpx.Client(
-    headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-    },
-    follow_redirects=True,
-    timeout=Config.BASIC_TIMEOUT_SECS,
+    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+    follow_redirects=True, timeout=Config.BASIC_TIMEOUT_SECS
 )
 
-
 def basic_fetcher(url: str) -> FetchResult:
-    print(f"[BasicFetcher] Fetching {url}")
+    print(f"[BasicFetcher] {url}")
     try:
-        res = _basic_client.get(url)
-        res.raise_for_status()
-        return FetchResult(str(res.url), res.text, res.status_code, from_renderer=False)
+        r = _basic_client.get(url); r.raise_for_status()
+        return FetchResult(str(r.url), r.text, r.status_code, False)
     except Exception as e:
-        print(f"[BasicFetcher] ERROR for {url}: {e}")
-        return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
+        print(f"[BasicFetcher] ERROR {e}")
+        return FetchResult(url, "", 500, False)
 
-
-# -------- ScrapingBee js_scenario (click-only + optional=True) --------
-CLICK_SELECTORS = [
-    "#onetrust-accept-btn-handler",
-    ".onetrust-accept-btn-handler",
-    ".cookie-accept", ".cookies-accept", ".cc-allow", ".cky-btn-accept",
-    "button[aria-label='Accept']",
-    "button[aria-label='Accept all']",
-    "button[name='accept']",
+# ----- ScrapingBee js_scenario (CSS + XPath, all optional) -----
+CSS_CLICK_SELECTORS = [
+    "#onetrust-accept-btn-handler",".onetrust-accept-btn-handler",
+    "#CybotCookiebotDialogBodyLevelButtonAccept",
+    "#cookie-accept",".cookie-accept",".cookies-accept",
+    ".cc-allow",".cky-btn-accept",
     "[data-testid='cookie-accept']",
-    "button:has-text('Accept')",         # ScrapingBee supports Playwright-like selectors
-    "button:has-text('Accept All')",
-    "button:has-text('I agree')",
-    "button:has-text('Agree')"
+    "button[aria-label='Accept']","button[aria-label='Accept all']",
+    "button[name='accept']","button#accept","button#acceptAll",
+    "button.consent-accept","button.cookie-accept",
+    "[id*='accept'][class*='cookie']","[class*='accept'][class*='cookie']"
 ]
 
-def make_js_scenario_click_only() -> dict:
-    instructions = [{"wait": 1200}]
-    for sel in CLICK_SELECTORS:
-        instructions.append({"click": sel, "optional": True})
-    instructions.append({"wait": 400})
-    return {"instructions": instructions}
+TEXT_WORDS = ["accept", "allow", "agree", "zulassen", "permitirlas", "accept all", "i agree"]
+XPATH_CLICK_SELECTORS = [
+    f"//button[contains(translate(normalize-space(text()),'ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÜÑÄÖÜẞ','abcdefghijklmnopqrstuvwxyzáéíóúüñäöüß'), '{w}')]"
+    for w in TEXT_WORDS
+]
 
+def make_js_scenario() -> dict:
+    instr = [{"wait": 1200}]
+    instr += [{"click": sel, "optional": True} for sel in CSS_CLICK_SELECTORS]
+    instr += [{"click": xp,  "optional": True} for xp in XPATH_CLICK_SELECTORS]
+    instr.append({"wait": 400})
+    return {"instructions": instr}
 
-def build_scrapingbee_params(
-    url: str,
-    render_js: bool,
-    want_screenshot: bool,
-    use_js_scenario: bool,
-    wait_ms: int,
-) -> dict:
-    api_key = os.getenv("SCRAPINGBEE_API_KEY")
-    if not api_key:
-        raise RuntimeError("SCRAPINGBEE_API_KEY not set")
-
-    params: dict = {
-        "api_key": api_key,
+def _bee_params(url, render_js, screenshot, js_scen, wait):
+    p = {
+        "api_key": os.getenv("SCRAPINGBEE_API_KEY"),
         "url": url,
         "render_js": render_js,
-        "wait": wait_ms,
+        "wait": wait,
     }
-
-    if use_js_scenario and render_js:
-        # ScrapingBee expects a JSON string for js_scenario
-        params["js_scenario"] = json.dumps(make_js_scenario_click_only())
-
-    if want_screenshot:
-        params.update({
-            "screenshot": True,
-            "block_resources": False,
-            "window_width": 1280,
-            "window_height": 1024,
-            "screenshot_full_page": False,
-        })
+    if js_scen and render_js:
+        p["js_scenario"] = json.dumps(make_js_scenario())
+    if screenshot:
+        p.update({"screenshot": True,"block_resources": False,
+                  "window_width": 1280,"window_height": 1024,
+                  "screenshot_full_page": False})
     else:
-        params["block_resources"] = True
-
+        p["block_resources"] = True
     mode = Config.SCRAPINGBEE_PROXY_MODE
-    if mode == "premium":
-        params["premium_proxy"] = True
-    elif mode == "stealth":
-        params["stealth_proxy"] = True
+    if mode=="premium": p["premium_proxy"]=True
+    if mode=="stealth": p["stealth_proxy"]=True
+    return p
 
-    return params
-
-
-def _bee_request(url: str, *, render_js: bool, want_screenshot: bool,
-                 use_js_scenario: bool, wait_ms: int) -> requests.Response:
-    params = build_scrapingbee_params(
-        url=url,
-        render_js=render_js,
-        want_screenshot=want_screenshot,
-        use_js_scenario=use_js_scenario,
-        wait_ms=wait_ms
-    )
-    return requests.get(
-        "https://app.scrapingbee.com/api/v1/",
-        params=params,
-        timeout=(10, Config.SCRAPINGBEE_TIMEOUT_SECS),
-    )
-
-
-def _bee_call_with_retries(url: str, *, render_js: bool, want_screenshot: bool):
-    # Always render_js for screenshots
-    if want_screenshot and not render_js:
-        render_js = True
-
-    attempts = Config.SCRAPINGBEE_MAX_RETRIES + 1
-    for attempt in range(attempts):
-        wait_ms = 1000 if attempt == 0 else 3000
-        use_js = (attempt == 0)  # first try with js_scenario, second without
-
+def _bee_call(url, *, render_js, screenshot):
+    if screenshot: render_js = True
+    for attempt in range(Config.SCRAPINGBEE_MAX_RETRIES+1):
         try:
-            res = _bee_request(
-                url,
-                render_js=render_js,
-                want_screenshot=want_screenshot,
-                use_js_scenario=use_js,
-                wait_ms=wait_ms
-            )
-            if res.status_code < 400:
-                return res
-            print(f"[ScrapingBee] HTTP {res.status_code} attempt={attempt} body={res.text[:500]}")
-        except requests.exceptions.RequestException as e:
-            print(f"[ScrapingBee] Exception attempt={attempt}: {e}")
-
-        if attempt < attempts - 1:
-            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS * (attempt + 1))
-
+            params=_bee_params(url, render_js, screenshot, attempt==0, 1000 if attempt==0 else 3000)
+            r=requests.get("https://app.scrapingbee.com/api/v1/",params=params,
+                           timeout=(10,Config.SCRAPINGBEE_TIMEOUT_SECS))
+            if r.status_code<400: return r
+            print(f"[ScrapingBee] HTTP {r.status_code} attempt={attempt} {r.text[:300]}")
+        except requests.RequestException as e:
+            print(f"[ScrapingBee] EXC attempt={attempt} {e}")
+        if attempt<Config.SCRAPINGBEE_MAX_RETRIES:
+            time.sleep(Config.SCRAPINGBEE_BACKOFF_SECS*(attempt+1))
     return None
 
+def scrapingbee_html_fetcher(url, render_js) -> FetchResult:
+    print(f"[ScrapingBeeHTML] {url} (render_js={render_js})")
+    r=_bee_call(url, render_js=render_js, screenshot=False)
+    if not r: return FetchResult(url,"",500,render_js)
+    return FetchResult(url,r.text,r.status_code,render_js)
 
-def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
-    print(f"[ScrapingBeeHTML] Fetching {url} (render_js={render_js})")
-    try:
-        res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=False)
-        if not res:
-            return FetchResult(url, "Failed via ScrapingBee after retries.", 500, from_renderer=render_js)
-        return FetchResult(url, res.text, res.status_code, from_renderer=render_js)
-    except Exception as e:
-        print(f"[ScrapingBeeHTML] ERROR for {url}: {e}")
-        return FetchResult(url, f"Failed via ScrapingBee: {e}", 500, from_renderer=render_js)
-
-
-def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str:
-    render_js = True  # force for screenshots
-    print(f"[ScrapingBeeScreenshot] Fetching {url} (render_js={render_js})")
-    try:
-        res = _bee_call_with_retries(url, render_js=render_js, want_screenshot=True)
-        if not res or res.status_code >= 400:
-            return None
-        return base64.b64encode(res.content).decode("utf-8")
-    except Exception as e:
-        print(f"[ScrapingBeeScreenshot] ERROR for {url}: {e}")
-        return None
-
+def scrapingbee_screenshot_fetcher(url, render_js) -> str|None:
+    print(f"[ScrapingBeeScreenshot] {url}")
+    r=_bee_call(url, render_js=True, screenshot=True)
+    return None if not r else base64.b64encode(r.content).decode()
 
 # -----------------------------------------------------------------------------------
-# RENDER POLICY & EXTRACTORS
+# POLICY & EXTRACT
 # -----------------------------------------------------------------------------------
-def render_policy(result: FetchResult):
-    if result.status_code >= 400:
-        return True, "http_error"
+def render_policy(res:FetchResult):
+    if res.status_code>=400: return True,"http_error"
+    soup=BeautifulSoup(res.html,"lxml")
+    if len(soup.get_text(" ",strip=True))<Config.RENDER_MIN_TEXT_BYTES: return True,"small_text"
+    if len(soup.find_all("a",href=True))<Config.RENDER_MIN_LINKS: return True,"few_links"
+    if any(sig in res.html.lower() for sig in Config.SPA_SIGNALS): return True,"spa_signal"
+    return False,"ok"
 
-    soup = BeautifulSoup(result.html, "lxml")
-    visible_text_len = len(soup.get_text(" ", strip=True))
-    if visible_text_len < Config.RENDER_MIN_TEXT_BYTES:
-        return True, "small_text"
+def _strip_cookie_nodes(soup):
+    for sel in Config.COOKIE_GDPR_KILL_SELECTORS:
+        for el in soup.select(sel): el.decompose()
 
-    if len(soup.find_all("a", href=True)) < Config.RENDER_MIN_LINKS:
-        return True, "few_links"
-
-    lower_html = result.html.lower()
-    for signal in Config.SPA_SIGNALS:
-        if signal in lower_html:
-            return True, "spa_signal"
-
-    return False, "ok"
-
-
-def _strip_cookie_nodes(soup: BeautifulSoup):
-    try:
-        for sel in Config.COOKIE_GDPR_KILL_SELECTORS:
-            for el in soup.select(sel):
-                el.decompose()
-    except Exception:
-        pass
-
-
-def social_extractor(soup: BeautifulSoup, base_url: str) -> dict:
-    found_socials = {}
-    for platform, pattern in Config.SOCIAL_PLATFORMS.items():
-        links = {tag["href"] for tag in soup.find_all("a", href=pattern)}
-        if links:
-            best_link = min(links, key=len)
-            found_socials[platform] = urljoin(base_url, best_link)
-    return found_socials
-
-
+def social_extractor(soup,base):
+    out={}
+    for k,pat in Config.SOCIAL_PLATFORMS.items():
+        links={t['href'] for t in soup.find_all("a",href=pat)}
+        if links: out[k]=urljoin(base,min(links,key=len))
+    return out
 # -----------------------------------------------------------------------------------
 # LLM PHASE
 # -----------------------------------------------------------------------------------
