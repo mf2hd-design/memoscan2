@@ -53,6 +53,10 @@ def fetch_content_and_screenshot(url: str):
             return None, None
 
         api_url = "https://shot.screenshotapi.net/screenshot"
+        
+        # --- THIS IS THE CRITICAL FIX ---
+        # Add a 'delay' of 5 seconds to ensure all JavaScript has finished rendering
+        # before the API captures the HTML.
         params = {
             "token": api_key,
             "url": url,
@@ -62,10 +66,11 @@ def fetch_content_and_screenshot(url: str):
             "height": 1024,
             "wait_for_event": "networkidle",
             "hide_cookie_banners": "true",
-            "html": "true"
+            "html": "true",
+            "delay": 5000 # Wait 5 seconds after network idle
         }
         
-        response = requests.get(api_url, params=params, timeout=120)
+        response = requests.get(api_url, params=params, timeout=180) # Increased timeout
         response.raise_for_status()
         
         data = response.json()
@@ -84,18 +89,15 @@ def fetch_content_and_screenshot(url: str):
         return None, None
 
 # -----------------------------------------------------------------------------------
-# Social Media Scraping Function (THIS IS THE CORRECTED LOGIC)
+# Social Media Scraping Function
 # -----------------------------------------------------------------------------------
 
 def get_social_media_text(soup, base_url):
-    """
-    Finds all potential social media links, intelligently selects the best one,
-    and scrapes its content.
-    """
+    """Finds all potential social media links, intelligently selects the best one, and scrapes its content."""
     social_text = ""
     social_platforms = {
         'twitter': re.compile(r'twitter\.com/'),
-        'linkedin': re.compile(r'linkedin\.com/') # Broadened search
+        'linkedin': re.compile(r'linkedin\.com/')
     }
     headers = {"User-Agent": "Mozilla/5.0"}
     
@@ -104,15 +106,13 @@ def get_social_media_text(soup, base_url):
         best_url = None
         
         if candidate_tags:
-            # Filter out "intent", "share", and other non-profile links
             good_links = [
                 tag['href'] for tag in candidate_tags 
                 if 'intent' not in tag['href'] and 
                    'share' not in tag['href'] and 
-                   '/p/' not in tag['href'] # Exclude LinkedIn posts
+                   '/p/' not in tag['href']
             ]
             
-            # Prioritize shorter URLs, as they are more likely to be the main profile
             if good_links:
                 best_url = sorted(good_links, key=len)[0]
 
@@ -279,17 +279,17 @@ def run_full_scan_stream(url: str, cache: dict):
 
         homepage_soup = BeautifulSoup(homepage_html, "html.parser")
         
-        discovered_links = []
-        for a in homepage_soup.find_all("a", href=True):
-            link_url = urljoin(cleaned_url, a["href"])
-            if _is_same_domain(cleaned_url, link_url):
-                discovered_links.append((link_url, a.get_text(strip=True)))
-
         social_corpus = get_social_media_text(homepage_soup, cleaned_url)
         if social_corpus:
              yield {'type': 'status', 'message': 'Social media text captured.'}
         else:
              yield {'type': 'status', 'message': 'No social media links found.'}
+
+        discovered_links = []
+        for a in homepage_soup.find_all("a", href=True):
+            link_url = urljoin(cleaned_url, a["href"])
+            if _is_same_domain(cleaned_url, link_url):
+                discovered_links.append((link_url, a.get_text(strip=True)))
 
         yield {'type': 'status', 'message': 'Identifying key pages...'}
         KEYWORD_MAP = {
