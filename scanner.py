@@ -246,9 +246,7 @@ def run_full_scan_stream(url: str, cache: dict):
         yield {'type': 'status', 'message': 'Step 1/5: Initializing scan...'}
         cleaned_url = _clean_url(url)
 
-        # --- PASS 1: DISCOVERY & HOMEPAGE ANALYSIS ---
         yield {'type': 'status', 'message': 'Crawling homepage to discover site structure...'}
-        
         homepage_screenshot_b64, homepage_html = fetch_content_and_screenshot(cleaned_url)
         if not homepage_html:
             raise Exception("Could not fetch homepage content. The site may be blocking automation.")
@@ -266,13 +264,6 @@ def run_full_scan_stream(url: str, cache: dict):
             if _is_same_domain(cleaned_url, link_url):
                 discovered_links.append((link_url, a.get_text(strip=True)))
 
-        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
-        if social_corpus:
-             yield {'type': 'status', 'message': 'Social media text captured.'}
-        else:
-             yield {'type': 'status', 'message': 'No social media links found.'}
-
-        # --- PASS 2: BUILD PRIORITY QUEUE ---
         yield {'type': 'status', 'message': 'Identifying key pages...'}
         KEYWORD_MAP = {
             "About Us": ["about", "company", "who we are", "mission", "our story"],
@@ -296,17 +287,20 @@ def run_full_scan_stream(url: str, cache: dict):
                     found_urls.add(link_url)
             if len(priority_pages) < 5: break
 
-        # --- PASS 3: CRAWL & COLLECT TEXT FROM ALL PAGES ---
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
         text_corpus = ""
-        
+        social_corpus = get_social_media_text(homepage_soup, cleaned_url)
+        if social_corpus:
+             yield {'type': 'status', 'message': 'Social media text captured.'}
+        else:
+             yield {'type': 'status', 'message': 'No social media links found.'}
+
         for i, page_url in enumerate(priority_pages):
             yield {'type': 'status', 'message': f'Analyzing page {i+1}/{len(priority_pages)}: {page_url.split("?")[0]}'}
             
             if page_url == cleaned_url:
                 page_html = homepage_html
             else:
-                # We only need the HTML here, not the screenshot
                 _, page_html = fetch_content_and_screenshot(page_url)
             
             if page_html:
@@ -327,6 +321,9 @@ def run_full_scan_stream(url: str, cache: dict):
             key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
+            # --- THIS IS THE CRITICAL FIX ---
+            # This line sends the result to the frontend immediately.
+            yield result_obj
         
         yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
         summary_text = call_openai_for_executive_summary(all_results)
