@@ -11,6 +11,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import httpx
 import gevent
+from collections import deque
 
 load_dotenv()
 
@@ -43,56 +44,82 @@ class FetchResult:
         self.status_code = status_code
         self.from_renderer = from_renderer
 
+_basic_client = httpx.Client(
+    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"},
+    follow_redirects=True,
+    timeout=Config.BASIC_TIMEOUT_SECS
+)
+
 def basic_fetcher(url: str) -> FetchResult:
     """Performs a simple, fast HTTP GET request."""
     print(f"[BasicFetcher] Fetching {url}")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     try:
-        with httpx.Client(headers=headers, follow_redirects=True) as client:
-            res = client.get(url, timeout=Config.BASIC_TIMEOUT_SECS)
-            res.raise_for_status()
-            return FetchResult(url, res.text, res.status_code, from_renderer=False)
+        res = _basic_client.get(url)
+        res.raise_for_status()
+        return FetchResult(str(res.url), res.text, res.status_code, from_renderer=False)
     except Exception as e:
         print(f"[BasicFetcher] ERROR for {url}: {e}")
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
-def scrapingbee_fetcher(url: str, get_screenshot: bool = False):
-    """Uses ScrapingBee for JavaScript rendering and screenshots."""
-    print(f"[ScrapingBeeFetcher] Fetching {url} (screenshot: {get_screenshot})")
+def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool = False):
+    """
+    Uses ScrapingBee for JavaScript rendering and/or screenshots.
+    Returns (FetchResult, screenshot_b64_or_None).
+    """
+    print(f"[ScrapingBeeFetcher] Fetching {url} (render_js={render_js}, screenshot={get_screenshot})")
     api_key = os.getenv("SCRAPINGBEE_API_KEY")
-    if not api_key: return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=True), None
-    
+    if not api_key:
+        return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=render_js), None
+
     params = {
         "api_key": api_key,
         "url": url,
-        "render_js": "true",
-        "block_ads": "true",
+        "render_js": "true" if render_js else "false",
         "block_resources": "image,media,font",
-        "screenshot": "true" if get_screenshot else "false",
-        "window_width": 1280,
-        "window_height": 1024,
     }
+    
+    # ScrapingBee's API has different response types for HTML vs. screenshots
+    if get_screenshot:
+        params.update({
+            "screenshot": "true",
+            "screenshot_full_page": "false",
+            "window_width": 1280,
+            "window_height": 1024,
+        })
+        # For screenshots, the body IS the image, so we don't get HTML.
+        # We make a separate request for HTML if needed.
+    
     try:
-        res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+        res = requests.get(
+            "https://app.scrapingbee.com/api/v1/",
+            params=params,
+            timeout=Config.SCRAPINGBEE_TIMEOUT_SECS
+        )
         res.raise_for_status()
-        
-        screenshot_b64 = base64.b64encode(res.content).decode('utf-8') if get_screenshot else None
-        
-        html = res.headers.get("Spb-Resolved-Url") and res.text or ""
-        
-        return FetchResult(url, html, res.status_code, from_renderer=True), screenshot_b64
+
+        screenshot_b64 = None
+        html = ""
+
+        if get_screenshot:
+            screenshot_b64 = base64.b64encode(res.content).decode('utf-8')
+            # HTML is NOT in this response.
+        else:
+            html = res.text
+
+        return FetchResult(url, html, res.status_code, from_renderer=render_js), screenshot_b64
+
     except Exception as e:
         print(f"[ScrapingBeeFetcher] ERROR for {url}: {e}")
-        return FetchResult(url, f"Failed to fetch via ScrapingBee: {e}", 500, from_renderer=True), None
+        return FetchResult(url, f"Failed to fetch via ScrapingBee: {e}", 500, from_renderer=render_js), None
 
 def render_policy(result: FetchResult) -> (bool, str):
     """Decides if we need to use ScrapingBee based on heuristics."""
     if result.status_code >= 400:
         return True, "http_error"
-    if len(result.html) < Config.RENDER_MIN_TEXT_BYTES:
+    if len(result.html.encode('utf-8')) < Config.RENDER_MIN_TEXT_BYTES:
         return True, "small_text"
     
-    soup = BeautifulSoup(result.html, "html.parser")
+    soup = BeautifulSoup(result.html, "lxml")
     if len(soup.find_all("a")) < Config.RENDER_MIN_LINKS:
         return True, "few_links"
     
@@ -113,7 +140,7 @@ def social_extractor(soup, base_url):
     return found_socials
 
 # -----------------------------------------------------------------------------------
-# AI Analysis Functions (COMPLETE AND UNTRUNCATED)
+# AI Analysis Functions
 # -----------------------------------------------------------------------------------
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -245,14 +272,13 @@ def run_full_scan_stream(url: str, cache: dict):
     start_time = time.time()
     budget = Config.SITE_BUDGET_SECS
     escalated = False
-    
+
     pages_analyzed = []
     text_corpus = ""
-    social_corpus = ""
     homepage_screenshot_b64 = None
     socials_found = False
-    
-    queue = [(_clean_url(url), 0)]
+
+    queue = deque([(_clean_url(url), 0)])
     seen_urls = {_clean_url(url)}
 
     try:
@@ -264,52 +290,55 @@ def run_full_scan_stream(url: str, cache: dict):
                 yield {'type': 'status', 'message': 'Time budget exceeded. Finalizing analysis.'}
                 break
 
-            current_url, depth = queue.pop(0)
+            current_url, depth = queue.popleft()
             yield {'type': 'status', 'message': f'Analyzing page {len(pages_analyzed) + 1}/{Config.CRAWL_MAX_PAGES}: {current_url}'}
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            
             final_result = basic_result
+            
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
-                rendered_result, _ = scrapingbee_fetcher(current_url, get_screenshot=False)
-                if rendered_result and rendered_result.html:
+                rendered_result, _ = scrapingbee_fetcher(current_url, render_js=True, get_screenshot=False)
+                if 200 <= rendered_result.status_code < 400 and rendered_result.html.strip():
                     final_result = rendered_result
 
-            _, screenshot_b64 = scrapingbee_fetcher(current_url, get_screenshot=True)
+            _, screenshot_b64 = scrapingbee_fetcher(current_url, render_js=final_result.from_renderer, get_screenshot=True)
             if screenshot_b64:
-                if len(pages_analyzed) == 0: homepage_screenshot_b64 = screenshot_b64
+                if len(pages_analyzed) == 0:
+                    homepage_screenshot_b64 = screenshot_b64
                 image_id = str(uuid.uuid4())
                 cache[image_id] = screenshot_b64
                 yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
 
             if final_result.html:
-                soup = BeautifulSoup(final_result.html, "html.parser")
+                soup = BeautifulSoup(final_result.html, "lxml")
                 if len(pages_analyzed) == 0:
                     found = social_extractor(soup, current_url)
                     if found:
                         socials_found = True
                         yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
 
-                for tag in soup(["script", "style", "nav", "footer", "aside", "header"]): tag.decompose()
+                for tag in soup(["script", "style"]): tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
-                
+
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         link_url = _clean_url(urljoin(current_url, a["href"]))
                         if _is_same_domain(url, link_url) and link_url not in seen_urls:
-                            queue.append((link_url, depth + 1))
-                            seen_urls.add(link_url)
+                            if len(seen_urls) < 200: # Safety cap on total links
+                                queue.append((link_url, depth + 1))
+                                seen_urls.add(link_url)
             
             pages_analyzed.append(final_result)
 
-            if not escalated and elapsed < Config.SITE_BUDGET_SECS:
+            elapsed = time.time() - start_time
+            if not escalated and elapsed < budget:
                 pages_rendered_by_bee = sum(1 for p in pages_analyzed if p.from_renderer)
                 if len(pages_analyzed) >= 3 and pages_rendered_by_bee >= 2 and not socials_found:
                     budget = Config.SITE_MAX_BUDGET_SECS
                     escalated = True
-                    yield {'type': 'status', 'message': f'Warning: High JS usage and no socials found. Escalating budget to {budget}s.'}
+                    yield {'type': 'status', 'message': f'High JS usage and no socials found → escalating budget to {budget}s.'}
 
         yield {'type': 'status', 'message': 'Crawl complete. Starting AI analysis...'}
         brand_summary = call_openai_for_synthesis(text_corpus)
@@ -321,11 +350,10 @@ def run_full_scan_stream(url: str, cache: dict):
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
             yield result_obj
-        
+
         yield {'type': 'status', 'message': 'Generating Executive Summary...'}
         summary_text = call_openai_for_executive_summary(all_results)
         yield {'type': 'summary', 'text': summary_text}
-        
         yield {'type': 'complete', 'message': 'Analysis finished.'}
 
     except Exception as e:
