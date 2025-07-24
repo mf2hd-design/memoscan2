@@ -34,6 +34,29 @@ class Config:
     }
 
 # -----------------------------------------------------------------------------------
+# HELPER FUNCTIONS (THIS SECTION WAS MISSING)
+# -----------------------------------------------------------------------------------
+
+def _clean_url(url: str) -> str:
+    """Cleans and standardizes a URL."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.split("#")[0]
+
+def _is_same_domain(home: str, test: str) -> bool:
+    """Checks if a test URL is on the same domain as the home URL."""
+    return urlparse(home).netloc == urlparse(test).netloc
+
+def find_priority_page(discovered_links: list, keywords: list) -> str or None:
+    """Searches a list of discovered links for the best match based on keywords."""
+    for link_url, link_text in discovered_links:
+        for keyword in keywords:
+            if keyword in link_url.lower() or keyword in link_text.lower():
+                return link_url
+    return None
+
+# -----------------------------------------------------------------------------------
 # SECTION 4: ARCHITECTURE (Fetchers, Policy, Extractor)
 # -----------------------------------------------------------------------------------
 
@@ -78,7 +101,6 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
         "block_resources": "image,media,font",
     }
     
-    # ScrapingBee's API has different response types for HTML vs. screenshots
     if get_screenshot:
         params.update({
             "screenshot": "true",
@@ -86,8 +108,6 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
             "window_width": 1280,
             "window_height": 1024,
         })
-        # For screenshots, the body IS the image, so we don't get HTML.
-        # We make a separate request for HTML if needed.
     
     try:
         res = requests.get(
@@ -100,9 +120,9 @@ def scrapingbee_fetcher(url: str, render_js: bool = True, get_screenshot: bool =
         screenshot_b64 = None
         html = ""
 
+        # ScrapingBee returns binary for screenshot, text for HTML
         if get_screenshot:
             screenshot_b64 = base64.b64encode(res.content).decode('utf-8')
-            # HTML is NOT in this response.
         else:
             html = res.text
 
@@ -295,8 +315,8 @@ def run_full_scan_stream(url: str, cache: dict):
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            final_result = basic_result
             
+            final_result = basic_result
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
                 rendered_result, _ = scrapingbee_fetcher(current_url, render_js=True, get_screenshot=False)
@@ -319,14 +339,15 @@ def run_full_scan_stream(url: str, cache: dict):
                         socials_found = True
                         yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
 
-                for tag in soup(["script", "style"]): tag.decompose()
+                for tag in soup(["script", "style"]):
+                    tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         link_url = _clean_url(urljoin(current_url, a["href"]))
                         if _is_same_domain(url, link_url) and link_url not in seen_urls:
-                            if len(seen_urls) < 200: # Safety cap on total links
+                            if len(seen_urls) < 200:
                                 queue.append((link_url, depth + 1))
                                 seen_urls.add(link_url)
             
@@ -358,4 +379,4 @@ def run_full_scan_stream(url: str, cache: dict):
 
     except Exception as e:
         print(f"[CRITICAL ERROR] The main stream failed: {e}")
-        yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
+        yield {'type': 'error', 'message': f'A critical error occurred: {e}'}```
