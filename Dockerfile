@@ -1,23 +1,35 @@
-# Use an official, slim Python image.
-FROM python:3.11-slim
+# -------- base image --------
+FROM python:3.11-slim AS runtime
 
-# Set environment variables
-ENV PYTHONUNBUFFERED True
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy the requirements file into the container
+# ---- system deps for Pillow, lxml (and a few common ones) ----
+# If you ever see build errors still, temporarily add: build-essential gcc
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libjpeg62-turbo-dev \
+    zlib1g-dev \
+    libpng-dev \
+    libxml2 \
+    libxslt1.1 \
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first to leverage Docker layer caching
 COPY requirements.txt .
 
-# Install the Python packages
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python deps
+RUN pip install --upgrade pip wheel \
+ && pip install -r requirements.txt
 
-# Copy the rest of your application code into the container
+# Copy the rest of the app
 COPY . .
 
-# Tell Render which port the container is listening on.
+# Render injects PORT, but expose for local dev
 EXPOSE 10000
 
-# The command to run when the container starts.
-CMD gunicorn -k gevent -b 0.0.0.0:${PORT} app:app
+# Gunicorn + gevent (matches your app)
+CMD gunicorn -k gevent -b 0.0.0.0:${PORT:-10000} app:app
