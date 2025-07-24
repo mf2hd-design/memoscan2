@@ -11,6 +11,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 import httpx
 from collections import deque
+import tldextract
 
 load_dotenv()
 
@@ -39,12 +40,12 @@ class Config:
 
 def _host(u: str) -> str:
     """Normalizes a hostname by removing 'www.' and lowercasing."""
-    host = urlparse(u).netloc.lower()
-    return host[4:] if host.startswith("www.") else host
+    e = tldextract.extract(u)
+    return f"{e.domain}.{e.suffix}".lower()
 
 def _is_same_domain(home: str, test: str) -> bool:
-    """Checks if two URLs belong to the same normalized domain."""
-    return _host(home) == _host(test)
+    """Checks if two URLs belong to the same registrable domain."""
+    return _reg_domain(home) == _reg_domain(test)
 
 def _clean_url(url: str) -> str:
     """Cleans and standardizes a URL."""
@@ -100,6 +101,7 @@ def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
         "url": url,
         "render_js": "true" if render_js else "false",
         "block_resources": "true",
+        "wait": 3000,
     }
     try:
         res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
@@ -121,14 +123,13 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> str or None:
 
     params = {
         "api_key": api_key, "url": url, "render_js": "true" if render_js else "false",
-        "screenshot": "true", "response_format": "base64", "format": "png",
-        "window_width": 1280, "window_height": 1024,
-        "block_resources": "false",
+        "screenshot": "true", "wait": 3000, "block_resources": "false",
+        "window_width": 1280, "window_height": 1024, "screenshot_full_page": "false",
     }
     try:
         res = requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
         res.raise_for_status()
-        return res.text
+        return base64.b64encode(res.content).decode("utf-8")
     except requests.exceptions.HTTPError as he:
         body = he.response.text[:1000] if he.response is not None else ""
         print(f"[ScrapingBeeScreenshot] HTTP ERROR for {url}: {he.response.status_code if he.response else ''} {body}")
@@ -315,8 +316,8 @@ def run_full_scan_stream(url: str, cache: dict):
 
             basic_result = basic_fetcher(current_url)
             should_render, reason = render_policy(basic_result)
-            final_result = basic_result
             
+            final_result = basic_result
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
                 final_result = scrapingbee_html_fetcher(current_url, render_js=True)
