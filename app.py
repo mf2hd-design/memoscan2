@@ -1,60 +1,57 @@
 import os
-import base64
-import io
-import logging
+import uuid
 from flask import Flask, render_template, send_file
 from flask_socketio import SocketIO
+import base64
+import io
 
-from scanner import run_full_scan_stream, SHARED_CACHE
+# Import the main scanner function only (no SHARED_CACHE)
+from scanner import run_full_scan_stream
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("SECRET_KEY", "a-very-secret-key-that-should-be-changed")
 
-socketio = SocketIO(app, async_mode='gevent', logger=os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG")
+# In-memory cache for storing screenshots temporarily.
+screenshot_cache = {}
 
-logger = logging.getLogger("app")
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+socketio = SocketIO(app, async_mode='gevent')
 
 @app.route("/")
 def index():
+    """Serves the main HTML page."""
     return render_template("index.html")
-
-def pad_b64(s: str) -> str:
-    missing = len(s) % 4
-    if missing:
-        s += "=" * (4 - missing)
-    return s
 
 @app.route('/screenshot/<image_id>')
 def get_screenshot(image_id):
-    b64_data = SHARED_CACHE.get(image_id)
-    if not b64_data:
+    """Serves the cached screenshot by ID."""
+    b64_data = screenshot_cache.get(image_id)
+    if b64_data:
+        image_bytes = base64.b64decode(b64_data)
+        return send_file(io.BytesIO(image_bytes), mimetype='image/png')
+    else:
         return "Screenshot not found", 404
-    try:
-        image_bytes = base64.b64decode(pad_b64(b64_data), validate=False)
-        return send_file(io.BytesIO(image_bytes), mimetype='image/jpeg')
-    except Exception as e:
-        logger.error("Failed to decode screenshot %s: %s", image_id, e)
-        return "Invalid screenshot", 500
 
 def run_scan_in_background(url):
-    logger.info("[Background Task] Starting scan for: %s", url)
+    """
+    Runs the full scan and emits results over the WebSocket.
+    """
+    app.logger.info(f"[Background Task] Starting scan for: {url}")
     try:
-        for data_object in run_full_scan_stream(url, SHARED_CACHE):
+        for data_object in run_full_scan_stream(url, screenshot_cache):
             socketio.emit('scan_update', data_object)
     except Exception as e:
-        logger.exception("[Background Task CRITICAL ERROR] The task failed: %s", e)
+        app.logger.error(f"[Background Task CRITICAL ERROR] The task failed: {e}")
         socketio.emit('scan_update', {'type': 'error', 'message': f'A critical background error occurred: {e}'})
     finally:
-        logger.info("[Background Task] Finished scan for: %s", url)
+        app.logger.info(f"[Background Task] Finished scan for: {url}")
 
 @socketio.on('connect')
 def handle_connect():
-    logger.info('Client connected')
+    app.logger.info('Client connected')
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    logger.info('Client disconnected')
+    app.logger.info('Client disconnected')
 
 @socketio.on('start_scan')
 def handle_scan_request(json_data):
@@ -62,8 +59,10 @@ def handle_scan_request(json_data):
     if not url:
         socketio.emit('scan_update', {'type': 'error', 'message': 'URL is required.'})
         return
+    
+    # Start the background scan as a greenlet (async, non-blocking)
     socketio.start_background_task(target=run_scan_in_background, url=url)
     socketio.emit('scan_update', {'type': 'status', 'message': 'Scan request received, process starting in background.'})
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    socketio.run(app, debug=True, host="0.0.0.0", port=10000)
