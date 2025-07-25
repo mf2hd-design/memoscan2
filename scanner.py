@@ -1,114 +1,175 @@
-import os
-import logging
-import time
 import httpx
+import logging
 import base64
+import time
 import json
+from typing import List, Dict
+from PIL import Image
+from io import BytesIO
 
-# Configure logging
+logger = logging.getLogger("scanner")
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-SCRAPINGBEE_API_KEY = os.getenv("SCRAPINGBEE_API_KEY")
+# --- Cookie Banner Avoidance JS ---
+EVALUATE_COOKIE_JS = """
+(() => {
+  const cookieWords = [
+    'accept', 'ok', 'agree', 'zulassen', 'akzeptieren', 'consent', 'allow', 'got it', 'dismiss', 'permitir'
+  ];
+  // Click <button>
+  Array.from(document.querySelectorAll('button')).forEach(btn => {
+    let txt = (btn.textContent || '').toLowerCase();
+    if (cookieWords.some(w => txt.includes(w))) { try { btn.click(); } catch (e) {} }
+  });
+  // Click <a>
+  Array.from(document.querySelectorAll('a')).forEach(a => {
+    let txt = (a.textContent || '').toLowerCase();
+    if (cookieWords.some(w => txt.includes(w))) { try { a.click(); } catch (e) {} }
+  });
+  // Click <input type=button|submit>
+  Array.from(document.querySelectorAll('input[type=button],input[type=submit]')).forEach(inp => {
+    let val = (inp.value || '').toLowerCase();
+    if (cookieWords.some(w => val.includes(w))) { try { inp.click(); } catch (e) {} }
+  });
+})();
+"""
 
-def get_cookiefree_screenshot(url):
-    # Aggressive cookie banner remover for EN and DE
-    js_scenario = {
-        "strict": False,
-        "instructions": [
-            {
-                "evaluate": """
-                (() => {
-                  const cookieWords = [
-                    'accept', 'ok', 'agree', 'zulassen', 'akzeptieren', 'consent'
-                  ];
-                  // Click buttons
-                  Array.from(document.querySelectorAll('button')).forEach(btn => {
-                    let txt = (btn.textContent || '').toLowerCase();
-                    if (cookieWords.some(w => txt.includes(w))) { try { btn.click(); } catch(e){} }
-                  });
-                  // Click links
-                  Array.from(document.querySelectorAll('a')).forEach(a => {
-                    let txt = (a.textContent || '').toLowerCase();
-                    if (cookieWords.some(w => txt.includes(w))) { try { a.click(); } catch(e){} }
-                  });
-                  // Click input[type=button], input[type=submit]
-                  Array.from(document.querySelectorAll('input[type=button],input[type=submit]')).forEach(inp => {
-                    let val = (inp.value || '').toLowerCase();
-                    if (cookieWords.some(w => val.includes(w))) { try { inp.click(); } catch(e){} }
-                  });
-                })();
-                """
-            },
-            {"wait": 800}
-        ]
-    }
+# --- Helper: Ensure HTTPS URL ---
+def ensure_full_url(url):
+    url = url.strip()
+    if not url.startswith('http://') and not url.startswith('https://'):
+        return 'https://' + url
+    return url
+
+# --- ScrapingBee Screenshot API Call ---
+def get_screenshot_scrapingbee(url: str) -> bytes:
+    api_key = "G3Z0MTEBG3P5E4AM2VM4S24MA5GTH1Q5ARZ86YWAJJMTHO4U6V3F5CQACMUUCUZISHGHPNLUYQ7J83JY"  # <-- Put your API key here
+    endpoint = "https://app.scrapingbee.com/api/v1/"
+    url = ensure_full_url(url)
     params = {
-        "api_key": SCRAPINGBEE_API_KEY,
+        "api_key": api_key,
         "url": url,
         "screenshot": "true",
         "render_js": "true",
-        "js_scenario": json.dumps(js_scenario)
+        "js_scenario": json.dumps({
+            "strict": False,
+            "instructions": [
+                {
+                    "evaluate": EVALUATE_COOKIE_JS
+                },
+                {
+                    "wait": 800
+                }
+            ]
+        }),
     }
     try:
         logger.info(f"[ScrapingBee]Screenshot {url}")
-        resp = httpx.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=60)
+        resp = httpx.get(endpoint, params=params, timeout=35)
         if resp.status_code == 200:
-            data = resp.json()
-            img_b64 = data.get("screenshot")
-            if img_b64:
-                return base64.b64decode(img_b64)
-            else:
-                logger.error(f"[ScrapingBee] No screenshot field in response for {url}")
+            # Validate PNG by attempting to open with PIL
+            try:
+                img = Image.open(BytesIO(resp.content))
+                img.verify()  # Will raise if not a valid image
+            except Exception as e:
+                logger.error(f"[IMG] Compress failed: {e}")
+                return None
+            return resp.content
         else:
             logger.error(f"[ScrapingBee] HTTP {resp.status_code} for {url}: {resp.text}")
     except Exception as e:
-        logger.error(f"[ScrapingBee] EXC for {url}: {e}")
+        logger.error(f"[ScrapingBee] EXC {url}: {e}")
     return None
 
-def run_full_scan_stream(url, screenshot_cache=None):
-    # List of URLs to screenshot (simulate 3 pages for test)
-    # In real crawler: replace with the crawl logic and get top 3 links after the main page.
-    pages = [url]
-    logger.info(f"[BasicFetcher] {url}")
-
-    # Simulate finding up to 2 more pages for demo/testing
+# --- Example Visual Feature Extraction Stub ---
+def extract_visual_features(image_bytes: bytes) -> Dict:
+    # You could add more image analysis here if you want
     try:
-        resp = httpx.get(url, follow_redirects=True, timeout=20)
-        html = resp.text
-        import re
-        links = re.findall(r'href="(http[^"]+)"', html)
-        for link in links:
-            if link not in pages and len(pages) < 3:
-                pages.append(link)
+        img = Image.open(BytesIO(image_bytes))
+        return {
+            "format": img.format,
+            "size": img.size,
+            "mode": img.mode,
+        }
     except Exception as e:
-        logger.warning(f"[BasicFetcher] Failed to get links from {url}: {e}")
+        logger.error(f"[VisualExtraction] Failed: {e}")
+        return {}
+
+# --- Example JSON Schema Validator Stub ---
+def validate_json_schema(data: dict, schema: dict) -> bool:
+    try:
+        from jsonschema import validate
+        validate(instance=data, schema=schema)
+        return True
+    except Exception as e:
+        logger.warning(f"[Schema] Validation failed: {e}")
+        return False
+
+# --- Main Scan Routine ---
+def run_full_scan_stream(target_url: str, screenshot_cache: dict = None):
+    """
+    Crawl, collect up to three screenshots, and emit data for QA.
+    """
+    screenshot_cache = screenshot_cache if screenshot_cache is not None else {}
+
+    urls_to_screenshot = []
+    main_url = ensure_full_url(target_url)
+    urls_to_screenshot.append(main_url)
+
+    # Fetch up to two more internal links from the homepage for extra screenshots
+    try:
+        resp = httpx.get(main_url, timeout=12)
+        # Extract links (primitive): find <a href="..."> and keep the first two
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, 'lxml')
+        links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            # Ignore mailto/phone/jump links
+            if href.startswith('http'):
+                links.append(href)
+            elif href.startswith('/'):
+                # Absolute path, make full URL
+                links.append(main_url.rstrip('/') + href)
+            if len(links) >= 2:
+                break
+        urls_to_screenshot += links
+    except Exception as e:
+        logger.warning(f"[BasicFetcher] Could not parse links: {e}")
 
     screenshots = []
-    for i, page_url in enumerate(pages[:3]):
-        logger.info(f"[ScrapingBee]Screenshot {page_url} (Page {i+1})")
-        img_bytes = get_cookiefree_screenshot(page_url)
+    for idx, url in enumerate(urls_to_screenshot[:3]):
+        logger.info(f"[ScrapingBee]Screenshot {url} (Page {idx+1})")
+        img_bytes = get_screenshot_scrapingbee(url)
         if img_bytes:
-            # If using a cache (for /screenshot route): generate a uuid and cache the base64
+            # Save to cache and record
+            img_id = f"{hash(url)}"
             if screenshot_cache is not None:
-                img_id = f"{str(i)}-{int(time.time())}"
                 screenshot_cache[img_id] = base64.b64encode(img_bytes).decode("utf-8")
-                screenshots.append({"id": img_id, "url": page_url})
-            else:
-                screenshots.append({"img_bytes": img_bytes, "url": page_url})
+            screenshots.append({
+                "img_id": img_id,
+                "url": url,
+                "visual_features": extract_visual_features(img_bytes),
+            })
         else:
-            logger.warning(f"[ScrapingBee] No screenshot for {page_url}")
+            logger.warning(f"[ScrapingBee] No screenshot for {url}")
 
-    # Only emit screenshot data, no LLM analysis
-    logger.info(f"[Visuals] Collected {len(screenshots)} screenshots for {url}")
+    logger.info(f"[Visuals] Collected {len(screenshots)} screenshots for {target_url}")
+
+    # --- For QA, just yield screenshots and their info, no LLM calls ---
     yield {
-        "type": "screenshots",
-        "url": url,
-        "screenshots": screenshots
+        "type": "visual_evidence",
+        "screenshots": screenshots,
+        "count": len(screenshots),
     }
 
-# (Optional) If you want to easily test as a script
+    # Optionally: validate output with JSON schema (stub below)
+    # schema = {...}
+    # valid = validate_json_schema({"screenshots": screenshots}, schema)
+    # logger.info(f"[Schema] Output valid? {valid}")
+
+# --- For local/manual testing ---
 if __name__ == "__main__":
-    test_url = "https://www.lohmann-rauscher.com/us-en/"
-    for msg in run_full_scan_stream(test_url):
-        print(msg)
+    cache = {}
+    for data in run_full_scan_stream("basf.com", cache):
+        print(json.dumps(data, indent=2))
