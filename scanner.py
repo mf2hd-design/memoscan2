@@ -29,6 +29,7 @@ logger = logging.getLogger("scanner")
 # Globals (shared with app.py)
 # -----------------------------------------------------------------------------------
 SHARED_CACHE = {}  # id -> base64 jpeg (already compressed & padded)
+
 # -----------------------------------------------------------------------------------
 # CONFIG
 # -----------------------------------------------------------------------------------
@@ -50,7 +51,7 @@ class Config:
     RENDER_MIN_TEXT_BYTES    = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
     SPA_SIGNALS              = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
 
-    # Max screenshots to FORCE and pass to LLM
+    # Force N screenshots to the LLM
     FORCE_SCREENSHOTS_FIRST_N = int(os.getenv("FORCE_SCREENSHOTS_FIRST_N", 3))
 
     # OpenAI
@@ -143,21 +144,16 @@ def _clean_url(url: str) -> str:
     return url.split("#")[0]
 
 def pad_b64(s: str) -> str:
-    # Fix padding issues
     missing = len(s) % 4
     if missing:
         s += "=" * (4 - missing)
     return s
 
 def b64_to_image(b64_str: str) -> Image.Image:
-    try:
-        b = base64.b64decode(pad_b64(b64_str), validate=False)
-        return Image.open(io.BytesIO(b))
-    except Exception as e:
-        raise ValueError(f"Could not decode/identify image from base64: {e}")
+    b = base64.b64decode(pad_b64(b64_str), validate=False)
+    return Image.open(io.BytesIO(b))
 
 def image_to_jpeg_b64(img: Image.Image, max_side=1600, quality=75) -> str:
-    # Resize
     w, h = img.size
     scale = min(1.0, float(max_side)/max(w, h))
     if scale < 1.0:
@@ -173,23 +169,20 @@ def extract_hex_colors_from_html(html: str) -> Counter:
     return Counter(m.group(0).lower() for m in hex_re.finditer(html))
 
 def extract_font_families_from_html(html: str) -> Counter:
-    # Naive: look for 'font-family: ...;' frags
     ff_re = re.compile(r'font-family\s*:\s*([^;}{]+)', re.IGNORECASE)
     families = []
     for m in ff_re.finditer(html):
         raw = m.group(1)
-        # split by comma, strip quotes
         items = [x.strip(" '\"\n\t") for x in raw.split(",")]
         families.extend([i for i in items if i])
     return Counter(families)
 
 def extract_dominant_colors_from_image(img: Image.Image, k=6) -> list:
-    # Use PIL quantize
     if img.mode != "RGB":
         img = img.convert("RGB")
     q = img.quantize(colors=k, method=Image.MEDIANCUT)
     palette = q.getpalette()
-    color_counts = sorted(q.getcolors(), reverse=True)  # [(count, index), ...]
+    color_counts = sorted(q.getcolors(), reverse=True)
     dom_hex = []
     if palette and color_counts:
         for count, idx in color_counts[:k]:
@@ -203,17 +196,34 @@ def build_cookie_js_scenario() -> dict:
     """
     ScrapingBee documented shape:
     {
+      "strict": false,
       "instructions": [
-        {"wait": 2000},
-        {"evaluate": "javascript code"},
-      ],
-      "strict": false
+          {"wait": 1000},
+          {"wait_for_and_click": "#selector"},
+          {"evaluate": "javascript code"}
+      ]
     }
     """
+    selectors = [
+        "#onetrust-accept-btn-handler",
+        ".onetrust-accept-btn-handler",
+        "#CybotCookiebotDialogBodyLevelButtonAccept",
+        "#cookie-accept", ".cookie-accept",
+        ".cookies-accept", ".cc-allow", ".cky-btn-accept",
+        "button[aria-label='Accept']",
+        "button[aria-label='I agree']"
+    ]
+
+    # Build multiple wait_for_and_click steps; strict=false means failures won't abort the scenario
+    instructions = [{"wait": 2000}]
+    for sel in selectors:
+        instructions.append({"wait_for_and_click": sel})
+        instructions.append({"wait": 250})
+
+    # Final JS clean up (hide anything left)
     code = r"""
       (function(){
         try {
-          // Clicks by text
           const needles = ['accept','agree','allow','permitir','zulassen','consent','cookies','ok','got it','dismiss','yes'];
           const tryClickByText = () => {
             const tags = ['button','a','div','span'];
@@ -223,55 +233,34 @@ def build_cookie_js_scenario() -> dict:
                 const txt = (el.innerText||el.textContent||'').toLowerCase();
                 for (const n of needles) {
                   if (txt.includes(n)) {
-                    try { el.click(); console.log('clicked cookie button by text', txt); return true; } catch(e){}
+                    try { el.click(); return true; } catch(e){}
                   }
                 }
               }
             }
             return false;
           };
-
-          // CSS known selectors
-          const selectors = [
-            '#onetrust-accept-btn-handler',
-            '.onetrust-accept-btn-handler',
-            '#CybotCookiebotDialogBodyLevelButtonAccept',
-            '#cookie-accept', '.cookie-accept',
-            '.cookies-accept', '.cc-allow', '.cky-btn-accept',
-            "button[aria-label='Accept']",
-            "button[aria-label='I agree']"
-          ];
-          for (const sel of selectors) {
-            try {
-              const el = document.querySelector(sel);
-              if (el) { el.click(); console.log('clicked cookie button css', sel); }
-            } catch(e){}
-          }
-
           tryClickByText();
 
-          // Hide overlays anyway
           const kill = ["[id*='cookie']", "[class*='cookie']",
                         "[id*='consent']", "[class*='consent']",
                         "[id*='gdpr']",   "[class*='gdpr']",
                         "[id*='privacy']","[class*='privacy']",
                         "iframe[src*='consent']", "iframe[src*='cookie']"];
           document.querySelectorAll(kill.join(',')).forEach(el => {
-            try {
-              el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;z-index:-1!important;";
-            } catch(e){}
+            try { el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;z-index:-1!important;"; } catch(e){}
           });
           document.body.style.overflow = 'auto';
         } catch(e) {}
       })();
     """.strip()
 
+    instructions.append({"evaluate": code})
+    instructions.append({"wait": 500})
+
     return {
-        "instructions": [
-            {"wait": 2000},
-            {"evaluate": code}
-        ],
-        "strict": False
+        "strict": False,
+        "instructions": instructions
     }
 
 # -----------------------------------------------------------------------------------
@@ -300,17 +289,10 @@ def basic_fetcher(url: str) -> FetchResult:
         logger.error("[BasicFetcher] ERROR %s", e)
         return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
 
+def _bee_get(params: dict) -> requests.Response:
+    return requests.get("https://app.scrapingbee.com/api/v1/", params=params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+
 def scrapingbee_html_fetcher(url: str, render_js: bool, try_js=True) -> FetchResult:
-    """
-    We stick to doc-supported params:
-    - url
-    - api_key
-    - render_js
-    - wait
-    - block_resources
-    - js_scenario (with 'instructions' + 'evaluate' + 'wait' + 'strict')
-    We fallback if 400 blaming js_scenario or 'instructions'.
-    """
     api_key = Config.SCRAPINGBEE_API_KEY
     if not api_key:
         return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=render_js)
@@ -321,7 +303,7 @@ def scrapingbee_html_fetcher(url: str, render_js: bool, try_js=True) -> FetchRes
         "url": url,
         "render_js": "true" if render_js else "false",
         "wait": 2000,
-        "block_resources": "true"
+        "block_resources": "true",
     }
 
     attempts = Config.MAX_BEE_ATTEMPTS
@@ -329,26 +311,19 @@ def scrapingbee_html_fetcher(url: str, render_js: bool, try_js=True) -> FetchRes
         with_js = try_js and attempt == 0
         params = dict(params_base)
         if with_js:
-            # ScrapingBee can accept JSON string or object; errors indicated object was sometimes mis-parsed.
-            # We'll pass as JSON string (safer) — but guard for 400 and retry without it.
             params["js_scenario"] = json.dumps(js_scenario)
 
         logger.info("[ScrapingBee]HTML %s attempt=%d render_js=%s with_js=%s",
                     url, attempt, render_js, with_js)
         try:
-            res = requests.get("https://app.scrapingbee.com/api/v1/",
-                               params=params,
-                               timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+            res = _bee_get(params)
             if res.status_code == 200:
                 return FetchResult(url, res.text, res.status_code, from_renderer=render_js)
-            else:
-                logger.error("[ScrapingBee] HTTP %d attempt=%d body=%s",
-                             res.status_code, attempt, res.text[:300])
-                # If it's a 400 and complains about js_scenario, try again without js.
-                if res.status_code == 400 and with_js:
-                    # Next attempt, disable JS scenario
-                    try_js = False
-                continue
+            logger.error("[ScrapingBee] HTTP %d attempt=%d body=%s",
+                         res.status_code, attempt, res.text[:300])
+            if res.status_code == 400 and with_js:
+                try_js = False
+            continue
         except Exception as e:
             logger.error("[ScrapingBee] EXC attempt=%d %s", attempt, e)
             continue
@@ -356,10 +331,6 @@ def scrapingbee_html_fetcher(url: str, render_js: bool, try_js=True) -> FetchRes
     return FetchResult(url, "ScrapingBee failed after attempts", 500, from_renderer=render_js)
 
 def scrapingbee_screenshot_fetcher(url: str, render_js: bool, force_js=True) -> str or None:
-    """
-    Returns a JPEG base64 image (already compressed), placed into SHARED_CACHE by caller.
-    Follows the same doc-compliant strategy as html_fetcher.
-    """
     api_key = Config.SCRAPINGBEE_API_KEY
     if not api_key:
         return None
@@ -373,9 +344,6 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool, force_js=True) -> 
         "block_resources": "false",
         "screenshot": "true",
         "screenshot_full_page": "false",
-        "stealth_proxy": "false",
-        "premium_proxy": "false",
-        "strict": "false"
     }
 
     attempts = Config.MAX_BEE_ATTEMPTS
@@ -388,14 +356,10 @@ def scrapingbee_screenshot_fetcher(url: str, render_js: bool, force_js=True) -> 
         logger.info("[ScrapingBee]Screenshot %s attempt=%d render_js=%s with_js=%s",
                     url, attempt, render_js, with_js)
         try:
-            res = requests.get("https://app.scrapingbee.com/api/v1/",
-                               params=params,
-                               timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+            res = _bee_get(params)
             if res.status_code == 200:
-                # ScrapingBee returns raw PNG bytes (not base64) for screenshot.
-                # Convert to JPEG b64 so OpenAI always accepts.
                 try:
-                    png_bytes = res.content
+                    png_bytes = res.content  # Bee returns raw PNG
                     img = Image.open(io.BytesIO(png_bytes))
                     b64_jpeg = image_to_jpeg_b64(img, Config.JPEG_MAX_SIDE_PX, Config.JPEG_QUALITY)
                     return b64_jpeg
@@ -448,10 +412,7 @@ def social_extractor(soup, base_url):
 def call_openai(client: OpenAI, **kwargs):
     return client.chat.completions.create(**kwargs)
 
-def validate_or_fix_json(key_name: str, raw_text: str, validator: Draft7Validator, client: OpenAI, prompt_again: str, retries: int = 2):
-    """
-    Try to parse & validate, retry up to 'retries' times if it fails.
-    """
+def validate_or_fix_json(key_name: str, raw_text: str, validator: Draft7Validator, client: OpenAI, retries: int = 2):
     attempt = 0
     last_err = None
     while attempt <= retries:
@@ -465,12 +426,12 @@ def validate_or_fix_json(key_name: str, raw_text: str, validator: Draft7Validato
         except Exception as e:
             last_err = e
             attempt += 1
-            logger.warning("[Schema] %s invalid JSON for key '%s' attempt=%d err=%s", type(e).__name__, key_name, attempt, e)
+            logger.warning("[Schema] %s invalid JSON for key '%s' attempt=%d err=%s",
+                           type(e).__name__, key_name, attempt, e)
 
             if attempt > retries:
                 break
 
-            # Re-ask the model to produce valid JSON strictly per schema
             sys_msg = (
                 "Return ONLY a valid JSON object matching this JSON-Schema (no markdown, no code-fences):\n"
                 + json.dumps(MEMO_KEY_SCHEMA, indent=2)
@@ -487,7 +448,6 @@ def validate_or_fix_json(key_name: str, raw_text: str, validator: Draft7Validato
                                ])
             raw_text = resp.choices[0].message.content
 
-    # As a last resort, return a minimal fallback
     logger.error("[Schema] Giving up validating key '%s': %s", key_name, last_err)
     return {
         "score": 0,
@@ -524,28 +484,20 @@ def analyze_memorability_key(client: OpenAI,
                              visual_hints: dict):
     logger.info("[AI] Analyzing key: %s", key_name)
 
-    # Build content payload: we include up to first N image URLs (data-uri) + text (visual hints).
     content_list = []
-
-    # (1) Attach screenshots
     for b64 in compressed_jpegs_b64:
         content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
-
-    # (2) Add visual hints
     if visual_hints:
-        visual_hint_txt = json.dumps(visual_hints, indent=2)
-        content_list.append({"type": "text", "text": f"VISUAL HINTS (colors/fonts):\n{visual_hint_txt}"})
-
-    # (3) Corpus and summary text
+        content_list.append({"type": "text", "text": f"VISUAL HINTS (colors/fonts):\n{json.dumps(visual_hints, indent=2)}"})
     content_list.append({"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"})
     content_list.append({"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"})
 
     system_prompt = f"""You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
-    {prompt_template}
+{prompt_template}
 
-    Your response MUST be a valid JSON object with the following keys and constraints (strictly):
-    {json.dumps(MEMO_KEY_SCHEMA, indent=2)}
-    """
+Your response MUST be a valid JSON object with the following keys and constraints (strictly):
+{json.dumps(MEMO_KEY_SCHEMA, indent=2)}
+"""
 
     try:
         response = call_openai(client,
@@ -556,8 +508,7 @@ def analyze_memorability_key(client: OpenAI,
                                    {"role": "user", "content": content_list},
                                ])
         raw = response.choices[0].message.content
-        # Validate/repair
-        valid = validate_or_fix_json(key_name, raw, KEY_VALIDATOR, client, system_prompt, Config.SCHEMA_MAX_RETRIES)
+        valid = validate_or_fix_json(key_name, raw, KEY_VALIDATOR, client, Config.SCHEMA_MAX_RETRIES)
         return key_name, valid
     except Exception as e:
         logger.error("[ERROR] LLM analysis failed for key '%s': %s", key_name, e)
@@ -608,8 +559,7 @@ def run_full_scan_stream(url: str, cache: dict):
     text_corpus = ""
     socials_found = False
 
-    # Visual artifacts
-    forced_screens_b64 = []  # first N pages, always store here
+    forced_screens_b64 = []
     total_screens_sent_to_llm = 0
 
     queue = deque([(_clean_url(url), 0)])
@@ -629,10 +579,7 @@ def run_full_scan_stream(url: str, cache: dict):
             current_url, depth = queue.popleft()
             yield {'type': 'status', 'message': f'Analyzing page {len(pages_analyzed) + 1}/{Config.CRAWL_MAX_PAGES}: {current_url}'}
 
-            # 1) Basic fetch
             basic_result = basic_fetcher(current_url)
-
-            # 2) Decide to render
             should_render, reason = render_policy(basic_result)
 
             final_result = basic_result
@@ -640,21 +587,18 @@ def run_full_scan_stream(url: str, cache: dict):
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
                 final_result = scrapingbee_html_fetcher(current_url, render_js=True, try_js=True)
 
-            # 3) Force screenshots for first N pages
+            # Force screenshots for first N pages
             need_force = len(pages_analyzed) < Config.FORCE_SCREENSHOTS_FIRST_N
             if need_force:
-                # Force screenshot
                 b64_jpeg = scrapingbee_screenshot_fetcher(current_url, render_js=True, force_js=True)
                 if not b64_jpeg:
-                    # fallback non-JS
                     b64_jpeg = scrapingbee_screenshot_fetcher(current_url, render_js=False, force_js=False)
                 if b64_jpeg:
                     forced_screens_b64.append(b64_jpeg)
                     image_id = str(uuid.uuid4())
-                    cache[image_id] = b64_jpeg  # already jpeg
+                    cache[image_id] = b64_jpeg
                     yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
 
-            # 4) Parse
             html = final_result.html or ""
             if html:
                 soup = BeautifulSoup(html, "lxml")
@@ -667,12 +611,10 @@ def run_full_scan_stream(url: str, cache: dict):
                         socials_found = True
                         yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
 
-                # Strip script/style
                 for tag in soup(["script", "style"]):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
-                # Expand queue
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         href = a.get("href")
@@ -699,19 +641,14 @@ def run_full_scan_stream(url: str, cache: dict):
                     escalated = True
                     yield {'type': 'status', 'message': f'High JS usage and no socials found → escalating budget to {budget}s.'}
 
-        # -----------------------------------------------------------------------------------
         # VISUAL FEATURE EXTRACTION
-        # -----------------------------------------------------------------------------------
         visual_hints = {}
         try:
-            # 1) Use HTML corpus to extract colors & font families
             color_counts = extract_hex_colors_from_html(text_corpus)
             font_counts  = extract_font_families_from_html(text_corpus)
-
             visual_hints["top_html_hex_colors"] = [c for c, _ in color_counts.most_common(12)]
             visual_hints["top_html_fonts"]      = [f for f, _ in font_counts.most_common(12)]
 
-            # 2) From screenshots, get dominant colors
             dominant_sets = []
             for b64 in forced_screens_b64:
                 try:
@@ -720,21 +657,17 @@ def run_full_scan_stream(url: str, cache: dict):
                     dominant_sets.append(dom_hex)
                 except Exception as e:
                     logger.warning("[VIS] dominant color failed: %s", e)
-            # Flatten & count
             flat = [c for lst in dominant_sets for c in lst]
             visual_hints["dominant_screenshot_colors"] = [c for c, _ in Counter(flat).most_common(12)]
         except Exception as e:
             logger.warning("[VIS] Visual feature extraction failed: %s", e)
             visual_hints = {}
 
-        # -----------------------------------------------------------------------------------
         # AI ANALYSIS
-        # -----------------------------------------------------------------------------------
         yield {'type': 'status', 'message': f'Crawl complete. Starting AI analysis...'}
         brand_summary = call_openai_for_synthesis(client, text_corpus)
 
         all_results = []
-        # Log how many screenshots we'll pass
         total_screens_sent_to_llm = len(forced_screens_b64)
         logger.info("[LLM] Passing %d screenshot(s) to the model.", total_screens_sent_to_llm)
         yield {'type': 'status', 'message': f'Passing {total_screens_sent_to_llm} screenshots to the model.'}
