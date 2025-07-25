@@ -3,153 +3,132 @@ import re
 import io
 import time
 import uuid
-import math
 import json
 import base64
 import logging
-import traceback
 from collections import deque, Counter
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
-import requests
 import httpx
-import tldextract
+import requests
 from bs4 import BeautifulSoup
-from PIL import Image, UnidentifiedImageError
-from jsonschema import validate as js_validate, ValidationError
+from PIL import Image
+import tldextract
+from jsonschema import Draft7Validator, ValidationError
 
 from openai import OpenAI
 
-# ------------------------------------------------------------------------------------
-# Global, shared cache (imported by app.py)
-# ------------------------------------------------------------------------------------
-SHARED_CACHE: Dict[str, str] = {}
-
-# ------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
 # Logging
-# ------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(levelname)s:%(name)s:%(message)s")
 logger = logging.getLogger("scanner")
-logging.basicConfig(level=logging.INFO)
 
-# ------------------------------------------------------------------------------------
-# Configuration
-# ------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
+# Globals (shared with app.py)
+# -----------------------------------------------------------------------------------
+SHARED_CACHE = {}  # id -> base64 jpeg (already compressed & padded)
+# -----------------------------------------------------------------------------------
+# CONFIG
+# -----------------------------------------------------------------------------------
 class Config:
     # Budgets
-    SITE_BUDGET_SECS         = int(os.getenv("SITE_BUDGET_SECS", 120))
-    SITE_MAX_BUDGET_SECS     = int(os.getenv("SITE_MAX_BUDGET_SECS", 150))
+    SITE_BUDGET_SECS         = int(os.getenv("SITE_BUDGET_SECS", 60))
+    SITE_MAX_BUDGET_SECS     = int(os.getenv("SITE_MAX_BUDGET_SECS", 90))
 
     # Crawl
     CRAWL_MAX_PAGES          = int(os.getenv("CRAWL_MAX_PAGES", 5))
     CRAWL_MAX_DEPTH          = int(os.getenv("CRAWL_MAX_DEPTH", 2))
 
     # Timeouts
-    BASIC_TIMEOUT_SECS       = int(os.getenv("BASIC_TIMEOUT_SECS", 20))
+    BASIC_TIMEOUT_SECS       = int(os.getenv("BASIC_TIMEOUT_SECS", 10))
     SCRAPINGBEE_TIMEOUT_SECS = int(os.getenv("SCRAPINGBEE_TIMEOUT_SECS", 30))
 
-    # Render policy thresholds
+    # Render heuristics
     RENDER_MIN_LINKS         = int(os.getenv("RENDER_MIN_LINKS", 15))
     RENDER_MIN_TEXT_BYTES    = int(os.getenv("RENDER_MIN_TEXT_BYTES", 3000))
     SPA_SIGNALS              = ["__next", "__nuxt__", "webpackjsonp", "vite", "data-reactroot"]
 
-    # ScrapingBee
-    SCRAPINGBEE_API_KEY      = os.getenv("SCRAPINGBEE_API_KEY", "")
-    SB_RETRIES               = 3
-    SB_PREMIUM_ON_500        = bool(int(os.getenv("SB_PREMIUM_ON_500", "0")))   # escalate only at the last attempt
-    SB_STEALTH_ON_500        = bool(int(os.getenv("SB_STEALTH_ON_500", "0")))
-    SB_BLOCK_RESOURCES       = os.getenv("SB_BLOCK_RESOURCES", "false").lower() == "true"
-
-    # Image handling
-    MAX_SCREENSHOTS_PER_PAGE = int(os.getenv("MAX_SCREENSHOTS_PER_PAGE", 3))  # fold, mid, footer
-    JPEG_QUALITY             = int(os.getenv("JPEG_QUALITY", 80))
-    RESIZE_LONGEST_PX        = int(os.getenv("RESIZE_LONGEST_PX", 1400))
-
-    # Visual colors extraction
-    NUM_DOMINANT_COLORS      = int(os.getenv("NUM_DOMINANT_COLORS", 5))
+    # Max screenshots to FORCE and pass to LLM
+    FORCE_SCREENSHOTS_FIRST_N = int(os.getenv("FORCE_SCREENSHOTS_FIRST_N", 3))
 
     # OpenAI
     OPENAI_MODEL             = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     OPENAI_TEMPERATURE       = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+    OPENAI_API_KEY           = os.getenv("OPENAI_API_KEY", "")
 
-    # Social patterns
+    # ScrapingBee
+    SCRAPINGBEE_API_KEY      = os.getenv("SCRAPINGBEE_API_KEY", "")
+
+    # Visual extraction
+    NUM_DOMINANT_COLORS      = int(os.getenv("NUM_DOM_COLORS", 6))
+    JPEG_MAX_SIDE_PX         = int(os.getenv("JPEG_MAX_SIDE_PX", 1600))
+    JPEG_QUALITY             = int(os.getenv("JPEG_QUALITY", 75))
+
+    # Retry
+    MAX_BEE_ATTEMPTS         = int(os.getenv("SCRAPINGBEE_MAX_ATTEMPTS", 3))
+
+    # JSON schema retries
+    SCHEMA_MAX_RETRIES       = int(os.getenv("SCHEMA_MAX_RETRIES", 2))
+
     SOCIAL_PLATFORMS = {
         "twitter":  re.compile(r"(?:x\.com|twitter\.com)/(?!intent|share|search|home)[a-zA-Z0-9_]{1,15}"),
         "linkedin": re.compile(r"linkedin\.com/(?:company|in)/[\w-]+")
     }
-
-    # Binary file regex
     BINARY_RE = re.compile(r'\.(pdf|png|jpg|jpeg|gif|mp4|zip|rar|svg|webp|ico|css|js)$', re.I)
 
-
-# ------------------------------------------------------------------------------------
-# JSON schema for LLM responses (one per key)
-# ------------------------------------------------------------------------------------
-LLM_KEY_SCHEMA = {
+# -----------------------------------------------------------------------------------
+# JSON Schema for each key’s LLM output
+# -----------------------------------------------------------------------------------
+MEMO_KEY_SCHEMA = {
     "type": "object",
     "properties": {
         "score": {"type": "integer", "minimum": 0, "maximum": 100},
-        "analysis": {"type": "string", "minLength": 5},
-        "evidence": {"type": "string"},
+        "analysis": {"type": "string", "minLength": 20},
+        "evidence": {"type": "string", "minLength": 1},
         "confidence": {"type": "integer", "minimum": 1, "maximum": 5},
-        "confidence_rationale": {"type": "string"},
-        "recommendation": {"type": "string"}
+        "confidence_rationale": {"type": "string", "minLength": 5},
+        "recommendation": {"type": "string", "minLength": 5}
     },
-    "required": ["score", "analysis", "confidence", "confidence_rationale", "recommendation"],
-    "additionalProperties": True
+    "required": ["score", "analysis", "evidence", "confidence", "confidence_rationale", "recommendation"],
+    "additionalProperties": False
 }
+KEY_VALIDATOR = Draft7Validator(MEMO_KEY_SCHEMA)
 
-# ------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
 # Memorability prompts
-# ------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
 MEMORABILITY_KEYS_PROMPTS = {
     "Emotion": """
-Analyze the **Emotion** key. This is the primary key; without it, nothing is memorable.
-- How does the brand connect emotionally (warmth, trust, joy, admiration)?
-- Does it use meaningful experiences, human stories, or mission-led language?
-- Is there a clear emotional reward for the audience?
-""",
+        Analyze the **Emotion** key. This is the primary key; without it, nothing is memorable.
+        - **Your analysis must cover:** How the brand connects with audiences on an emotional level. Does it evoke warmth, trust, joy, or admiration? Does it use meaningful experiences, human stories, or mission-driven language? Is there a clear emotional reward for the user?
+    """,
     "Attention": """
-Analyze the **Attention** key. Stimulus key.
-- Distinctiveness and ability to stand out.
-- Surprising visuals/headlines?
-- Does it sustain interest without cliché CTA spam?
-""",
+        Analyze the **Attention** key. This is a stimulus key.
+        - **Your analysis must cover:** How the brand stands out and sustains interest. Evaluate its distinctiveness. Does it use surprising visuals or headlines? Does it create an authentic and engaging journey for the user, avoiding clichés and overuse of calls to action?
+    """,
     "Story": """
-Analyze the **Story** key. Stimulus key.
-- Clarity & power of the narrative: who are they, what they promise.
-- Authenticity: does it build trust + curiosity better than raw facts?
-""",
+        Analyze the **Story** key. This is a stimulus key.
+        - **Your analysis must cover:** The clarity and power of the brand's narrative. Is there an authentic story that explains who the brand is and what it promises? Does this story build trust and pique curiosity more effectively than just facts and figures alone?
+    """,
     "Involvement": """
-Analyze the **Involvement** key. Stimulus key.
-- Does the brand make audiences feel like participants (community, belonging)?
-- Is the content aligned with what’s meaningful to them?
-""",
+        Analyze the **Involvement** key. This is a stimulus key.
+        - **Your analysis must cover:** How the brand makes the audience feel like active participants. Does it connect to what is meaningful for them? Does it foster a sense of community or belonging? Does it make people feel included and empowered?
+    """,
     "Repetition": """
-Analyze the **Repetition** key. Reinforcement key.
-- Reuse of brand elements (symbol, tagline, colors) across touchpoints.
-- Is repetition thoughtful, or bordering on overexposure?
-""",
+        Analyze the **Repetition** key. This is a reinforcement key.
+        - **Your analysis must cover:** The strategic reuse of brand elements. Are key symbols, taglines, colors, or experiences repeated consistently across touchpoints to reinforce memory and create new associations? Is this repetition thoughtful, or does it risk overexposure?
+    """,
     "Consistency": """
-Analyze the **Consistency** key. Reinforcement key.
-- Coherence across all touchpoints (tone, message, design).
-- Does it build familiarity & predictable pattern recognition?
-"""
+        Analyze the **Consistency** key. This is a reinforcement key.
+        - **Your analysis must cover:** The coherence of the brand across all touchpoints. Do the tone, message, and design feel aligned? Does this create a sense of familiarity, allowing the user's brain to recognize patterns and anticipate what to expect?
+    """
 }
 
-# ------------------------------------------------------------------------------------
-# Data structures
-# ------------------------------------------------------------------------------------
-@dataclass
-class FetchResult:
-    url: str
-    html: str
-    status_code: int
-    from_renderer: bool
-
-# ------------------------------------------------------------------------------------
-# Utilities
-# ------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------------
 def _reg_domain(u: str) -> str:
     e = tldextract.extract(u)
     return f"{e.domain}.{e.suffix}".lower()
@@ -163,313 +142,283 @@ def _clean_url(url: str) -> str:
         url = "https://" + url
     return url.split("#")[0]
 
-def _safe_b64_to_jpeg_data_url(raw_bytes: bytes) -> Optional[str]:
-    """
-    Convert raw PNG bytes to JPEG, resize and return data URL.
-    """
+def pad_b64(s: str) -> str:
+    # Fix padding issues
+    missing = len(s) % 4
+    if missing:
+        s += "=" * (4 - missing)
+    return s
+
+def b64_to_image(b64_str: str) -> Image.Image:
     try:
-        im = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-    except UnidentifiedImageError:
-        logger.warning("[IMG] Could not identify image; probably not a screenshot.")
-        return None
-
-    # resize if needed
-    w, h = im.size
-    longest = max(w, h)
-    if longest > Config.RESIZE_LONGEST_PX:
-        scale = Config.RESIZE_LONGEST_PX / float(longest)
-        im = im.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
-
-    out = io.BytesIO()
-    im.save(out, format="JPEG", quality=Config.JPEG_QUALITY, optimize=True)
-    out.seek(0)
-    b64 = base64.b64encode(out.read()).decode("ascii")
-    return f"data:image/jpeg;base64,{b64}"
-
-def _extract_dominant_colors(raw_bytes: bytes, k: int = 5) -> List[Tuple[int, int, int]]:
-    """
-    Simple dominant color extraction via counting (no KMeans for speed).
-    """
-    try:
-        im = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
-    except UnidentifiedImageError:
-        return []
-
-    im = im.resize((64, 64))  # speed up
-    pixels = list(im.getdata())
-    counts = Counter(pixels)
-    most_common = counts.most_common(k)
-    return [rgb for rgb, _ in most_common]
-
-def _color_to_hex(c: Tuple[int, int, int]) -> str:
-    return f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}"
-
-def _avg_luminance(colors: List[Tuple[int, int, int]]) -> float:
-    if not colors:
-        return 0.0
-    def lum(c):
-        r, g, b = c
-        return 0.2126*r + 0.7152*g + 0.0722*b
-    return sum(lum(c) for c in colors) / len(colors)
-
-def _contrast_ratio(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
-    def rel_lum(c):
-        r, g, b = [x/255.0 for x in c]
-        def channel(v):
-            return v/12.92 if v <= 0.03928 else ((v+0.055)/1.055) ** 2.4
-        R, G, B = channel(r), channel(g), channel(b)
-        return 0.2126*R + 0.7152*G + 0.0722*B
-    L1 = rel_lum(c1)
-    L2 = rel_lum(c2)
-    lighter = max(L1, L2)
-    darker  = min(L1, L2)
-    return (lighter + 0.05) / (darker + 0.05)
-
-def _visual_features_from_screenshots(raw_images: List[bytes]) -> Dict:
-    """
-    Aggregate visual hints from up to 3 screenshots.
-    """
-    features = {
-        "num_screens": len(raw_images),
-        "dominant_colors_hex": [],
-        "avg_luminance": 0.0,
-        "max_contrast_ratio": None,
-    }
-    all_colors = []
-    for raw in raw_images:
-        cols = _extract_dominant_colors(raw, k=Config.NUM_DOMINANT_COLORS)
-        all_colors.extend(cols)
-        features["dominant_colors_hex"].extend([_color_to_hex(c) for c in cols])
-
-    if all_colors:
-        features["avg_luminance"] = _avg_luminance(all_colors)
-        # compute max contrast among top few
-        if len(all_colors) > 1:
-            mx = 0.0
-            for i in range(len(all_colors)):
-                for j in range(i+1, len(all_colors)):
-                    mx = max(mx, _contrast_ratio(all_colors[i], all_colors[j]))
-            features["max_contrast_ratio"] = round(mx, 2)
-    return features
-
-def _validate_json_against_schema(obj: dict, schema: dict) -> Tuple[bool, Optional[str]]:
-    try:
-        js_validate(instance=obj, schema=schema)
-        return True, None
-    except ValidationError as ve:
-        return False, str(ve)
-
-# ------------------------------------------------------------------------------------
-# HTTP clients
-# ------------------------------------------------------------------------------------
-_basic_client = httpx.Client(
-    headers={
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
-    },
-    follow_redirects=True,
-    timeout=Config.BASIC_TIMEOUT_SECS,
-)
-
-# ------------------------------------------------------------------------------------
-# Fetchers & ScrapingBee
-# ------------------------------------------------------------------------------------
-def basic_fetcher(url: str) -> FetchResult:
-    logger.info(f"[BasicFetcher] {url}")
-    try:
-        r = _basic_client.get(url)
-        r.raise_for_status()
-        return FetchResult(url=str(r.url), html=r.text, status_code=r.status_code, from_renderer=False)
+        b = base64.b64decode(pad_b64(b64_str), validate=False)
+        return Image.open(io.BytesIO(b))
     except Exception as e:
-        logger.warning(f"[BasicFetcher] ERROR {e}")
-        return FetchResult(url=url, html=f"Failed to fetch: {e}", status_code=500, from_renderer=False)
+        raise ValueError(f"Could not decode/identify image from base64: {e}")
 
-def build_js_scenario() -> dict:
-    # All "click: selector" steps must be real CSS/XPATH instructions. We'll do everything in evaluate.
-    # 'strict': false to prevent selector failures from killing the scenario.
+def image_to_jpeg_b64(img: Image.Image, max_side=1600, quality=75) -> str:
+    # Resize
+    w, h = img.size
+    scale = min(1.0, float(max_side)/max(w, h))
+    if scale < 1.0:
+        img = img.resize((int(w*scale), int(h*scale)), Image.LANCZOS)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=quality)
+    return base64.b64encode(out.getvalue()).decode("utf-8")
+
+def extract_hex_colors_from_html(html: str) -> Counter:
+    hex_re = re.compile(r'#(?:[0-9a-fA-F]{3}){1,2}')
+    return Counter(m.group(0).lower() for m in hex_re.finditer(html))
+
+def extract_font_families_from_html(html: str) -> Counter:
+    # Naive: look for 'font-family: ...;' frags
+    ff_re = re.compile(r'font-family\s*:\s*([^;}{]+)', re.IGNORECASE)
+    families = []
+    for m in ff_re.finditer(html):
+        raw = m.group(1)
+        # split by comma, strip quotes
+        items = [x.strip(" '\"\n\t") for x in raw.split(",")]
+        families.extend([i for i in items if i])
+    return Counter(families)
+
+def extract_dominant_colors_from_image(img: Image.Image, k=6) -> list:
+    # Use PIL quantize
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    q = img.quantize(colors=k, method=Image.MEDIANCUT)
+    palette = q.getpalette()
+    color_counts = sorted(q.getcolors(), reverse=True)  # [(count, index), ...]
+    dom_hex = []
+    if palette and color_counts:
+        for count, idx in color_counts[:k]:
+            r = palette[idx*3 + 0]
+            g = palette[idx*3 + 1]
+            b = palette[idx*3 + 2]
+            dom_hex.append('#%02x%02x%02x' % (r, g, b))
+    return dom_hex
+
+def build_cookie_js_scenario() -> dict:
+    """
+    ScrapingBee documented shape:
+    {
+      "instructions": [
+        {"wait": 2000},
+        {"evaluate": "javascript code"},
+      ],
+      "strict": false
+    }
+    """
     code = r"""
       (function(){
         try {
-          const textNeedles = [
-            'accept','agree','allow','permitir','zulassen','consent',
-            'cookies','ok','got it','dismiss','yes'
-          ];
-
-          // Click by text content
-          const clickByText = (rootSelectorList, tagList) => {
-            const rootEls = rootSelectorList.length ? document.querySelectorAll(rootSelectorList.join(',')) : [document];
-            for (const root of rootEls) {
-              for (const t of tagList) {
-                const els = root.querySelectorAll(t);
-                for (const el of els) {
-                  const txt = (el.innerText || el.textContent || '').toLowerCase();
-                  if (textNeedles.some(n => txt.includes(n))) {
-                    try { el.click(); } catch(e){}
+          // Clicks by text
+          const needles = ['accept','agree','allow','permitir','zulassen','consent','cookies','ok','got it','dismiss','yes'];
+          const tryClickByText = () => {
+            const tags = ['button','a','div','span'];
+            for (const t of tags) {
+              const els = document.querySelectorAll(t);
+              for (const el of els) {
+                const txt = (el.innerText||el.textContent||'').toLowerCase();
+                for (const n of needles) {
+                  if (txt.includes(n)) {
+                    try { el.click(); console.log('clicked cookie button by text', txt); return true; } catch(e){}
                   }
                 }
               }
             }
+            return false;
           };
 
-          // CSS selectors commonly used by cookie banners
-          const cssSelectors = [
-            '#onetrust-accept-btn-handler', '.onetrust-accept-btn-handler',
+          // CSS known selectors
+          const selectors = [
+            '#onetrust-accept-btn-handler',
+            '.onetrust-accept-btn-handler',
             '#CybotCookiebotDialogBodyLevelButtonAccept',
-            '#cookie-accept', '.cookie-accept', '.cookies-accept',
-            '.cc-allow', '.cky-btn-accept',
-            "[aria-label='Accept']", "[aria-label='I agree']"
+            '#cookie-accept', '.cookie-accept',
+            '.cookies-accept', '.cc-allow', '.cky-btn-accept',
+            "button[aria-label='Accept']",
+            "button[aria-label='I agree']"
           ];
-          for (const sel of cssSelectors) {
-            const btn = document.querySelector(sel);
-            if (btn) { try { btn.click(); } catch(e){} }
+          for (const sel of selectors) {
+            try {
+              const el = document.querySelector(sel);
+              if (el) { el.click(); console.log('clicked cookie button css', sel); }
+            } catch(e){}
           }
 
-          // Fallback click-by-text search
-          clickByText([], ['button', 'a', 'div', 'span']);
+          tryClickByText();
 
-          // Hide everything that looks like a banner
-          const kill = [
-            "[id*='cookie']", "[class*='cookie']",
-            "[id*='consent']", "[class*='consent']",
-            "[id*='gdpr']",   "[class*='gdpr']",
-            "[id*='privacy']","[class*='privacy']",
-            "iframe[src*='consent']", "iframe[src*='cookie']"
-          ];
+          // Hide overlays anyway
+          const kill = ["[id*='cookie']", "[class*='cookie']",
+                        "[id*='consent']", "[class*='consent']",
+                        "[id*='gdpr']",   "[class*='gdpr']",
+                        "[id*='privacy']","[class*='privacy']",
+                        "iframe[src*='consent']", "iframe[src*='cookie']"];
           document.querySelectorAll(kill.join(',')).forEach(el => {
             try {
-              el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;";
+              el.style.cssText = "display:none!important;visibility:hidden!important;opacity:0!important;z-index:-1!important;";
             } catch(e){}
           });
-
           document.body.style.overflow = 'auto';
-        } catch(e) {
-          console.log('cookie killer error', e);
-        }
+        } catch(e) {}
       })();
     """.strip()
 
     return {
-        "strict": False,
         "instructions": [
-            {"wait": 1500},
-            {"evaluate": code},
-            {"wait": 500}
-        ]
+            {"wait": 2000},
+            {"evaluate": code}
+        ],
+        "strict": False
     }
 
-def _scrapingbee_request(
-    url: str,
-    *,
-    render_js: bool,
-    want_html: bool = True,
-    want_screenshot: bool = False,
-    with_js: bool = True,
-    try_premium: bool = False,
-    try_stealth: bool = False
-) -> Tuple[Optional[str], Optional[bytes], int, bool]:
+# -----------------------------------------------------------------------------------
+# Fetchers
+# -----------------------------------------------------------------------------------
+_basic_client = httpx.Client(
+    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"},
+    follow_redirects=True,
+    timeout=Config.BASIC_TIMEOUT_SECS
+)
+
+class FetchResult:
+    def __init__(self, url, html, status_code, from_renderer):
+        self.url = url
+        self.html = html or ""
+        self.status_code = status_code
+        self.from_renderer = from_renderer
+
+def basic_fetcher(url: str) -> FetchResult:
+    logger.info("[BasicFetcher] %s", url)
+    try:
+        res = _basic_client.get(url)
+        res.raise_for_status()
+        return FetchResult(str(res.url), res.text, res.status_code, from_renderer=False)
+    except Exception as e:
+        logger.error("[BasicFetcher] ERROR %s", e)
+        return FetchResult(url, f"Failed to fetch: {e}", 500, from_renderer=False)
+
+def scrapingbee_html_fetcher(url: str, render_js: bool, try_js=True) -> FetchResult:
     """
-    Returns (html_text, screenshot_bytes, status_code, from_renderer)
-    html_text iff want_html
-    screenshot_bytes iff want_screenshot
+    We stick to doc-supported params:
+    - url
+    - api_key
+    - render_js
+    - wait
+    - block_resources
+    - js_scenario (with 'instructions' + 'evaluate' + 'wait' + 'strict')
+    We fallback if 400 blaming js_scenario or 'instructions'.
     """
     api_key = Config.SCRAPINGBEE_API_KEY
     if not api_key:
-        return None, None, 500, False
+        return FetchResult(url, "ScrapingBee API Key not set", 500, from_renderer=render_js)
 
-    base_params = {
+    js_scenario = build_cookie_js_scenario()
+    params_base = {
         "api_key": api_key,
         "url": url,
         "render_js": "true" if render_js else "false",
-        "block_resources": "true" if Config.SB_BLOCK_RESOURCES else "false",
-        "wait": 2000
+        "wait": 2000,
+        "block_resources": "true"
     }
 
-    if try_premium:
-        base_params["premium_proxy"] = "true"
-    if try_stealth:
-        base_params["stealth_proxy"] = "true"
+    attempts = Config.MAX_BEE_ATTEMPTS
+    for attempt in range(attempts):
+        with_js = try_js and attempt == 0
+        params = dict(params_base)
+        if with_js:
+            # ScrapingBee can accept JSON string or object; errors indicated object was sometimes mis-parsed.
+            # We'll pass as JSON string (safer) — but guard for 400 and retry without it.
+            params["js_scenario"] = json.dumps(js_scenario)
 
-    if want_screenshot:
-        base_params["screenshot"] = "true"
-        # ScrapingBee returns PNG bytes for screenshot
-
-    if with_js and render_js:
-        base_params["js_scenario"] = json.dumps(build_js_scenario())
-
-    url_endpoint = "https://app.scrapingbee.com/api/v1/"
-
-    for attempt in range(Config.SB_RETRIES):
-        with_js_this_try = with_js if attempt == 0 else False
-        if not with_js_this_try and "js_scenario" in base_params:
-            del base_params["js_scenario"]
-
+        logger.info("[ScrapingBee]HTML %s attempt=%d render_js=%s with_js=%s",
+                    url, attempt, render_js, with_js)
         try:
-            logger.info(f"[ScrapingBee]{'Screenshot' if want_screenshot else 'HTML'} {url} attempt={attempt} render_js={render_js} with_js={with_js_this_try}")
-            r = requests.get(url_endpoint, params=base_params, timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
-            if r.status_code >= 400:
-                logger.warning(f"[ScrapingBee] HTTP {r.status_code} attempt={attempt} body={r.text[:400]}")
-                # last attempt escalate if configured
-                if attempt == Config.SB_RETRIES - 1 and r.status_code >= 500 and (Config.SB_PREMIUM_ON_500 or Config.SB_STEALTH_ON_500):
-                    # one final escalate
-                    base_params["premium_proxy"] = "true" if Config.SB_PREMIUM_ON_500 else base_params.get("premium_proxy", None)
-                    base_params["stealth_proxy"] = "true" if Config.SB_STEALTH_ON_500 else base_params.get("stealth_proxy", None)
-                    continue
-                # else retry without js_scenario or just exit after final
-                continue
-
-            # Success
-            from_renderer = render_js
-            if want_screenshot:
-                # content is PNG bytes
-                return None, r.content, r.status_code, from_renderer
+            res = requests.get("https://app.scrapingbee.com/api/v1/",
+                               params=params,
+                               timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+            if res.status_code == 200:
+                return FetchResult(url, res.text, res.status_code, from_renderer=render_js)
             else:
-                return r.text, None, r.status_code, from_renderer
-
+                logger.error("[ScrapingBee] HTTP %d attempt=%d body=%s",
+                             res.status_code, attempt, res.text[:300])
+                # If it's a 400 and complains about js_scenario, try again without js.
+                if res.status_code == 400 and with_js:
+                    # Next attempt, disable JS scenario
+                    try_js = False
+                continue
         except Exception as e:
-            logger.warning(f"[ScrapingBee] EXC attempt={attempt} {e}")
-            if attempt == Config.SB_RETRIES - 1:
-                return None, None, 500, render_js
+            logger.error("[ScrapingBee] EXC attempt=%d %s", attempt, e)
+            continue
 
-    return None, None, 500, render_js
+    return FetchResult(url, "ScrapingBee failed after attempts", 500, from_renderer=render_js)
 
-def scrapingbee_html_fetcher(url: str, render_js: bool) -> FetchResult:
-    html, _, status, from_renderer = _scrapingbee_request(
-        url,
-        render_js=render_js,
-        want_html=True,
-        want_screenshot=False,
-        with_js=True
-    )
-    if html is None:
-        return FetchResult(url, f"ScrapingBee failed for HTML: HTTP {status}", status, from_renderer)
-    return FetchResult(url, html, status, from_renderer)
-
-def scrapingbee_screenshot_fetcher(url: str, render_js: bool) -> Optional[List[bytes]]:
+def scrapingbee_screenshot_fetcher(url: str, render_js: bool, force_js=True) -> str or None:
     """
-    Returns list of up to MAX_SCREENSHOTS_PER_PAGE PNG raw bytes:
-    fold, mid-page, footer (we just take 1 screenshot for now – full page requires premium;
-    you can re-enable full page with screenshot_full_page=true if your plan allows).
+    Returns a JPEG base64 image (already compressed), placed into SHARED_CACHE by caller.
+    Follows the same doc-compliant strategy as html_fetcher.
     """
-    # We'll keep it simple: single "fold" screenshot. You can extend to 3 by
-    # doing multiple scroll_to / screenshot_selector instructions in your js_scenario
-    # + repeated calls. For now, return 1 screenshot.
-    _, content, status, _ = _scrapingbee_request(
-        url,
-        render_js=render_js,
-        want_html=False,
-        want_screenshot=True,
-        with_js=True
-    )
-    if content is None:
+    api_key = Config.SCRAPINGBEE_API_KEY
+    if not api_key:
         return None
-    return [content]
 
-# ------------------------------------------------------------------------------------
-# Render policy
-# ------------------------------------------------------------------------------------
-def render_policy(result: FetchResult) -> Tuple[bool, str]:
+    js_scenario = build_cookie_js_scenario()
+    params_base = {
+        "api_key": api_key,
+        "url": url,
+        "render_js": "true" if render_js else "false",
+        "wait": 2000,
+        "block_resources": "false",
+        "screenshot": "true",
+        "screenshot_full_page": "false",
+        "stealth_proxy": "false",
+        "premium_proxy": "false",
+        "strict": "false"
+    }
+
+    attempts = Config.MAX_BEE_ATTEMPTS
+    for attempt in range(attempts):
+        with_js = force_js and attempt == 0
+        params = dict(params_base)
+        if with_js:
+            params["js_scenario"] = json.dumps(js_scenario)
+
+        logger.info("[ScrapingBee]Screenshot %s attempt=%d render_js=%s with_js=%s",
+                    url, attempt, render_js, with_js)
+        try:
+            res = requests.get("https://app.scrapingbee.com/api/v1/",
+                               params=params,
+                               timeout=Config.SCRAPINGBEE_TIMEOUT_SECS)
+            if res.status_code == 200:
+                # ScrapingBee returns raw PNG bytes (not base64) for screenshot.
+                # Convert to JPEG b64 so OpenAI always accepts.
+                try:
+                    png_bytes = res.content
+                    img = Image.open(io.BytesIO(png_bytes))
+                    b64_jpeg = image_to_jpeg_b64(img, Config.JPEG_MAX_SIDE_PX, Config.JPEG_QUALITY)
+                    return b64_jpeg
+                except Exception as img_e:
+                    logger.error("[IMG] Convert failed: %s", img_e)
+                    return None
+            else:
+                body = res.text[:300]
+                logger.error("[ScrapingBee] HTTP %d attempt=%d body=%s", res.status_code, attempt, body)
+                if res.status_code == 400 and with_js:
+                    force_js = False
+                continue
+        except Exception as e:
+            logger.error("[ScrapingBee] EXC attempt=%d %s", attempt, e)
+            continue
+
+    logger.error("[ScrapingBeeScreenshot] ERROR for %s: HTTP failure", url)
+    return None
+
+# -----------------------------------------------------------------------------------
+# Render Policy
+# -----------------------------------------------------------------------------------
+def render_policy(result: FetchResult) -> (bool, str):
     if result.status_code >= 400:
         return True, "http_error"
     soup = BeautifulSoup(result.html, "lxml")
@@ -490,166 +439,189 @@ def social_extractor(soup, base_url):
         links = {tag['href'] for tag in soup.find_all('a', href=pattern)}
         if links:
             best_link = min(links, key=len)
-            found_socials[platform] = requests.compat.urljoin(base_url, best_link)
+            found_socials[platform] = urljoin(base_url, best_link)
     return found_socials
 
-# ------------------------------------------------------------------------------------
-# OpenAI helpers
-# ------------------------------------------------------------------------------------
-def _get_openai_client():
-    proxy_keys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]
-    original = {k: os.environ.pop(k, None) for k in proxy_keys}
-    # We return a tuple (client, restore_fn)
-    def _restore():
-        for key, value in original.items():
-            if value is not None:
-                os.environ[key] = value
-    http_client = httpx.Client(proxies=None)
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), http_client=http_client)
-    return client, _restore
+# -----------------------------------------------------------------------------------
+# OpenAI helpers + schema validation
+# -----------------------------------------------------------------------------------
+def call_openai(client: OpenAI, **kwargs):
+    return client.chat.completions.create(**kwargs)
 
-def call_openai_for_synthesis(corpus: str) -> str:
+def validate_or_fix_json(key_name: str, raw_text: str, validator: Draft7Validator, client: OpenAI, prompt_again: str, retries: int = 2):
+    """
+    Try to parse & validate, retry up to 'retries' times if it fails.
+    """
+    attempt = 0
+    last_err = None
+    while attempt <= retries:
+        try:
+            data = json.loads(raw_text)
+            errors = sorted(validator.iter_errors(data), key=lambda e: e.path)
+            if errors:
+                messages = "; ".join([f"{'/'.join(map(str, e.path))}: {e.message}" for e in errors])
+                raise ValidationError(messages)
+            return data
+        except Exception as e:
+            last_err = e
+            attempt += 1
+            logger.warning("[Schema] %s invalid JSON for key '%s' attempt=%d err=%s", type(e).__name__, key_name, attempt, e)
+
+            if attempt > retries:
+                break
+
+            # Re-ask the model to produce valid JSON strictly per schema
+            sys_msg = (
+                "Return ONLY a valid JSON object matching this JSON-Schema (no markdown, no code-fences):\n"
+                + json.dumps(MEMO_KEY_SCHEMA, indent=2)
+            )
+            user_msg = (
+                "Your previous output was invalid. Please reformat your last answer into a JSON object that is strictly valid per the schema above."
+            )
+            resp = call_openai(client,
+                               model=Config.OPENAI_MODEL,
+                               temperature=0.0,
+                               messages=[
+                                   {"role": "system", "content": sys_msg},
+                                   {"role": "user", "content": user_msg}
+                               ])
+            raw_text = resp.choices[0].message.content
+
+    # As a last resort, return a minimal fallback
+    logger.error("[Schema] Giving up validating key '%s': %s", key_name, last_err)
+    return {
+        "score": 0,
+        "analysis": "Model failed to produce a valid JSON response.",
+        "evidence": "",
+        "confidence": 1,
+        "confidence_rationale": "Schema validation failed.",
+        "recommendation": "Retry the analysis later."
+    }
+
+def call_openai_for_synthesis(client: OpenAI, corpus: str):
     logger.info("[AI] Synthesizing brand overview...")
-    client, restore = _get_openai_client()
+    synthesis_prompt = (
+        "Analyze the following text from a company's website and social media. "
+        "Provide a concise, one-paragraph summary of the brand's mission, tone, and primary offerings. "
+        "This summary will be used as context for further analysis.\n\n---\n" + corpus + "\n---"
+    )
     try:
-        synthesis_prompt = (
-            "Analyze the following text from a company's website and social media. "
-            "Provide a concise, one-paragraph summary of the brand's mission, tone, and primary offerings. "
-            "This summary will be used as context for further analysis.\n\n---\n"
-            f"{corpus}\n---"
-        )
-        resp = client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
-            messages=[{"role": "user", "content": synthesis_prompt}],
-            temperature=Config.OPENAI_TEMPERATURE
-        )
-        return resp.choices[0].message.content.strip()
+        resp = call_openai(client,
+                           model=Config.OPENAI_MODEL,
+                           temperature=Config.OPENAI_TEMPERATURE,
+                           messages=[{"role": "user", "content": synthesis_prompt}])
+        return resp.choices[0].message.content
     except Exception as e:
-        logger.exception("[ERROR] AI synthesis failed: %s", e)
+        logger.error("[ERROR] AI synthesis failed: %s", e)
         return "Could not generate brand summary due to an error."
-    finally:
-        restore()
 
-def analyze_memorability_key(
-    key_name: str,
-    prompt_template: str,
-    text_corpus: str,
-    brand_summary: str,
-    image_data_urls: List[str],
-    visual_hints: Dict
-):
-    logger.info(f"[AI] Analyzing key: {key_name}")
-    client, restore = _get_openai_client()
+def analyze_memorability_key(client: OpenAI,
+                             key_name: str,
+                             prompt_template: str,
+                             text_corpus: str,
+                             brand_summary: str,
+                             compressed_jpegs_b64: list,
+                             visual_hints: dict):
+    logger.info("[AI] Analyzing key: %s", key_name)
+
+    # Build content payload: we include up to first N image URLs (data-uri) + text (visual hints).
+    content_list = []
+
+    # (1) Attach screenshots
+    for b64 in compressed_jpegs_b64:
+        content_list.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+    # (2) Add visual hints
+    if visual_hints:
+        visual_hint_txt = json.dumps(visual_hints, indent=2)
+        content_list.append({"type": "text", "text": f"VISUAL HINTS (colors/fonts):\n{visual_hint_txt}"})
+
+    # (3) Corpus and summary text
+    content_list.append({"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"})
+    content_list.append({"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"})
+
+    system_prompt = f"""You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
+    {prompt_template}
+
+    Your response MUST be a valid JSON object with the following keys and constraints (strictly):
+    {json.dumps(MEMO_KEY_SCHEMA, indent=2)}
+    """
+
     try:
-        # Build content
-        content = []
-        # Add up to 3 images
-        for data_url in image_data_urls[:3]:
-            content.append({"type": "image_url", "image_url": {"url": data_url}})
-        content.append({"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"})
-        content.append({"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"})
-        content.append({"type": "text", "text": f"VISUAL HINTS (auto-extracted):\n{json.dumps(visual_hints, indent=2)}"})
-
-        system_prompt = f"""
-You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
-{prompt_template}
-
-Your response MUST be a JSON object with the following keys:
-- "score": An integer from 0 to 100.
-- "analysis": A comprehensive analysis of **at least five sentences** explaining your score, based on the specific criteria provided.
-- "evidence": A single, direct quote from the text or a specific visual observation from the provided screenshots.
-- "confidence": An integer from 1 to 5.
-- "confidence_rationale": A brief explanation for your confidence score.
-- "recommendation": A concise, actionable recommendation for how the brand could improve its score for this specific key.
-"""
-
-        resp = client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
-            messages=[{"role": "system", "content": system_prompt},
-                      {"role": "user", "content": content}],
-            response_format={"type": "json_object"},
-            temperature=0.3
-        )
-        raw = resp.choices[0].message.content
-        parsed = json.loads(raw)
-        ok, err = _validate_json_against_schema(parsed, LLM_KEY_SCHEMA)
-        if not ok:
-            logger.warning("[SCHEMA] Invalid JSON for key %s: %s. Will wrap into fallback.", key_name, err)
-            parsed = {
-                "score": int(parsed.get("score", 0)) if isinstance(parsed.get("score"), int) else 0,
-                "analysis": parsed.get("analysis", "Invalid JSON, but here is the raw response."),
-                "evidence": parsed.get("evidence", ""),
-                "confidence": int(parsed.get("confidence", 1)) if isinstance(parsed.get("confidence"), int) else 1,
-                "confidence_rationale": parsed.get("confidence_rationale", "Schema validation failed."),
-                "recommendation": parsed.get("recommendation", "Re-run analysis with valid schema.")
-            }
-        return key_name, parsed
+        response = call_openai(client,
+                               model=Config.OPENAI_MODEL,
+                               temperature=0.3,
+                               messages=[
+                                   {"role": "system", "content": system_prompt},
+                                   {"role": "user", "content": content_list},
+                               ])
+        raw = response.choices[0].message.content
+        # Validate/repair
+        valid = validate_or_fix_json(key_name, raw, KEY_VALIDATOR, client, system_prompt, Config.SCHEMA_MAX_RETRIES)
+        return key_name, valid
     except Exception as e:
-        logger.exception(f"[ERROR] LLM analysis failed for key '{key_name}': {e}")
-        return key_name, {
-            "score": 0,
-            "analysis": "Analysis failed due to a server error.",
-            "evidence": str(e),
-            "confidence": 1,
+        logger.error("[ERROR] LLM analysis failed for key '%s': %s", key_name, e)
+        err = {
+            "score": 0, "analysis": "Analysis failed due to a server error.",
+            "evidence": str(e), "confidence": 1,
             "confidence_rationale": "System error.",
             "recommendation": "Resolve the technical error to proceed."
         }
-    finally:
-        restore()
+        return key_name, err
 
-def call_openai_for_executive_summary(all_analyses: List[dict]) -> str:
+def call_openai_for_executive_summary(client: OpenAI, all_analyses):
     logger.info("[AI] Generating Executive Summary...")
-    client, restore = _get_openai_client()
-    try:
-        analyses_text = "\n\n".join([
-            f"Key: {d['key']}\nScore: {d['analysis']['score']}\nAnalysis: {d['analysis']['analysis']}"
-            for d in all_analyses
-        ])
-        prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
-1) Overall Summary: A brief, high-level overview of the brand's memorability performance.
-2) Key Strengths: Identify the 2-3 strongest keys and explain why.
-3) Primary Weaknesses: Identify the 2-3 weakest keys and explain the impact.
-4) Strategic Focus: State the single most important key the brand should focus on to improve overall memorability.
+    analyses_text = "\n\n".join([
+        f"Key: {data['key']}\nScore: {data['analysis']['score']}\nAnalysis: {data['analysis']['analysis']}"
+        for data in all_analyses
+    ])
+    summary_prompt = f"""You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:
+1. **Overall Summary:** A brief, high-level overview of the brand's memorability performance.
+2. **Key Strengths:** Identify the 2-3 strongest keys for the brand and explain why.
+3. **Primary Weaknesses:** Identify the 2-3 weakest keys and explain the impact.
+4. **Strategic Focus:** State the single most important key the brand should focus on to improve its overall memorability.
 
 Here are the individual analyses to synthesize:
 ---
 {analyses_text}
 ---
 """
-        resp = client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        return resp.choices[0].message.content.strip()
+    try:
+        resp = call_openai(client,
+                           model=Config.OPENAI_MODEL,
+                           temperature=0.3,
+                           messages=[{"role": "user", "content": summary_prompt}])
+        return resp.choices[0].message.content
     except Exception as e:
-        logger.exception("[ERROR] AI summary failed: %s", e)
+        logger.error("[ERROR] AI summary failed: %s", e)
         return "Could not generate the executive summary due to an error."
-    finally:
-        restore()
 
-# ------------------------------------------------------------------------------------
-# Main Orchestrator (generator)
-# ------------------------------------------------------------------------------------
-def run_full_scan_stream(url: str, cache: Dict[str, str]):
-    start = time.time()
+# -----------------------------------------------------------------------------------
+# Main Stream Orchestrator
+# -----------------------------------------------------------------------------------
+def run_full_scan_stream(url: str, cache: dict):
+    start_time = time.time()
     budget = Config.SITE_BUDGET_SECS
     escalated = False
 
-    pages_analyzed: List[FetchResult] = []
+    pages_analyzed = []
     text_corpus = ""
     socials_found = False
-    homepage_jpegs: List[str] = []   # data URLs (JPEG) – send to LLM
-    homepage_raws: List[bytes] = []  # raw bytes for visual extraction
+
+    # Visual artifacts
+    forced_screens_b64 = []  # first N pages, always store here
+    total_screens_sent_to_llm = 0
 
     queue = deque([(_clean_url(url), 0)])
-    seen = {_clean_url(url)}
+    seen_urls = {_clean_url(url)}
+
+    client = OpenAI(api_key=Config.OPENAI_API_KEY, http_client=httpx.Client(proxies=None))
 
     try:
         yield {'type': 'status', 'message': f'Scan initiated. Budget: {budget}s.'}
 
         while queue and len(pages_analyzed) < Config.CRAWL_MAX_PAGES:
-            elapsed = time.time() - start
+            elapsed = time.time() - start_time
             if elapsed > budget:
                 yield {'type': 'status', 'message': 'Time budget exceeded. Finalizing analysis.'}
                 break
@@ -657,34 +629,37 @@ def run_full_scan_stream(url: str, cache: Dict[str, str]):
             current_url, depth = queue.popleft()
             yield {'type': 'status', 'message': f'Analyzing page {len(pages_analyzed) + 1}/{Config.CRAWL_MAX_PAGES}: {current_url}'}
 
-            # 1) basic
-            basic_res = basic_fetcher(current_url)
-            should_render, reason = render_policy(basic_res)
-            final_res = basic_res
+            # 1) Basic fetch
+            basic_result = basic_fetcher(current_url)
 
+            # 2) Decide to render
+            should_render, reason = render_policy(basic_result)
+
+            final_result = basic_result
             if should_render:
                 yield {'type': 'status', 'message': f'Basic fetch insufficient ({reason}). Escalating to JS renderer...'}
-                final_res = scrapingbee_html_fetcher(current_url, render_js=True)
+                final_result = scrapingbee_html_fetcher(current_url, render_js=True, try_js=True)
 
-            # 2) screenshot (only for first page OR if you want per page – we keep it first page for cost)
-            if len(pages_analyzed) == 0:
-                raw_pngs = scrapingbee_screenshot_fetcher(current_url, render_js=final_res.from_renderer)
-                if raw_pngs:
-                    # store up to MAX_SCREENSHOTS_PER_PAGE as data URLs in cache
-                    for raw in raw_pngs[:Config.MAX_SCREENSHOTS_PER_PAGE]:
-                        data_url = _safe_b64_to_jpeg_data_url(raw)
-                        if data_url:
-                            image_id = str(uuid.uuid4())
-                            cache[image_id] = data_url.split(",")[1]  # store only b64 for HTTP endpoint (png->jpeg still fine)
-                            SHARED_CACHE[image_id] = cache[image_id]
-                            yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
-                            homepage_jpegs.append(data_url)
-                            homepage_raws.append(raw)
+            # 3) Force screenshots for first N pages
+            need_force = len(pages_analyzed) < Config.FORCE_SCREENSHOTS_FIRST_N
+            if need_force:
+                # Force screenshot
+                b64_jpeg = scrapingbee_screenshot_fetcher(current_url, render_js=True, force_js=True)
+                if not b64_jpeg:
+                    # fallback non-JS
+                    b64_jpeg = scrapingbee_screenshot_fetcher(current_url, render_js=False, force_js=False)
+                if b64_jpeg:
+                    forced_screens_b64.append(b64_jpeg)
+                    image_id = str(uuid.uuid4())
+                    cache[image_id] = b64_jpeg  # already jpeg
+                    yield {'type': 'screenshot_ready', 'id': image_id, 'url': current_url}
 
-            # 3) HTML parsing
-            if final_res.html:
-                soup = BeautifulSoup(final_res.html, "lxml")
-                logger.info(f"[DEBUG] Links found on {current_url}: {len(soup.find_all('a', href=True))} (rendered={final_res.from_renderer})")
+            # 4) Parse
+            html = final_result.html or ""
+            if html:
+                soup = BeautifulSoup(html, "lxml")
+                logger.info("[DEBUG] Links found on %s: %d (rendered=%s)",
+                            current_url, len(soup.find_all('a', href=True)), final_result.from_renderer)
 
                 if len(pages_analyzed) == 0:
                     found = social_extractor(soup, current_url)
@@ -692,10 +667,12 @@ def run_full_scan_stream(url: str, cache: Dict[str, str]):
                         socials_found = True
                         yield {'type': 'status', 'message': f'Found social links: {list(found.values())}'}
 
+                # Strip script/style
                 for tag in soup(["script", "style"]):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({current_url}) ---\n" + soup.get_text(" ", strip=True)
 
+                # Expand queue
                 if depth < Config.CRAWL_MAX_DEPTH:
                     for a in soup.find_all("a", href=True):
                         href = a.get("href")
@@ -703,21 +680,18 @@ def run_full_scan_stream(url: str, cache: Dict[str, str]):
                             continue
                         if Config.BINARY_RE.search(href):
                             continue
-                        link = _clean_url(requests.compat.urljoin(current_url, href))
-                        if not _is_same_domain(url, link) or link in seen:
+                        link_url = _clean_url(urljoin(current_url, href))
+                        if not _is_same_domain(url, link_url) or link_url in seen_urls:
                             continue
-
                         remaining_slots = Config.CRAWL_MAX_PAGES - (len(pages_analyzed) + len(queue))
                         if remaining_slots <= 0:
                             break
+                        queue.append((link_url, depth + 1))
+                        seen_urls.add(link_url)
 
-                        queue.append((link, depth + 1))
-                        seen.add(link)
+            pages_analyzed.append(final_result)
 
-            pages_analyzed.append(final_res)
-
-            # escalate global budget if needed
-            elapsed = time.time() - start
+            elapsed = time.time() - start_time
             if not escalated and elapsed < budget:
                 pages_rendered_by_bee = sum(1 for p in pages_analyzed if p.from_renderer)
                 if len(pages_analyzed) >= 3 and pages_rendered_by_bee >= 2 and not socials_found:
@@ -725,25 +699,55 @@ def run_full_scan_stream(url: str, cache: Dict[str, str]):
                     escalated = True
                     yield {'type': 'status', 'message': f'High JS usage and no socials found → escalating budget to {budget}s.'}
 
-        # -----------------------------------------
-        # AI analysis
-        # -----------------------------------------
-        yield {'type': 'status', 'message': 'Crawl complete. Starting AI analysis...'}
+        # -----------------------------------------------------------------------------------
+        # VISUAL FEATURE EXTRACTION
+        # -----------------------------------------------------------------------------------
+        visual_hints = {}
+        try:
+            # 1) Use HTML corpus to extract colors & font families
+            color_counts = extract_hex_colors_from_html(text_corpus)
+            font_counts  = extract_font_families_from_html(text_corpus)
 
-        brand_summary = call_openai_for_synthesis(text_corpus)
+            visual_hints["top_html_hex_colors"] = [c for c, _ in color_counts.most_common(12)]
+            visual_hints["top_html_fonts"]      = [f for f, _ in font_counts.most_common(12)]
 
-        # Visual hints from up to 3 screenshots
-        visual_hints = _visual_features_from_screenshots(homepage_raws[:3])
+            # 2) From screenshots, get dominant colors
+            dominant_sets = []
+            for b64 in forced_screens_b64:
+                try:
+                    img = b64_to_image(b64)
+                    dom_hex = extract_dominant_colors_from_image(img, k=Config.NUM_DOMINANT_COLORS)
+                    dominant_sets.append(dom_hex)
+                except Exception as e:
+                    logger.warning("[VIS] dominant color failed: %s", e)
+            # Flatten & count
+            flat = [c for lst in dominant_sets for c in lst]
+            visual_hints["dominant_screenshot_colors"] = [c for c, _ in Counter(flat).most_common(12)]
+        except Exception as e:
+            logger.warning("[VIS] Visual feature extraction failed: %s", e)
+            visual_hints = {}
+
+        # -----------------------------------------------------------------------------------
+        # AI ANALYSIS
+        # -----------------------------------------------------------------------------------
+        yield {'type': 'status', 'message': f'Crawl complete. Starting AI analysis...'}
+        brand_summary = call_openai_for_synthesis(client, text_corpus)
 
         all_results = []
+        # Log how many screenshots we'll pass
+        total_screens_sent_to_llm = len(forced_screens_b64)
+        logger.info("[LLM] Passing %d screenshot(s) to the model.", total_screens_sent_to_llm)
+        yield {'type': 'status', 'message': f'Passing {total_screens_sent_to_llm} screenshots to the model.'}
+
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
             key_name, result_json = analyze_memorability_key(
+                client,
                 key,
                 prompt,
                 text_corpus,
                 brand_summary,
-                homepage_jpegs[:3],
+                forced_screens_b64,
                 visual_hints
             )
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
@@ -751,7 +755,7 @@ def run_full_scan_stream(url: str, cache: Dict[str, str]):
             yield result_obj
 
         yield {'type': 'status', 'message': 'Generating Executive Summary...'}
-        summary_text = call_openai_for_executive_summary(all_results)
+        summary_text = call_openai_for_executive_summary(client, all_results)
         yield {'type': 'summary', 'text': summary_text}
         yield {'type': 'complete', 'message': 'Analysis finished.'}
 
