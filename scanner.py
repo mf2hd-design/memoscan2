@@ -55,7 +55,7 @@ class Config:
     FORCE_SCREENSHOTS_FIRST_N = int(os.getenv("FORCE_SCREENSHOTS_FIRST_N", 3))
 
     # OpenAI
-    OPENAI_MODEL             = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    OPENAI_MODEL             = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
     OPENAI_TEMPERATURE       = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
     OPENAI_API_KEY           = os.getenv("OPENAI_API_KEY", "")
 
