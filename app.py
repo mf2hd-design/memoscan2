@@ -10,7 +10,7 @@ from scanner import run_full_scan_stream, SHARED_CACHE
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("SECRET_KEY", "a-very-secret-key-that-should-be-changed")
 
-socketio = SocketIO(app, async_mode='gevent', logger=os.getenv("LOG_LEVEL", "INFO") == "DEBUG")
+socketio = SocketIO(app, async_mode='gevent', logger=os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG")
 
 logger = logging.getLogger("app")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -27,12 +27,10 @@ def pad_b64(s: str) -> str:
 
 @app.route('/screenshot/<image_id>')
 def get_screenshot(image_id):
-    """Serve the cached screenshot as PNG (we stored JPEG but that's fine to serve as JPEG)."""
     b64_data = SHARED_CACHE.get(image_id)
     if not b64_data:
         return "Screenshot not found", 404
     try:
-        # It's JPEG, serve as such
         image_bytes = base64.b64decode(pad_b64(b64_data), validate=False)
         return send_file(io.BytesIO(image_bytes), mimetype='image/jpeg')
     except Exception as e:
