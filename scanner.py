@@ -10,27 +10,56 @@ from io import BytesIO
 logger = logging.getLogger("scanner")
 logging.basicConfig(level=logging.INFO)
 
-# --- Cookie Banner Avoidance JS ---
+# --- Comprehensive Cookie Banner Avoidance JS ---
 EVALUATE_COOKIE_JS = """
 (() => {
   const cookieWords = [
-    'accept', 'ok', 'agree', 'zulassen', 'akzeptieren', 'consent', 'allow', 'got it', 'dismiss', 'permitir'
+    'accept', 'agree', 'ok', 'got it', 'allow', 'dismiss', 'consent', 'yes', 'continue',
+    'zulassen', 'akzeptieren', 'erlauben',      // German
+    'permitir', 'aceptar', 'consentir',         // Spanish/Portuguese
+    'accepter', 'autoriser', 'oui',             // French
+    'accetta', 'consenti',                      // Italian
+    'akkoord', 'toestaan',                      // Dutch
+    'zgadzam', 'zezwalaj',                      // Polish
+    'принять', 'согласен',                      // Russian
+    'allow all', 'accept all', 'alle akzeptieren', 'tout accepter', 'permit all'
   ];
-  // Click <button>
-  Array.from(document.querySelectorAll('button')).forEach(btn => {
-    let txt = (btn.textContent || '').toLowerCase();
-    if (cookieWords.some(w => txt.includes(w))) { try { btn.click(); } catch (e) {} }
-  });
-  // Click <a>
-  Array.from(document.querySelectorAll('a')).forEach(a => {
-    let txt = (a.textContent || '').toLowerCase();
-    if (cookieWords.some(w => txt.includes(w))) { try { a.click(); } catch (e) {} }
-  });
-  // Click <input type=button|submit>
-  Array.from(document.querySelectorAll('input[type=button],input[type=submit]')).forEach(inp => {
-    let val = (inp.value || '').toLowerCase();
-    if (cookieWords.some(w => val.includes(w))) { try { inp.click(); } catch (e) {} }
-  });
+  function normalize(txt) {
+    return (txt || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+  }
+  function tryClickAll(root=document) {
+    let clicked = 0;
+    // Buttons and inputs
+    root.querySelectorAll('button, input[type=button], input[type=submit]').forEach(btn => {
+      let txt = normalize(btn.textContent) || normalize(btn.value);
+      if (cookieWords.some(w => txt.includes(w))) { try { btn.click(); clicked++; } catch(e){} }
+    });
+    // Links
+    root.querySelectorAll('a').forEach(a => {
+      let txt = normalize(a.textContent);
+      if (cookieWords.some(w => txt.includes(w))) { try { a.click(); clicked++; } catch(e){} }
+    });
+    // Divs, spans with role/button/cookie classes
+    root.querySelectorAll('div[role=button],span[role=button],div[class*="cookie"],div[id*="cookie"],span[class*="cookie"],span[id*="cookie"]').forEach(el => {
+      let txt = normalize(el.textContent);
+      if (cookieWords.some(w => txt.includes(w))) { try { el.click(); clicked++; } catch(e){} }
+    });
+    // Try shadow DOMs
+    root.querySelectorAll('*').forEach(node => {
+      if (node.shadowRoot) {
+        try { clicked += tryClickAll(node.shadowRoot); } catch(e){}
+      }
+    });
+    return clicked;
+  }
+  // Retry multiple times for slow banners
+  let tries = 0, maxTries = 4;
+  function doIt() {
+    tries++;
+    let res = tryClickAll();
+    if (res === 0 && tries < maxTries) setTimeout(doIt, 1200);
+  }
+  doIt();
 })();
 """
 
@@ -58,14 +87,14 @@ def get_screenshot_scrapingbee(url: str) -> bytes:
                     "evaluate": EVALUATE_COOKIE_JS
                 },
                 {
-                    "wait": 800
+                    "wait": 1200  # Give a little more time for banners to close before screenshot
                 }
             ]
         }),
     }
     try:
         logger.info(f"[ScrapingBee]Screenshot {url}")
-        resp = httpx.get(endpoint, params=params, timeout=35)
+        resp = httpx.get(endpoint, params=params, timeout=40)
         if resp.status_code == 200:
             # Validate PNG by attempting to open with PIL
             try:
@@ -118,8 +147,7 @@ def run_full_scan_stream(target_url: str, screenshot_cache: dict = None):
 
     # Fetch up to two more internal links from the homepage for extra screenshots
     try:
-        resp = httpx.get(main_url, timeout=12)
-        # Extract links (primitive): find <a href="..."> and keep the first two
+        resp = httpx.get(main_url, timeout=15)
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, 'lxml')
         links = []
@@ -129,7 +157,6 @@ def run_full_scan_stream(target_url: str, screenshot_cache: dict = None):
             if href.startswith('http'):
                 links.append(href)
             elif href.startswith('/'):
-                # Absolute path, make full URL
                 links.append(main_url.rstrip('/') + href)
             if len(links) >= 2:
                 break
@@ -142,7 +169,6 @@ def run_full_scan_stream(target_url: str, screenshot_cache: dict = None):
         logger.info(f"[ScrapingBee]Screenshot {url} (Page {idx+1})")
         img_bytes = get_screenshot_scrapingbee(url)
         if img_bytes:
-            # Save to cache and record
             img_id = f"{hash(url)}"
             if screenshot_cache is not None:
                 screenshot_cache[img_id] = base64.b64encode(img_bytes).decode("utf-8")
@@ -171,5 +197,5 @@ def run_full_scan_stream(target_url: str, screenshot_cache: dict = None):
 # --- For local/manual testing ---
 if __name__ == "__main__":
     cache = {}
-    for data in run_full_scan_stream("basf.com", cache):
+    for data in run_full_scan_stream("repsol.com", cache):
         print(json.dumps(data, indent=2))
