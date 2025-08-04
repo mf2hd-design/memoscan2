@@ -24,5 +24,5 @@ RUN playwright install --with-deps
 # Copy the rest of the app
 COPY . .
 
-# Start app using Gunicorn and environment-assigned port
-CMD gunicorn --worker-class gevent --bind 0.0.0.0:$PORT app:app
+# Start app using Gunicorn with WebSocket support
+CMD gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker --bind 0.0.0.0:$PORT app:app
