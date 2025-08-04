@@ -12,6 +12,9 @@ def _get_sld(url):
         netloc = urlparse(url).netloc
         if not netloc:
             return ""
+        # FIX: Added logic to strip 'www.' for more accurate domain comparison
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]
         parts = netloc.split('.')
         return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
     except Exception as e:
@@ -120,31 +123,16 @@ class CircuitBreaker:
 
 
 
-def log(level, message, data=None):
+def log(level, message, data=None): #FIX: Simplified logging and removed misplaced code
     import json
-    from datetime import datetime
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"[{now}] [{level.upper()}] {message}"
-    print(formatted, flush=True)
+    formatted_message = f"[{timestamp()}] [{level.upper()}] {message}"
+    print(formatted_message, flush=True)
     if data:
-        print(f"[timestamp()]()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
-    formatted = f"[{level.upper()}] {message}"
-    print(formatted, flush=True)
-    if data:
-        print(f"[timestamp()]()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
-    print(f"[{level.upper()}] {timestamp()} - {message}")
-    if data: print(f"[timestamp()]()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
+        details_message = f"[{timestamp()}] [DETAILS] {json.dumps(data, indent=2, ensure_ascii=False)}"
+        print(details_message, flush=True)
 
-    # Remove www. prefix if present
-    if netloc.startswith('www.'):
-        netloc = netloc[4:]
-    parts = netloc.split('.')
-    # Handle cases like co.uk, com.br, etc.
-    if len(parts) >= 2:
-        # For most cases, return the last two parts
-        return '.'.join(parts[-2:])
-    return netloc
-
+def _is_same_brand_domain(url1: str, url2: str) -> bool:
+    domain1 = _get_sld(url1)
     domain2 = _get_sld(url2)
     result = domain1 == domain2
     # Debug logging for first few checks
