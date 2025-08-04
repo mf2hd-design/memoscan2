@@ -40,15 +40,15 @@ NEGATIVE_REGEX = [
     r"\b(press[-_]release(s)?)\b",
     # Aggressively penalize specific investor docs/reports and general news/events/blogs/articles
     r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck)\b",
-    # Expanded to catch more general news/content sections, webinars, whitepapers, case studies
+    # Expanded to catch more general news/content sections, webinars, whitepapers, case studies, resources, insights
     r"\b(news|events|blogs?|articles?|updates?|media|press|spotlight|stories)\b",
     r"\b(whitepapers?|webinars?|case[-_]stud(y|ies)|customer[-_]stor(y|ies))\b",
-    r"\b(resources?|insights?)\b" # General content hubs
+    r"\b(resources?|insights?|downloads?)\b" # General content hubs, added 'downloads'
 ]
 
 LINK_SCORE_MAP = {
     "high": {"patterns": [r"company", r"about", r"story", r"mission", r"vision", r"purpose", r"values", r"strategy", r"strength", r"culture", r"who[-_]we[-_]are", r"credo", r"manifesto", r"why[-_]we[-_]exist", r"what[-_]we[-_]believe", r"über[-_]uns", r"unternehmen", r"unsere[-_]mission", r"unsere[-_]werte", r"quienes[-_]somos", r"nuestra[-_]historia", r"nuestros[-_]valores"], "score": 20},
-    "core_business": {"patterns": [r"products", r"solutions", r"services", r"pipeline", r"research", r"innovation", r"investors?", r"investor[-_]relations", r"offerings", r"expertise", r"what[-_]we[-_]do", r"capabilities"], "score": 15}, # Added 'offerings', 'expertise', 'what-we-do', 'capabilities'
+    "core_business": {"patterns": [r"products", r"solutions", r"services", r"pipeline", r"research", r"innovation", r"investors?", r"investor[-_]relations", r"offerings", r"expertise", r"what[-_]we[-_]do", r"capabilities", r"industries", r"technology"], "score": 15}, # Added 'offerings', 'expertise', 'what-we-do', 'capabilities', 'industries', 'technology'
     "language": {"patterns": [r"/en/", r"lang=en"], "score": 10},
     "medium": {"patterns": [r"leadership", r"team", r"management", r"history", r"heritage", r"legacy", r"sustainability", r"responsibility", r"esg", r"evp", r"employee-value-proposition", r"nachhaltigkeit", r"verantwortung", r"liderazgo", r"equipo", "sostenibilidad"], "score": 8},
     "negative": {"patterns": NEGATIVE_REGEX, "score": -50} # All other negative patterns combined
@@ -154,13 +154,13 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
         if html:
             return screenshot, html
         else:
-            log("warn", f"Scrapfly returned empty content for {url}, trying Playwright.")
+            log("warn", f"Scrapfly returned empty content for {url}, trying Playwright. (No screenshot from Playwright fallback)")
             html = fetch_html_with_playwright(url)
-            return None, html
+            return None, html # Playwright fallback doesn't return screenshot
     except Exception as e:
-        log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright.")
+        log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright. (No screenshot from Playwright fallback)")
         html = fetch_html_with_playwright(url)
-        return None, html
+        return None, html # Playwright fallback doesn't return screenshot
 
 def fetch_all_pages(urls: list[str]) -> Dict[str, Optional[str]]:
     results = {}
@@ -183,14 +183,35 @@ def summarize_results(all_results: list) -> dict:
     summary = {"keys_analyzed": len(all_results), "strong_keys": 0, "weak_keys": 0}
     for result in all_results:
         if 'analysis' in result and 'score' in result['analysis']:
-            if result["analysis"]["score"] >= 80: summary["strong_keys"] += 1
-            elif result["analysis"]["score"] <= 50: summary["weak_keys"] += 1
+            # Assuming score is now out of 5 from the AI, adjust thresholds for summary
+            if result["analysis"]["score"] >= 4: summary["strong_keys"] += 1
+            elif result["analysis"]["score"] <= 2: summary["weak_keys"] += 1
     return summary
 # --- END: HELPER CLASSES AND FUNCTIONS ---
 
 SHARED_CACHE = {}
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# --- START: FEEDBACK MECHANISM ---
+FEEDBACK_FILE = "feedback_log.jsonl"
+
+def record_feedback(analysis_id: str, key_name: str, feedback_type: str, comment: Optional[str] = None):
+    """Records user feedback for a specific AI analysis."""
+    feedback_entry = {
+        "timestamp": time.time(),
+        "analysis_id": analysis_id,
+        "key_name": key_name,
+        "feedback_type": feedback_type, # e.g., "thumbs_up", "thumbs_down", "comment"
+        "comment": comment
+    }
+    try:
+        with open(FEEDBACK_FILE, "a") as f:
+            f.write(json.dumps(feedback_entry) + "\n")
+        log("info", f"Recorded feedback for analysis_id {analysis_id}, key {key_name}: {feedback_type}")
+    except Exception as e:
+        log("error", f"Failed to record feedback to file: {e}")
+# --- END: FEEDBACK MECHANISM ---
 
 def _clean_url(url: str) -> str:
     url = url.strip()
@@ -206,7 +227,7 @@ def prepare_page_for_capture(page, max_ms=45000):
             log("info", f"Consent banner '{text}' dismissed.")
             consent_clicked = True
             break
-        except Exception: # Catching specific playwright errors might be better, but generic Exception is fine for now.
+        except Exception: 
             pass # Button not found or clickable, try next.
     if not consent_clicked: log("info", "No common consent banner found to click.")
     
@@ -260,11 +281,15 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
             
             # First, search within common social media containers (footers, headers, navs, specific divs)
             # This helps narrow down the search and avoid false positives from main content.
-            for container_tag in soup.find_all(['footer', 'header', 'nav', 'div'], class_=re.compile(r'(social|footer|header|contact|follow)', re.IGNORECASE)):
+            # Look for common class names like 'social', 'footer', 'header', 'nav', 'contact', 'follow', 'icons'
+            for container_tag in soup.find_all(
+                ['footer', 'header', 'nav', 'div', 'ul', 'p'],
+                class_=re.compile(r'(social|footer|header|contact|follow|icons|menu)', re.IGNORECASE)
+            ):
                 for a_tag in container_tag.find_all('a', href=True):
                     candidate_tags.append(a_tag)
 
-            # If no candidates in specific containers, broaden the search to all a tags
+            # If still no candidates found in specific containers, broaden the search to all a tags
             if not candidate_tags:
                  for a_tag in soup.find_all('a', href=True):
                     candidate_tags.append(a_tag)
@@ -275,41 +300,42 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 href = a_tag.get('href', '')
                 aria_label = a_tag.get('aria-label', '').lower()
                 title = a_tag.get('title', '').lower()
-                
-                # Check for direct domain match in href
-                if domain_regex.search(href):
-                    full_url = urljoin(base_url, href)
-                    if domain_regex.search(full_url) and 'intent' not in href and 'share' not in href and (platform != 'instagram' or '/p/' not in href):
-                        unique_good_links.add(full_url)
-                        continue
-                
-                # Check aria-label or title for platform keywords
-                if any(p.search(aria_label) for p in id_patterns) or any(p.search(title) for p in id_patterns):
-                    full_url = urljoin(base_url, href)
-                    if domain_regex.search(full_url) and 'intent' not in href and 'share' not in href and (platform != 'instagram' or '/p/' not in href):
-                        unique_good_links.add(full_url)
-                        continue
+                text = a_tag.get_text(" ", strip=True).lower() # Also check link text
 
-                # Check class attributes of the <a> tag itself for platform keywords
+                is_relevant_link = False
+
+                # 1. Check for direct domain match in href
+                if domain_regex.search(href):
+                    is_relevant_link = True
+                
+                # 2. Check aria-label, title, or link text for platform keywords
+                elif any(p.search(aria_label) for p in id_patterns) or \
+                     any(p.search(title) for p in id_patterns) or \
+                     any(p.search(text) for p in id_patterns):
+                    is_relevant_link = True
+
+                # 3. Check class attributes of the <a> tag itself for platform keywords
                 link_classes = ' '.join(a_tag.get('class', [])).lower()
                 if any(p.search(link_classes) for p in id_patterns):
-                    full_url = urljoin(base_url, href)
-                    if domain_regex.search(full_url) and 'intent' not in href and 'share' not in href and (platform != 'instagram' or '/p/' not in href):
-                        unique_good_links.add(full_url)
-                        continue
+                    is_relevant_link = True
 
-                # Check class attributes/alt text of child <i> or <img> tags for platform keywords
-                child_icon = a_tag.find(['i', 'img'])
+                # 4. Check class attributes/alt text of child <i> or <img> tags for platform keywords
+                child_icon = a_tag.find(['i', 'img', 'svg']) # Added SVG
                 if child_icon:
                     child_classes = ' '.join(child_icon.get('class', [])).lower()
                     child_alt = child_icon.get('alt', '').lower()
                     if any(p.search(child_classes) for p in id_patterns) or \
                        any(p.search(child_alt) for p in id_patterns):
-                        full_url = urljoin(base_url, href)
-                        if domain_regex.search(full_url) and 'intent' not in href and 'share' not in href and (platform != 'instagram' or '/p/' not in href):
-                            unique_good_links.add(full_url)
-                            continue
+                        is_relevant_link = True
 
+                if is_relevant_link:
+                    full_url = urljoin(base_url, href)
+                    # Final validation: Ensure the resolved URL actually points to the correct social domain
+                    if domain_regex.search(full_url) and \
+                       'intent' not in href and 'share' not in href and \
+                       (platform != 'instagram' or '/p/' not in href): # Filter Instagram short links
+                        unique_good_links.add(full_url)
+            
             good_links_list = sorted(list(unique_good_links), key=len)
 
             if not good_links_list:
@@ -449,19 +475,24 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
         {prompt_template}
 
         **SCORING GUIDELINES:**
-        You MUST provide a numerical score from 0 to 100 based on the following rubric:
-        - **0-20:** The principle is virtually non-existent or actively detrimental.
-        - **21-40:** The principle is present but very weak and inconsistent.
-        - **41-60:** The principle meets a minimum standard but has significant flaws or missed opportunities.
-        - **61-80:** The principle is strong and consistently applied, a clear asset to the brand.
-        - **81-100:** The principle is exceptional, a textbook example of brand excellence in this area.
+        You MUST provide a numerical score from 0 to 5 based on the following rubric:
+        - **0:** The principle is completely absent or highly detrimental.
+        - **1:** The principle is present but extremely weak; barely noticeable or inconsistent.
+        - **2:** The principle is somewhat present but weak; significant flaws or missed opportunities.
+        - **3:** The principle is adequately applied; meets basic standards but not outstanding.
+        - **4:** The principle is strong and consistently applied; a clear asset to the brand.
+        - **5:** The principle is exceptional; a textbook example of brand excellence in this area.
 
-        Your response MUST be a JSON object with "score", "analysis", "evidence", "confidence", "confidence_rationale", and "recommendation" keys. The "score" MUST be an integer.
+        Your response MUST be a JSON object with "score", "analysis", "evidence", "confidence", "confidence_rationale", and "recommendation" keys. The "score" MUST be an integer between 0 and 5.
+        The "confidence" score should be an integer from 0 to 100 representing your certainty in this analysis.
         """
         
         response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], response_format={"type": "json_object"}, temperature=0.3)
         result_json = json.loads(response.choices[0].message.content)
         validate_ai_response(result_json, ["score", "analysis", "evidence", "confidence", "confidence_rationale", "recommendation"])
+        # Validate that the score is within the 0-5 range
+        if not (0 <= result_json.get("score", -1) <= 5):
+            raise ValueError(f"AI returned score {result_json.get('score')} which is not in the 0-5 range.")
         return key_name, result_json
     except Exception as e:
         log("error", f"LLM analysis failed for key '{key_name}': {e}")
@@ -637,10 +668,18 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
             try:
                 key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
+                # Assign a unique ID for this analysis result for feedback tracking
+                analysis_uid = str(uuid.uuid4())
+                result_json['analysis_id'] = analysis_uid 
                 circuit_breaker.record_success()
             except Exception as e:
                 circuit_breaker.record_failure()
-                raise e # Re-raise to fail early if too many AI errors
+                log("error", f"Analysis of key '{key}' failed. Circuit breaker status: {circuit_breaker.failures} failures. Error: {e}")
+                # We can choose to yield an error for this key or simply skip it
+                # For now, let's yield an error for the key and continue if possible
+                yield {'type': 'result_error', 'key': key_name, 'message': f"Analysis failed: {e}"}
+                continue # Continue to next key if one fails, but log it.
+            
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
             yield result_obj

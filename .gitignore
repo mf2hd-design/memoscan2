@@ -1,0 +1,7 @@
+# Python
+__pycache__/
+*.pyc
+.env
+venv/
+.DS_Store # macOS specific
+feedback_log.jsonl # Your feedback log file
