@@ -84,13 +84,28 @@ def log(level: str, message: str, data=None):
     if data: print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
 def _get_root_domain(url: str) -> str:
-    netloc = urlparse(url).netloc
+    netloc = urlparse(url).netloc.lower()
+    # Remove www. prefix if present
+    if netloc.startswith('www.'):
+        netloc = netloc[4:]
     parts = netloc.split('.')
-    if len(parts) >= 2: return parts[-2]
+    # Handle cases like co.uk, com.br, etc.
+    if len(parts) >= 2:
+        # For most cases, return the last two parts
+        return '.'.join(parts[-2:])
     return netloc
 
 def _is_same_root_domain(url1: str, url2: str) -> bool:
-    return _get_root_domain(url1) == _get_root_domain(url2)
+    domain1 = _get_root_domain(url1)
+    domain2 = _get_root_domain(url2)
+    result = domain1 == domain2
+    # Debug logging for first few checks
+    if not hasattr(_is_same_root_domain, 'log_count'):
+        _is_same_root_domain.log_count = 0
+    if _is_same_root_domain.log_count < 5:
+        log("debug", f"Domain check: {url1} ({domain1}) vs {url2} ({domain2}) = {result}")
+        _is_same_root_domain.log_count += 1
+    return result
 
 def _sanitize_href(href: str) -> str:
     if not href: return ""
@@ -435,13 +450,31 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
     """Extracts links from raw HTML content."""
     soup = BeautifulSoup(html, "html.parser")
     links = []
+    all_links_found = 0
+    
     for a in soup.find_all("a", href=True):
+        all_links_found += 1
         href_raw = a.get("href")
-        if not href_raw: continue
+        if not href_raw: 
+            continue
+        
         href = _sanitize_href(href_raw)
         link_url = urljoin(base_url, href)
+        
+        # Log what we're checking
+        if all_links_found <= 5:  # Log first 5 for debugging
+            log("debug", f"Found link: {href_raw} -> {link_url}")
+        
         if _is_same_root_domain(base_url, link_url):
             links.append((link_url, a.get_text(strip=True)))
+    
+    log("info", f"HTML link discovery: Found {all_links_found} total links, {len(links)} from same domain")
+    
+    if all_links_found == 0:
+        log("warn", "No <a> tags found in HTML. This might be a JavaScript-rendered site.")
+        # Log a snippet of the HTML for debugging
+        log("debug", f"HTML snippet (first 500 chars): {html[:500]}")
+    
     return links
 
 
@@ -591,7 +624,10 @@ def run_full_scan_stream(url: str, cache: dict):
             discovered_links = discover_links_from_html(homepage_html, homepage_url) # Use the already fetched homepage_html
             
         if not discovered_links: 
-            raise Exception("Fatal: No links could be discovered from sitemap or homepage HTML.")
+            log("warn", f"No links discovered from {homepage_url}. Proceeding with homepage analysis only.")
+            # Instead of failing, continue with just the homepage
+            discovered_links = [(homepage_url, "Homepage")]
+            yield {'type': 'status', 'message': 'Warning: Could not discover additional pages. Analyzing homepage only.'}
 
         if homepage_screenshot_b64:
             image_id = str(uuid.uuid4())
