@@ -11,6 +11,23 @@ from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
 from dotenv import load_dotenv
 import httpx
+
+from urllib.parse import quote_plus
+
+BASE_SCRAPFLY_QUERY = (
+    "tags=player%2Cproject%3Adefault"
+    "&proxy_pool=public_residential_pool"
+    "&format=json"
+    "&asp=true"
+    "&render_js=true"
+    "&screenshots[test]=fullpage"
+    "&screenshot_flags=load_images%2Cblock_banners"
+    "&auto_scroll=true"
+)
+
+def build_scrapfly_url(target_url: str, api_key: str) -> str:
+    return f"REPLACEME_URL_PREFIX{quote_plus(target_url)}"
+
 from playwright.sync_api import sync_playwright
 from typing import Optional, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
