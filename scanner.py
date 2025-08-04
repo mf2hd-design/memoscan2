@@ -122,7 +122,7 @@ def log(level, message, data=None):
     print(formatted, flush=True)
     if data:
         print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
-    print(f"[{level.upper()}] {now} - {message}")
+    print(f"[{level.upper()}] {timestamp} - {message}")
     if data: print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
     # Remove www. prefix if present
