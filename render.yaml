@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: memoscan-v2-pilot
+    name: memoscan2
     # This is the key change: we tell Render to use Docker.
     env: docker
-    plan: free
+    plan: starter
     # Render will now automatically find and use your Dockerfile.
     # It also gives more memory to Docker builds, which is good.
     envVars:
