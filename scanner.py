@@ -1,3 +1,16 @@
+
+def _get_sld(url: str) -> str:
+    """
+    Returns the second-level domain (SLD): 'omv' from 'www.omv.at' or 'omv.com'.
+    """
+    from urllib.parse import urlparse
+    netloc = urlparse(url).netloc.lower().lstrip("www.")
+    parts = netloc.split(".")
+    return parts[-2] if len(parts) >= 2 else netloc
+
+def _is_same_brand_domain(url1: str, url2: str) -> bool:
+    return _get_sld(url1) == _get_sld(url2)
+
 import os
 import re
 import json
@@ -109,11 +122,10 @@ def log(level, message, data=None):
     print(formatted, flush=True)
     if data:
         print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
-    print(f"[{level.upper()}] [{now}] - {message}")
-    if data: print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
+    # Removed erroneous timestamp reference
+    # print(f"[{level.upper()}] {timestamp} - {message}")
+    # if data: print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
-def _get_root_domain(url: str) -> str:
-    netloc = urlparse(url).netloc.lower()
     # Remove www. prefix if present
     if netloc.startswith('www.'):
         netloc = netloc[4:]
@@ -124,16 +136,14 @@ def _get_root_domain(url: str) -> str:
         return '.'.join(parts[-2:])
     return netloc
 
-def _is_same_root_domain(url1: str, url2: str) -> bool:
-    domain1 = _get_root_domain(url1)
-    domain2 = _get_root_domain(url2)
+    domain2 = _get_sld(url2)
     result = domain1 == domain2
     # Debug logging for first few checks
-    if not hasattr(_is_same_root_domain, 'log_count'):
-        _is_same_root_domain.log_count = 0
-    if _is_same_root_domain.log_count < 5:
+    if not hasattr(_is_same_brand_domain, 'log_count'):
+        _is_same_brand_domain.log_count = 0
+    if _is_same_brand_domain.log_count < 5:
         log("debug", f"Domain check: {url1} ({domain1}) vs {url2} ({domain2}) = {result}")
-        _is_same_root_domain.log_count += 1
+        _is_same_brand_domain.log_count += 1
     return result
 
 def _sanitize_href(href: str) -> str:
@@ -410,11 +420,11 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
     log("info", "Searching for a better corporate portal...")
     best_candidate = None
     highest_score = 0
-    initial_root = _get_root_domain(initial_url)
+    initial_root = _get_sld(initial_url)
     initial_netloc = urlparse(initial_url).netloc
 
     for link_url, link_text in discovered_links:
-        if "http" in link_url and _get_root_domain(link_url) == initial_root and urlparse(link_url).netloc != initial_netloc:
+        if "http" in link_url and _get_sld(link_url) == initial_root and urlparse(link_url).netloc != initial_netloc:
             score = score_link(link_url, link_text)
             if score > highest_score:
                 highest_score = score
@@ -494,7 +504,7 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
         if all_links_found <= 5:  # Log first 5 for debugging
             log("debug", f"Found link: {href_raw} -> {link_url}")
         
-        if _is_same_root_domain(base_url, link_url):
+        if _is_same_brand_domain(base_url, link_url):
             links.append((link_url, a.get_text(strip=True)))
     
     log("info", f"HTML link discovery: Found {all_links_found} total links, {len(links)} from same domain")
