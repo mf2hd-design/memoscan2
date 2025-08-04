@@ -96,13 +96,20 @@ class CircuitBreaker:
     def record_success(self): self.failures = 0
 
 
+
 def log(level, message, data=None):
     import json
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    formatted = f"[{now}] [{level.upper()}] {message}"
+    print(formatted, flush=True)
+    if data:
+        print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
     formatted = f"[{level.upper()}] {message}"
     print(formatted, flush=True)
     if data:
         print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
-    print(f"[{level.upper()}] {timestamp} - {message}")
+    print(f"[{level.upper()}] [{now}] - {message}")
     if data: print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
 def _get_root_domain(url: str) -> str:
