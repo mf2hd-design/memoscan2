@@ -1,4 +1,3 @@
-
 from datetime import datetime
 
 def timestamp():
@@ -123,13 +122,13 @@ def log(level, message, data=None):
     formatted = f"[{now}] [{level.upper()}] {message}"
     print(formatted, flush=True)
     if data:
-        print(f"[timestamp()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
+        print(f"[timestamp()]()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
     formatted = f"[{level.upper()}] {message}"
     print(formatted, flush=True)
     if data:
-        print(f"[timestamp()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
-    print(f"[{level.upper()}] {timestamp} - {message}")
-    if data: print(f"[timestamp()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
+        print(f"[timestamp()]()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
+    print(f"[{level.upper()}] {timestamp()} - {message}")
+    if data: print(f"[timestamp()]()] Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
     # Remove www. prefix if present
     if netloc.startswith('www.'):
