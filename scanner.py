@@ -202,14 +202,19 @@ def fetch_html_with_playwright(url: str, retried: bool = False) -> Optional[str]
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     try:
         screenshot, html = _fetch_page_data_scrapfly(url, take_screenshot=take_screenshot)
-        if html:
+        # FIX: Add validation to ensure the returned content is actually HTML, not JSON.
+        if html and html.strip().startswith('<'):
+            log("info", "Scrapfly returned valid HTML content.")
             return screenshot, html
         else:
-            log("warn", f"Scrapfly returned empty content for {url}, trying Playwright. (No screenshot from Playwright fallback)")
+            if not html:
+                log("warn", f"Scrapfly returned empty content for {url}, falling back to Playwright.")
+            else:
+                log("warn", f"Scrapfly returned non-HTML content for {url}, falling back to Playwright.")
             html = fetch_html_with_playwright(url)
             return None, html # Playwright fallback doesn't return screenshot
     except Exception as e:
-        log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright. (No screenshot from Playwright fallback)")
+        log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright.")
         html = fetch_html_with_playwright(url)
         return None, html # Playwright fallback doesn't return screenshot
 
