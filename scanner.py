@@ -95,8 +95,13 @@ class CircuitBreaker:
         if self.failures >= self.failure_threshold: raise Exception(f"Circuit breaker triggered after {self.failures} consecutive failures.")
     def record_success(self): self.failures = 0
 
-def log(level: str, message: str, data=None):
-    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+
+def log(level, message, data=None):
+    import json
+    formatted = f"[{level.upper()}] {message}"
+    print(formatted, flush=True)
+    if data:
+        print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}", flush=True)
     print(f"[{level.upper()}] {timestamp} - {message}")
     if data: print(f"Details: {json.dumps(data, indent=2, ensure_ascii=False)}")
 
