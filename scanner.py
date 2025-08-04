@@ -1,17 +1,22 @@
+
 from datetime import datetime
 
 def timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _get_sld(url: str) -> str:
-    """
-    Returns the second-level domain (SLD): 'omv' from 'www.omv.at' or 'omv.com'.
-    """
+
+def _get_sld(url):
     from urllib.parse import urlparse
-    netloc = urlparse(url).netloc.lower().lstrip("www.")
-    parts = netloc.split(".")
-    return parts[-2] if len(parts) >= 2 else netloc
+    try:
+        netloc = urlparse(url).netloc
+        if not netloc:
+            return ""
+        parts = netloc.split('.')
+        return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
+    except Exception as e:
+        print(f"[{timestamp()}] [ERROR] Failed to extract SLD: {e}")
+        return ""
 
 def _is_same_brand_domain(url1: str, url2: str) -> bool:
     return _get_sld(url1) == _get_sld(url2)
