@@ -1,4 +1,4 @@
-
+print(">>> RUNNING FIXED SCANNER VERSION <<<")
 from datetime import datetime
 
 def timestamp():
