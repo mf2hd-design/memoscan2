@@ -356,7 +356,7 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
         log("error", "❌ SCRAPFLY_KEY environment variable not set.")
         return None, None
     try:
-        params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "complete", "rendering_wait": 7000, "format": "json", "country": "us", "proxy_pool": "public_residential_pool"}
+        params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "domcontentloaded", "rendering_wait": 3000, "retry": True, "format": "json", "country": "us", "proxy_pool": "public_residential_pool"}
         if take_screenshot:
             params["screenshots[main]"] = "fullpage"
             params["screenshot_flags"] = "load_images,block_banners"
@@ -377,7 +377,12 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
                 log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
             return screenshot_b64, html_content
     except Exception as e:
-        log("error", f"Scrapfly error for {url}: {e}")
+        error_msg = str(e)
+        if "UNABLE_TO_TAKE_SCREENSHOT" in error_msg:
+            log("warn", f"⏱️ SCRAPFLY TIMEOUT - Screenshot budget exceeded for {url}: {e}")
+            log("info", f"🔄 FALLING BACK TO PLAYWRIGHT for screenshot capture")
+        else:
+            log("error", f"Scrapfly error for {url}: {e}")
         return None, None
 
 def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
