@@ -7,7 +7,13 @@ import uuid
 import time
 import signal
 import gc
-import xml.etree.ElementTree as ET
+try:
+    from defusedxml import ElementTree as ET
+except ImportError:
+    # Fallback with XXE protection
+    import xml.etree.ElementTree as ET
+    import warnings
+    warnings.warn("defusedxml not available, using xml.etree.ElementTree with limited XXE protection", SecurityWarning)
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
@@ -128,13 +134,35 @@ NEGATIVE_REGEX = [
     r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck|shareholder(s)?|stock|sec[-_]filing(s)?|financials?)\b"
 ]
 
+# Pre-compile regex patterns for performance
+COMPILED_PATTERNS = {}
+
+def _compile_patterns():
+    """Pre-compile all regex patterns to improve performance."""
+    global COMPILED_PATTERNS
+    
+    pattern_groups = {
+        "critical": [r"\b(brand|purpose|values|strategy|products|services|operations)\b"],
+        "high": [r"company", r"about", r"story", r"mission", r"vision", r"culture", r"who[-_]we[-_]are", r"what[-_]we[-_]do", r"investors?"],
+        "medium": [r"solutions", r"pipeline", r"research", r"innovation", r"capabilities", r"industries", r"technology"],
+        "low": [r"leadership", r"team", "management", r"history", r"sustainability", r"responsibility", r"esg"],
+        "language": [r"/en/", r"lang=en"],
+        "negative": NEGATIVE_REGEX
+    }
+    
+    for group_name, patterns in pattern_groups.items():
+        COMPILED_PATTERNS[group_name] = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+
+# Initialize compiled patterns
+_compile_patterns()
+
 LINK_SCORE_MAP = {
-    "critical": {"patterns": [r"\b(brand|purpose|values|strategy|products|services|operations)\b"], "score": 30},
-    "high": {"patterns": [r"company", r"about", r"story", r"mission", r"vision", r"culture", r"who[-_]we[-_]are", r"what[-_]we[-_]do", r"investors?"], "score": 20},
-    "medium": {"patterns": [r"solutions", r"pipeline", r"research", r"innovation", r"capabilities", r"industries", r"technology"], "score": 10},
-    "low": {"patterns": [r"leadership", r"team", "management", r"history", r"sustainability", r"responsibility", r"esg"], "score": 5},
-    "language": {"patterns": [r"/en/", r"lang=en"], "score": 10},
-    "negative": {"patterns": NEGATIVE_REGEX, "score": -50}
+    "critical": {"patterns": COMPILED_PATTERNS["critical"], "score": 30},
+    "high": {"patterns": COMPILED_PATTERNS["high"], "score": 20},
+    "medium": {"patterns": COMPILED_PATTERNS["medium"], "score": 10},
+    "low": {"patterns": COMPILED_PATTERNS["low"], "score": 5},
+    "language": {"patterns": COMPILED_PATTERNS["language"], "score": 10},
+    "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": -50}
 }
 
 def score_link(link_url: str, link_text: str) -> int:
@@ -154,8 +182,8 @@ def score_link(link_url: str, link_text: str) -> int:
     
     for tier_name in tier_order:
         tier = LINK_SCORE_MAP[tier_name]
-        for pattern in tier["patterns"]:
-            if re.search(pattern, combined_text):
+        for compiled_pattern in tier["patterns"]:
+            if compiled_pattern.search(combined_text):
                 score += tier["score"]
                 assigned_score = True
                 matched_tier = tier_name
@@ -164,20 +192,24 @@ def score_link(link_url: str, link_text: str) -> int:
             break
 
     # Language bonus (separate from tier scoring)
-    if re.search(LINK_SCORE_MAP['language']['patterns'][0], combined_text) or \
-       re.search(LINK_SCORE_MAP['language']['patterns'][1], combined_text):
-        score += LINK_SCORE_MAP['language']['score']
+    language_patterns = LINK_SCORE_MAP['language']['patterns']
+    for compiled_pattern in language_patterns:
+        if compiled_pattern.search(combined_text):
+            score += LINK_SCORE_MAP['language']['score']
+            break  # Only apply language bonus once
 
     # PHASE 2: Always check for negative patterns as a veto (decoupled from positive scoring)
-    for pattern in LINK_SCORE_MAP["negative"]["patterns"]:
-        if re.search(pattern, combined_text):
+    for compiled_pattern in LINK_SCORE_MAP["negative"]["patterns"]:
+        if compiled_pattern.search(combined_text):
             score += LINK_SCORE_MAP["negative"]["score"]  # This is -50
             break  # Single negative match is enough
 
     # PHASE 3: Apply path depth penalty with Critical Keyword Safety Net
     try:
         path = urlparse(link_url).path
-        path_depth = path.strip('/').count('/')
+        # Properly calculate path depth by splitting on '/' and filtering empty segments
+        path_segments = [segment for segment in path.split('/') if segment]
+        path_depth = len(path_segments)
         
         if path_depth > 3:
             # Base penalty: subtract 5 points for each level beyond depth 3
@@ -1022,7 +1054,9 @@ def run_full_scan_stream(url: str, cache: dict):
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
         
         # Use sequential processing on Render to avoid memory exhaustion
-        is_render = os.getenv('RENDER') == 'true' or 'render.com' in os.getenv('RENDER_EXTERNAL_URL', '')
+        render_env = os.getenv('RENDER', '').lower()
+        render_url = os.getenv('RENDER_EXTERNAL_URL', '')
+        is_render = render_env == 'true' or (render_url and 'render.com' in render_url)
         
         if is_render or len(other_pages_to_fetch) <= 2:
             # Sequential processing for memory-constrained environments
