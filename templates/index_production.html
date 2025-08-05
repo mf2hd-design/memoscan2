@@ -775,6 +775,7 @@
                     MemoScan.activityFeed.addItem(`Processing page ${current} of ${total} (${percentage}%)`, Date.now() / 1000);
                     break;
                 case 'screenshot_ready':
+                    console.log('📸 SCREENSHOT_READY:', msg.url, 'ID:', msg.id);
                     MemoScan.metricsDashboard.updateScreenshotCount();
                     MemoScan.displayScreenshot(msg.id, msg.url);
                     break;
@@ -1069,7 +1070,7 @@
                 return;
             }
             
-            // Reset UI state
+            // Reset UI state BEFORE starting scan
             this.resetUI();
             
             // Show progress elements
@@ -1216,10 +1217,14 @@
         }
         
         displayScreenshot(id, url) {
+            console.log('🖼️ DISPLAYING SCREENSHOT:', url, 'ID:', id);
             const container = document.getElementById('screenshot-container');
             const gallery = document.getElementById('evidence-gallery');
             
-            if (!container || !gallery) return;
+            if (!container || !gallery) {
+                console.error('❌ Screenshot containers not found!');
+                return;
+            }
             
             gallery.style.display = 'block';
             
@@ -1242,6 +1247,7 @@
             figure.appendChild(img);
             figure.appendChild(caption);
             container.appendChild(figure);
+            console.log(`✅ Screenshot added! Total screenshots now: ${container.children.length}`);
         }
         
         displaySummary(text) {

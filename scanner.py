@@ -1225,6 +1225,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 image_id = str(uuid.uuid4())
                 cache[image_id] = homepage_screenshot_b64
                 yield debug_yield({'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url})
+                log("info", f"🎯 HOMEPAGE SCREENSHOT EMITTED: id={image_id}, url={homepage_url}")
                 yield debug_yield({'type': 'activity', 'message': f'📸 Homepage screenshot captured', 'timestamp': time.time()})
             else:
                 log("error", f"❌ HOMEPAGE SCREENSHOT FAILED: No screenshot data returned")
@@ -1281,6 +1282,7 @@ def run_full_scan_stream(url: str, cache: dict):
         if other_pages_to_screenshot:
             yield {'type': 'status', 'message': 'Capturing visual evidence from key pages...'}
             for data in capture_screenshots_playwright(other_pages_to_screenshot):
+                log("info", f"🎯 PLAYWRIGHT SCREENSHOT EMITTED: id={data.get('id')}, url={data.get('url')}")
                 yield {'type': 'screenshot_ready', **data}
         
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...', 'phase': 'analysis', 'progress': 40}
