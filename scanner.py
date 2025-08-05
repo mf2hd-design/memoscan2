@@ -42,6 +42,7 @@ except ImportError:
     
     ET = SafeXMLParser
 from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -80,18 +81,18 @@ def retry_with_backoff(func, max_retries=3, base_delay=1, exceptions=(Exception,
             log("info", f"🔄 RETRY ATTEMPT {attempt + 1}/{max_retries} after {delay:.2f}s: {type(e).__name__}")
             time.sleep(delay)
 
-def find_sitemap_from_robots_txt(base_url: str) -> Optional[str]:
-    """Fetches and parses robots.txt to find a sitemap URL."""
+def find_sitemap_from_robots_txt(base_url: str) -> Optional[List[str]]:
+    """Fetches and parses robots.txt to find all sitemap URLs using industry-standard parser."""
     robots_url = urljoin(base_url, "/robots.txt")
     try:
         log("info", f"Checking for sitemap in {robots_url}")
         response = httpx.get(robots_url, headers={"User-Agent": get_random_user_agent()}, timeout=10)
         if response.status_code == 200:
-            for line in response.text.splitlines():
-                if line.strip().lower().startswith("sitemap:"):
-                    sitemap_url = line.split(":", 1)[1].strip()
-                    log("info", f"Found sitemap in robots.txt: {sitemap_url}")
-                    return sitemap_url
+            parser = RobotFileParser()
+            parser.parse(response.text.splitlines())
+            if parser.sitemaps:
+                log("info", f"Found {len(parser.sitemaps)} sitemap(s) in robots.txt: {parser.sitemaps}")
+                return list(parser.sitemaps)
     except Exception as e:
         log("warn", f"Could not parse robots.txt: {e}")
     return None
@@ -467,7 +468,7 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
             _make_request, 
             max_retries=3, 
             base_delay=1,
-            exceptions=(httpx.TimeoutError, httpx.ConnectError)
+            exceptions=(httpx.TimeoutException, httpx.ConnectError, httpx.RequestError)
         )
     except (httpx.HTTPStatusError, Exception) as e:
         # Don't retry client errors (4xx) or other non-transient issues
@@ -507,13 +508,19 @@ def _scrapfly_request_inner(url: str, api_key: str, take_screenshot: bool):
 
 def _handle_scrapfly_error(url: str, e: Exception) -> Tuple[None, None]:
     """Handle different types of Scrapfly errors with appropriate logging."""
-    if isinstance(e, httpx.TimeoutError):
+    if isinstance(e, httpx.TimeoutException):
         log("warn", f"⏱️ SCRAPFLY TIMEOUT for {url}: Request timed out after {TIMEOUTS['scrapfly_request']}s")
+    elif isinstance(e, httpx.ConnectError):
+        log("warn", f"🔌 SCRAPFLY CONNECTION ERROR for {url}: Unable to connect to Scrapfly service")
+    elif isinstance(e, httpx.RequestError):
+        log("warn", f"📡 SCRAPFLY REQUEST ERROR for {url}: Network or request issue - {type(e).__name__}")
     elif isinstance(e, httpx.HTTPStatusError):
         if e.response.status_code == 429:
             log("warn", f"🚫 SCRAPFLY RATE LIMIT for {url}: Too many requests")
         elif e.response.status_code == 422:
             log("warn", f"❌ SCRAPFLY VALIDATION ERROR for {url}: {e.response.text[:200]}")
+        elif e.response.status_code >= 500:
+            log("warn", f"🚨 SCRAPFLY SERVER ERROR {e.response.status_code} for {url}: Service temporarily unavailable")
         else:
             log("error", f"❌ SCRAPFLY HTTP ERROR {e.response.status_code} for {url}: {e.response.text[:200]}")
     else:
@@ -1064,101 +1071,97 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
         log("info", "No high-quality corporate portal found. Continuing with the initial URL.")
         return None
 
-def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -> Optional[Tuple[List[Tuple[str, str]], Optional[str]]]:
-    """Discover links from sitemap and return detected language context.
+def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -> Optional[List[Tuple[str, str]]]:
+    """Discover links from sitemap using preferred language as source of truth.
     
     Args:
         homepage_url: The base URL to search for sitemaps
-        preferred_lang: The preferred language code (default: 'en')
+        preferred_lang: The preferred language code (default: 'en') - drives all decisions
     
     Returns:
-        Tuple of (links, detected_language) where detected_language is extracted from chosen sitemap URL
+        List of (url, title) tuples from sitemap, or None if no sitemap found
     """
     log("info", "Attempting to discover links from sitemap...")
-    sitemap_url = urljoin(homepage_url, "/sitemap.xml")
-    detected_sitemap_lang = None
+    sitemap_urls = [urljoin(homepage_url, "/sitemap.xml")]
     
     try:
-        response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+        response = httpx.get(sitemap_urls[0], headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
         response.raise_for_status()
-    except httpx.HTTPStatusError:
-        log("warn", f"/sitemap.xml not found. Checking robots.txt as a fallback.")
-        sitemap_url = find_sitemap_from_robots_txt(homepage_url)
-        if not sitemap_url:
+    except (httpx.HTTPStatusError, httpx.RequestError):
+        log("warn", f"/sitemap.xml not found or failed. Checking robots.txt as a fallback.")
+        robots_sitemaps = find_sitemap_from_robots_txt(homepage_url)
+        if not robots_sitemaps:
             log("warn", "Sitemap not found in /sitemap.xml or robots.txt.")
-            return None, None
-        response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
-        response.raise_for_status()
+            return None
+        sitemap_urls = robots_sitemaps
     
-    final_url = str(response.url)
-    log("info", f"Sitemap fetch successful. Final URL: {final_url}")
-
-    content = response.content
-    namespace = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-    root = ET.fromstring(content)
-
-    if root.tag.endswith('sitemapindex'):
-        log("info", "Sitemap index found. Searching for the best page-sitemap...")
-        sitemaps = [elem.text for elem in root.findall('sm:sitemap/sm:loc', namespace)]
-
-        # IMPROVED: Implement intelligent sitemap scoring aligned with preferred language
-        best_sitemap_url = None
-        highest_score = -1
-        
-        for sm_url in sitemaps:
-            score = 0
-            # Heavily prioritize global/corporate sitemaps
-            if "global" in sm_url or "corporate" in sm_url: score += 150
-            if "main" in sm_url or "pages" in sm_url: score += 50
-            # Use preferred_lang parameter for language bonus
-            if f"/{preferred_lang}" in sm_url: score += 25
-            
-            # Penalize non-preferred language sitemaps
-            if re.search(r'/[a-z]{2}/', sm_url) and not f"/{preferred_lang}" in sm_url: score -= 50
-            
-            # Additional preferences for brand-relevant content
-            if any(keyword in sm_url for keyword in ['page', 'post', 'company', 'about', 'article']): score += 25
-            
-            log("debug", f"Sitemap {sm_url} scored {score}")
-            if score > highest_score:
-                highest_score = score
-                best_sitemap_url = sm_url
-
-        if best_sitemap_url:
-            log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {highest_score})")
-            
-            # DYNAMIC LANGUAGE CONTEXT: Extract language from chosen sitemap URL
-            lang_patterns = {
-                '/en/': 'en', '/en.': 'en', '_en.': 'en', '-en.': 'en',
-                '/de/': 'de', '/de.': 'de', '_de.': 'de', '-de.': 'de',
-                '/es/': 'es', '/es.': 'es', '_es.': 'es', '-es.': 'es',
-                '/fr/': 'fr', '/fr.': 'fr', '_fr.': 'fr', '-fr.': 'fr',
-                '/it/': 'it', '/it.': 'it', '_it.': 'it', '-it.': 'it',
-                '/pt/': 'pt', '/pt.': 'pt', '_pt.': 'pt', '-pt.': 'pt',
-                '/ja/': 'ja', '/ja.': 'ja', '_ja.': 'ja', '-ja.': 'ja',
-                '/zh/': 'zh', '/zh.': 'zh', '_zh.': 'zh', '-zh.': 'zh',
-                '/global/en': 'en', 'global-en': 'en'  # Special cases for global sitemaps
-            }
-            
-            for pattern, lang in lang_patterns.items():
-                if pattern in best_sitemap_url.lower():
-                    detected_sitemap_lang = lang
-                    log("info", f"🌐 Dynamic Language Context: Detected '{lang}' from sitemap URL")
-                    break
-            
-            response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+    # Process all sitemap URLs, prioritizing based on preferred_lang
+    all_links = []
+    processed_sitemaps = []
+    
+    for sitemap_url in sitemap_urls:
+        try:
+            log("info", f"Processing sitemap: {sitemap_url}")
+            response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
             response.raise_for_status()
-            root = ET.fromstring(response.content)
-        else:
-            log("warn", "No suitable sitemap found in sitemap index.")
-            return None, None
+            
+            content = response.content
+            namespace = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            root = ET.fromstring(content)
 
-    urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
-    if not urls:
-        return None, None
+            if root.tag.endswith('sitemapindex'):
+                log("info", "Sitemap index found. Searching for the best page-sitemap...")
+                sitemaps = [elem.text for elem in root.findall('sm:sitemap/sm:loc', namespace)]
 
-    log("info", f"Found {len(urls)} links in sitemap.")
-    return [(url, url.split('/')[-1].replace('-', ' ')) for url in urls], detected_sitemap_lang
+                # IMPROVED: Intelligent sitemap scoring aligned with preferred language
+                scored_sitemaps = []
+                for sm_url in sitemaps:
+                    score = 0
+                    # Heavily prioritize global/corporate sitemaps
+                    if "global" in sm_url or "corporate" in sm_url: score += 150
+                    if "main" in sm_url or "pages" in sm_url: score += 50
+                    # Use preferred_lang parameter for language bonus
+                    if f"/{preferred_lang}" in sm_url: score += 25
+                    
+                    # Penalize non-preferred language sitemaps
+                    if re.search(r'/[a-z]{2}/', sm_url) and not f"/{preferred_lang}" in sm_url: score -= 50
+                    
+                    # Additional preferences for brand-relevant content
+                    if any(keyword in sm_url for keyword in ['page', 'post', 'company', 'about', 'article']): score += 25
+                    
+                    scored_sitemaps.append((sm_url, score))
+                    log("debug", f"Sitemap {sm_url} scored {score}")
+                
+                # Sort by score and process the best sitemaps
+                scored_sitemaps.sort(key=lambda x: x[1], reverse=True)
+                best_sitemap_url = scored_sitemaps[0][0] if scored_sitemaps else None
+                
+                if best_sitemap_url:
+                    log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {scored_sitemaps[0][1]})")
+                    response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+                    response.raise_for_status()
+                    root = ET.fromstring(response.content)
+                else:
+                    log("warn", "No suitable sitemap found in sitemap index.")
+                    continue
+
+            urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
+            if urls:
+                sitemap_links = [(url, url.split('/')[-1].replace('-', ' ')) for url in urls]
+                all_links.extend(sitemap_links)
+                processed_sitemaps.append(sitemap_url)
+                log("info", f"Found {len(sitemap_links)} links in sitemap: {sitemap_url}")
+        
+        except Exception as e:
+            log("warn", f"Failed to process sitemap {sitemap_url}: {e}")
+            continue
+    
+    if not all_links:
+        log("warn", "No links found in any sitemap.")
+        return None
+
+    log("info", f"Total found {len(all_links)} links from {len(processed_sitemaps)} sitemap(s)")
+    return all_links
 
 def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
     """Extracts links from raw HTML content."""
@@ -1394,26 +1397,19 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
         yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(all_discovered_links)} links in HTML', 'timestamp': time.time()})
         
         yield debug_yield({'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()})
-        sitemap_result = discover_links_from_sitemap(initial_url, preferred_lang)
-        sitemap_links = None
-        sitemap_detected_lang = None
-        if sitemap_result:
-            sitemap_links, sitemap_detected_lang = sitemap_result
-            if sitemap_links:
-                all_discovered_links.extend(sitemap_links)
-                yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(sitemap_links)} pages in sitemap', 'timestamp': time.time()})
-                yield debug_yield({'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)})
+        sitemap_links = discover_links_from_sitemap(initial_url, preferred_lang)
+        if sitemap_links:
+            all_discovered_links.extend(sitemap_links)
+            yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(sitemap_links)} pages in sitemap', 'timestamp': time.time()})
+            yield debug_yield({'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)})
         else:
             yield debug_yield({'type': 'activity', 'message': f'📄 No sitemap found - proceeding with HTML links', 'timestamp': time.time()})
 
-        # Detect the primary language from HTML first
-        primary_language = detect_primary_language(homepage_html)
-        
-        # DYNAMIC LANGUAGE CONTEXT: Update language based on sitemap if detected
-        if sitemap_detected_lang:
-            log("info", f"🔄 Updating language context from '{primary_language}' to '{sitemap_detected_lang}' based on chosen sitemap")
-            primary_language = sitemap_detected_lang
-            yield debug_yield({'type': 'activity', 'message': f'🌍 Detected site language: {sitemap_detected_lang.upper()}', 'timestamp': time.time()})
+        # Detect the primary language from HTML for informational logging only
+        detected_lang = detect_primary_language(homepage_html)
+        log("info", f"🌐 Detected primary language: {detected_lang} (from HTML) - informational only")
+        log("info", f"🎯 Using preferred language: {preferred_lang} (source of truth for all decisions)")
+        yield {'type': 'status', 'message': f'Detected language: {detected_lang.upper()}, Using preference: {preferred_lang.upper()}'}
 
         # --- Phase 2: High-Value Subdomain Discovery ---
         # FIXED: True Two-Pocket Strategy - find additional sources without pivoting
@@ -1430,16 +1426,11 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
                     subdomain_links = discover_links_from_html(subdomain_html, subdomain_portal_url)
                     # Additional sitemap discovery from the subdomain
                     yield debug_yield({'type': 'activity', 'message': f'📄 Checking portal sitemap...', 'timestamp': time.time()})
-                    subdomain_sitemap_result = discover_links_from_sitemap(subdomain_portal_url, preferred_lang)
-                    if subdomain_sitemap_result:
-                        subdomain_sitemap_links, subdomain_lang = subdomain_sitemap_result
-                        if subdomain_sitemap_links:
-                            subdomain_links.extend(subdomain_sitemap_links)
-                            log("info", f"✅ Added {len(subdomain_sitemap_links)} links from subdomain sitemap")
-                            yield debug_yield({'type': 'activity', 'message': f'✅ Added {len(subdomain_sitemap_links)} portal sitemap links', 'timestamp': time.time()})
-                            # Update language context if subdomain provides clearer signal
-                            if subdomain_lang and subdomain_lang != primary_language:
-                                log("info", f"🔄 Subdomain sitemap suggests '{subdomain_lang}' language context")
+                    subdomain_sitemap_links = discover_links_from_sitemap(subdomain_portal_url, preferred_lang)
+                    if subdomain_sitemap_links:
+                        subdomain_links.extend(subdomain_sitemap_links)
+                        log("info", f"✅ Added {len(subdomain_sitemap_links)} links from subdomain sitemap")
+                        yield debug_yield({'type': 'activity', 'message': f'✅ Added {len(subdomain_sitemap_links)} portal sitemap links', 'timestamp': time.time()})
                     all_discovered_links.extend(subdomain_links)
                     log("info", f"✅ Two-Pocket Strategy: Added {len(subdomain_links)} links from high-value subdomain")
                     yield debug_yield({'type': 'activity', 'message': f'🎯 Added {len(subdomain_links)} links from corporate portal', 'timestamp': time.time()})
@@ -1485,7 +1476,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
         social_corpus = get_social_media_text(homepage_soup, homepage_url)
         yield {'type': 'status', 'message': 'Social media text captured.' if social_corpus else 'No social media links found.'}
 
-        yield {'type': 'status', 'message': f'Detected primary language: {primary_language.upper()}'}
+        yield {'type': 'status', 'message': f'Using preferred language: {preferred_lang.upper()}'}
 
         yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...', 'phase': 'scoring', 'progress': 30}
         yield {'type': 'activity', 'message': f'📊 Analyzing {len(all_discovered_links)} discovered links...', 'timestamp': time.time()}
