@@ -356,7 +356,8 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
         log("error", "❌ SCRAPFLY_KEY environment variable not set.")
         return None, None
     try:
-        params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "domcontentloaded", "rendering_wait": 3000, "retry": True, "format": "json", "country": "us", "proxy_pool": "public_residential_pool"}
+        # Note: Not specifying "format" parameter means Scrapfly returns raw HTML in result.content
+        params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "domcontentloaded", "rendering_wait": 3000, "retry": True, "country": "us", "proxy_pool": "public_residential_pool"}
         if take_screenshot:
             params["screenshots[main]"] = "fullpage"
             params["screenshot_flags"] = "load_images,block_banners"
@@ -365,38 +366,12 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
             response.raise_for_status()
             data = response.json()
             
-            # Check if Scrapfly returned HTML or structured data
-            raw_content = data["result"]["content"]
-            html_content = raw_content
+            # Get raw HTML content from Scrapfly response
+            html_content = data["result"]["content"]
             
             # DIAGNOSTIC: Log what Scrapfly actually returned
-            if raw_content:
-                log("info", f"🔍 SCRAPFLY RESPONSE: {len(raw_content)} chars, starts: {repr(raw_content[:100])}")
-                
-                # Check if content is JSON (structured data) instead of HTML
-                if raw_content.strip().startswith('{') and 'structured_data' in raw_content:
-                    try:
-                        # Parse the JSON to find the actual HTML
-                        structured_data = json.loads(raw_content)
-                        # Look for HTML in various possible locations
-                        if "html" in structured_data:
-                            html_content = structured_data["html"]
-                            log("info", f"📄 EXTRACTED HTML from structured_data.html: {len(html_content)} chars")
-                        elif "browser_data" in data["result"] and "html" in data["result"]["browser_data"]:
-                            html_content = data["result"]["browser_data"]["html"]
-                            log("info", f"📄 EXTRACTED HTML from browser_data.html: {len(html_content)} chars")
-                        elif "browser_data" in data["result"] and "document" in data["result"]["browser_data"]:
-                            html_content = data["result"]["browser_data"]["document"]
-                            log("info", f"📄 EXTRACTED HTML from browser_data.document: {len(html_content)} chars")
-                        else:
-                            log("warn", f"❌ SCRAPFLY returned structured data but no HTML found in response")
-                            # Check if there's HTML in the main result
-                            if "browser_data" in data["result"]:
-                                log("info", f"🔍 browser_data keys: {list(data['result']['browser_data'].keys())[:10]}")
-                            html_content = None
-                    except json.JSONDecodeError:
-                        log("warn", f"❌ SCRAPFLY content looks like JSON but failed to parse")
-                        html_content = None
+            if html_content:
+                log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
             else:
                 log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
                 
