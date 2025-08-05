@@ -14,7 +14,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from io import BytesIO
 from dotenv import load_dotenv
 # Import record_feedback from scanner.py
-from scanner import run_full_scan_stream, SHARED_CACHE, record_feedback, _validate_url, _clean_url
+from scanner import run_full_scan_stream, SHARED_CACHE, record_feedback, _validate_url, _clean_url, analyze_feedback_patterns, get_prompt_improvements_from_feedback
 
 load_dotenv()
 
@@ -207,17 +207,42 @@ def handle_feedback():
         data = request.get_json()
         analysis_id = data.get("analysis_id")
         key_name = data.get("key_name")
-        feedback_type = data.get("feedback_type")
+        feedback_type = data.get("feedback_type")  # "too_high", "about_right", "too_low"
         comment = data.get("comment")
+        ai_score = data.get("ai_score")  # Original AI score
+        user_score = data.get("user_score")  # User's corrected score
+        confidence = data.get("confidence")  # AI confidence level
+        brand_context = data.get("brand_context")  # Brief brand description
 
         if not all([analysis_id, key_name, feedback_type]):
             return jsonify({"status": "error", "message": "Missing required feedback data"}), 400
 
-        record_feedback(analysis_id, key_name, feedback_type, comment)
-        return jsonify({"status": "success", "message": "Feedback recorded"}), 200
+        record_feedback(analysis_id, key_name, feedback_type, comment, 
+                       ai_score, user_score, confidence, brand_context)
+        return jsonify({"status": "success", "message": "Enhanced feedback recorded"}), 200
     except Exception as e:
         print(f"Error handling feedback: {e}", flush=True)
         return jsonify({"status": "error", "message": f"Failed to record feedback: {str(e)}"}), 500
+
+@app.route("/feedback/analytics")
+def feedback_analytics():
+    """Analytics endpoint for monitoring feedback patterns and AI learning."""
+    try:
+        patterns = analyze_feedback_patterns()
+        return jsonify(patterns), 200
+    except Exception as e:
+        print(f"Error generating feedback analytics: {e}", flush=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route("/feedback/improvements")
+def feedback_improvements():
+    """Get suggested prompt improvements based on feedback analysis."""
+    try:
+        improvements = get_prompt_improvements_from_feedback()
+        return jsonify(improvements), 200
+    except Exception as e:
+        print(f"Error generating prompt improvements: {e}", flush=True)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @socketio.on('start_scan')
 def handle_start_scan(data):

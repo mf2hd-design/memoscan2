@@ -42,16 +42,30 @@
         .recommendation { margin-top: 1rem; padding: 0.75rem 1rem; background: #eaf6ff; border-left: 3px solid var(--primary-color); border-radius: 4px; }
         .recommendation p { margin: 0; }
         
-        /* NEW: Feedback controls */
-        .feedback-controls { margin-top: 1rem; display: flex; justify-content: flex-end; gap: 10px; }
-        .feedback-controls button {
+        /* Enhanced: Feedback controls */
+        .feedback-controls { margin-top: 1rem; padding: 1rem; background: #f8f9fa; border-radius: 6px; border: 1px solid #e9ecef; }
+        .feedback-question { font-weight: bold; margin-bottom: 0.75rem; color: var(--text-dark); }
+        .accuracy-buttons { display: flex; gap: 8px; margin-bottom: 1rem; }
+        .accuracy-buttons button {
             background: none; border: 1px solid var(--border-color); color: var(--text-light);
-            padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: 0.9rem;
-            transition: all 0.2s ease;
+            padding: 8px 16px; border-radius: 5px; cursor: pointer; font-size: 0.85rem;
+            transition: all 0.2s ease; flex: 1;
         }
-        .feedback-controls button:hover { background: #eee; color: var(--primary-color); border-color: var(--primary-color); }
-        .feedback-controls button.active { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
-        .feedback-controls button i { margin-right: 5px; }
+        .accuracy-buttons button:hover { background: #eee; color: var(--primary-color); border-color: var(--primary-color); }
+        .accuracy-buttons button.active { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
+        .accuracy-buttons button.too-high { border-color: #dc3545; color: #dc3545; }
+        .accuracy-buttons button.too-high.active { background: #dc3545; }
+        .accuracy-buttons button.about-right { border-color: #28a745; color: #28a745; }
+        .accuracy-buttons button.about-right.active { background: #28a745; }
+        .accuracy-buttons button.too-low { border-color: #ffc107; color: #856404; }
+        .accuracy-buttons button.too-low.active { background: #ffc107; color: #856404; }
+        
+        .correction-section { margin-top: 1rem; padding: 1rem; background: #fff; border-radius: 4px; border: 1px solid #dee2e6; }
+        .score-slider-container { margin: 1rem 0; }
+        .score-slider { width: 100%; margin: 0.5rem 0; }
+        .score-labels { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-light); }
+        .feedback-textarea { width: 100%; min-height: 80px; padding: 0.5rem; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.9rem; }
+        .submit-feedback-btn { margin-top: 1rem; background: var(--primary-color); color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; }
 
         #summary-container {
             margin-top: 2rem;
@@ -179,6 +193,14 @@
         const url = urlInput.value.trim();
         if (!url) { alert("Please enter a URL."); return; }
         
+        // Set brand context for feedback system
+        try {
+            const urlObj = new URL(url.startsWith('http') ? url : 'https://' + url);
+            currentBrandContext = urlObj.hostname.replace('www.', '');
+        } catch (e) {
+            currentBrandContext = url;
+        }
+        
         scanButton.disabled = true;
         scanButton.textContent = "Analyzing...";
         resultsGrid.innerHTML = "";
@@ -260,22 +282,54 @@
     });
 
     // NEW: Function to send feedback to the backend
-    async function sendFeedback(analysisId, keyName, feedbackType, comment = null) {
+    async function sendEnhancedFeedback(analysisId, keyName, feedbackType, comment = null, aiScore = null, userScore = null, confidence = null) {
         try {
             const response = await fetch('/feedback', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ analysis_id: analysisId, key_name: keyName, feedback_type: feedbackType, comment: comment })
+                body: JSON.stringify({ 
+                    analysis_id: analysisId, 
+                    key_name: keyName, 
+                    feedback_type: feedbackType, 
+                    comment: comment,
+                    ai_score: aiScore,
+                    user_score: userScore,
+                    confidence: confidence,
+                    brand_context: currentBrandContext || "Unknown brand"
+                })
             });
             const data = await response.json();
             if (data.status === 'success') {
-                console.log('Feedback sent:', data.message);
+                console.log('Enhanced feedback sent:', data.message);
+                // Show success feedback to user
+                showFeedbackSuccess(`Thank you! Your feedback helps improve the AI analysis.`);
             } else {
                 console.error('Failed to send feedback:', data.message);
+                showFeedbackError('Failed to submit feedback. Please try again.');
             }
         } catch (error) {
             console.error('Error sending feedback:', error);
+            showFeedbackError('Network error. Please check your connection.');
         }
+    }
+
+    // Global variable to track current brand context
+    let currentBrandContext = "";
+
+    function showFeedbackSuccess(message) {
+        const toast = document.createElement('div');
+        toast.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #28a745; color: white; padding: 10px 20px; border-radius: 4px; z-index: 1000;';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 3000);
+    }
+
+    function showFeedbackError(message) {
+        const toast = document.createElement('div');
+        toast.style.cssText = 'position: fixed; top: 20px; right: 20px; background: #dc3545; color: white; padding: 10px 20px; border-radius: 4px; z-index: 1000;';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
     }
 
     function renderResultBlock(key, analysis) {
@@ -304,35 +358,75 @@
             </div>
             
             <div class="feedback-controls">
-                <button class="feedback-btn" data-feedback-type="thumbs_up" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}"><i class="fas fa-thumbs-up"></i> Agree</button>
-                <button class="feedback-btn" data-feedback-type="thumbs_down" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}"><i class="fas fa-thumbs-down"></i> Disagree</button>
-                <button class="feedback-btn" data-feedback-type="comment" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}"><i class="fas fa-comment"></i> Comment</button>
+                <div class="feedback-question">How accurate is this ${key} score of ${analysis.score}/5?</div>
+                <div class="accuracy-buttons">
+                    <button class="accuracy-btn too-high" data-feedback-type="too_high" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Too High</button>
+                    <button class="accuracy-btn about-right" data-feedback-type="about_right" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">About Right</button>
+                    <button class="accuracy-btn too-low" data-feedback-type="too_low" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Too Low</button>
+                </div>
+                <div class="correction-section" style="display: none;">
+                    <div class="score-slider-container">
+                        <label>What should the score be?</label>
+                        <input type="range" class="score-slider" min="0" max="5" step="1" value="${analysis.score}">
+                        <div class="score-labels">
+                            <span>0 - Absent</span>
+                            <span>1 - Very Weak</span>
+                            <span>2 - Weak</span>
+                            <span>3 - Adequate</span>
+                            <span>4 - Strong</span>
+                            <span>5 - Exceptional</span>
+                        </div>
+                        <div class="current-score">Suggested score: <strong>${analysis.score}</strong></div>
+                    </div>
+                    <textarea class="feedback-textarea" placeholder="Why do you think this score is more accurate? (helps us improve the AI)"></textarea>
+                    <button class="submit-feedback-btn">Submit Feedback</button>
+                </div>
             </div>
         `;
         resultsGrid.appendChild(block);
 
-        // Add event listeners for feedback buttons
-        block.querySelectorAll('.feedback-btn').forEach(button => {
+        // Add event listeners for enhanced feedback system
+        block.querySelectorAll('.accuracy-btn').forEach(button => {
             button.addEventListener('click', () => {
-                const analysisId = button.dataset.analysisId;
-                const keyName = button.dataset.keyName;
-                const feedbackType = button.dataset.feedbackType;
-
-                if (feedbackType === 'comment') {
-                    const comment = prompt("Please provide your comment:");
-                    if (comment !== null) { // User didn't cancel
-                        sendFeedback(analysisId, keyName, feedbackType, comment);
-                        button.classList.add('active'); // Visually indicate feedback sent
-                    }
+                const feedbackType = button.getAttribute('data-feedback-type');
+                const analysisId = button.getAttribute('data-analysis-id');
+                const keyName = button.getAttribute('data-key-name');
+                const aiScore = parseInt(button.getAttribute('data-ai-score'));
+                const confidence = parseInt(button.getAttribute('data-confidence'));
+                
+                // Toggle active state
+                block.querySelectorAll('.accuracy-btn').forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
+                
+                const correctionSection = block.querySelector('.correction-section');
+                
+                if (feedbackType === 'about_right') {
+                    // Submit feedback immediately for "About Right"
+                    correctionSection.style.display = 'none';
+                    sendEnhancedFeedback(analysisId, keyName, feedbackType, null, aiScore, aiScore, confidence);
                 } else {
-                    sendFeedback(analysisId, keyName, feedbackType);
-                    // Toggle active class for thumbs up/down
-                    button.classList.toggle('active');
-                    // Deactivate the other thumb button if one is activated
-                    const otherButton = button.parentNode.querySelector(`.feedback-btn[data-feedback-type="${feedbackType === 'thumbs_up' ? 'thumbs_down' : 'thumbs_up'}"]`);
-                    if (otherButton && otherButton.classList.contains('active')) {
-                        otherButton.classList.remove('active');
-                    }
+                    // Show correction interface for "Too High" or "Too Low"
+                    correctionSection.style.display = 'block';
+                    
+                    // Update slider and handle submission
+                    const slider = correctionSection.querySelector('.score-slider');
+                    const currentScoreDiv = correctionSection.querySelector('.current-score');
+                    const textarea = correctionSection.querySelector('.feedback-textarea');
+                    const submitBtn = correctionSection.querySelector('.submit-feedback-btn');
+                    
+                    // Update current score display when slider changes
+                    slider.addEventListener('input', () => {
+                        currentScoreDiv.innerHTML = `Suggested score: <strong>${slider.value}</strong>`;
+                    });
+                    
+                    // Handle feedback submission
+                    submitBtn.onclick = () => {
+                        const userScore = parseInt(slider.value);
+                        const comment = textarea.value.trim();
+                        sendEnhancedFeedback(analysisId, keyName, feedbackType, comment, aiScore, userScore, confidence);
+                        correctionSection.style.display = 'none';
+                        button.textContent += ' ✓';
+                    };
                 }
             });
         });
