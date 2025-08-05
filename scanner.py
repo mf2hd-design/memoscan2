@@ -6,6 +6,7 @@ import base64
 import uuid
 import time
 import signal
+import gc
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup, Tag
@@ -967,21 +968,49 @@ def run_full_scan_stream(url: str, cache: dict):
         page_html_map = {homepage_url: final_homepage_html}
         
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
-        with ProcessPoolExecutor(max_workers=4) as executor:
-            future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
-            for future in future_to_url:
-                url = future_to_url[future]
+        
+        # Use sequential processing on Render to avoid memory exhaustion
+        is_render = os.getenv('RENDER') == 'true' or 'render.com' in os.getenv('RENDER_EXTERNAL_URL', '')
+        
+        if is_render or len(other_pages_to_fetch) <= 2:
+            # Sequential processing for memory-constrained environments
+            log("info", f"Using sequential processing for {len(other_pages_to_fetch)} pages (Render deployment detected)")
+            for url in other_pages_to_fetch:
                 try:
-                    _, html = future.result()
+                    _, html = fetch_page_content_robustly(url)
                     if html:
                         page_html_map[url] = html
                         circuit_breaker.record_success()
+                        log("info", f"Sequential fetch successful for {url}")
                     else:
-                        log("warn", f"Parallel fetch for {url} returned no content.")
+                        log("warn", f"Sequential fetch for {url} returned no content.")
                         circuit_breaker.record_failure()
+                    
+                    # Force garbage collection after each page to manage memory
+                    gc.collect()
                 except Exception as e:
-                    log("error", f"Parallel fetch for {url} failed: {e}")
+                    log("error", f"Sequential fetch for {url} failed: {e}")
                     circuit_breaker.record_failure()
+                    # Continue with other pages even if one fails
+                    continue
+        else:
+            # Parallel processing for local/high-memory environments
+            log("info", f"Using parallel processing for {len(other_pages_to_fetch)} pages")
+            with ProcessPoolExecutor(max_workers=2) as executor:  # Reduced from 4 to 2
+                future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
+                for future in future_to_url:
+                    url = future_to_url[future]
+                    try:
+                        _, html = future.result(timeout=60)  # Add timeout
+                        if html:
+                            page_html_map[url] = html
+                            circuit_breaker.record_success()
+                        else:
+                            log("warn", f"Parallel fetch for {url} returned no content.")
+                            circuit_breaker.record_failure()
+                    except Exception as e:
+                        log("error", f"Parallel fetch for {url} failed: {e}")
+                        circuit_breaker.record_failure()
 
         text_corpus = ""
         for page_url in priority_pages:
