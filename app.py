@@ -121,7 +121,7 @@ def run_scan_in_background(sid, data, scan_id=None):
     print(f"BACKGROUND SCAN STARTED for SID: {sid} on URL: {url} (scan_id: {scan_id})", flush=True)
     
     try:
-        for update in run_full_scan_stream(url, SHARED_CACHE):
+        for update in run_full_scan_stream(url, SHARED_CACHE, preferred_lang='en'):
             # Check if scan has been cancelled or expired
             if scan_id and scan_id not in active_scans:
                 print(f"Scan {scan_id} was cancelled or expired, stopping", flush=True)

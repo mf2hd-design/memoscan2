@@ -80,6 +80,22 @@ def retry_with_backoff(func, max_retries=3, base_delay=1, exceptions=(Exception,
             log("info", f"🔄 RETRY ATTEMPT {attempt + 1}/{max_retries} after {delay:.2f}s: {type(e).__name__}")
             time.sleep(delay)
 
+def find_sitemap_from_robots_txt(base_url: str) -> Optional[str]:
+    """Fetches and parses robots.txt to find a sitemap URL."""
+    robots_url = urljoin(base_url, "/robots.txt")
+    try:
+        log("info", f"Checking for sitemap in {robots_url}")
+        response = httpx.get(robots_url, headers={"User-Agent": get_random_user_agent()}, timeout=10)
+        if response.status_code == 200:
+            for line in response.text.splitlines():
+                if line.strip().lower().startswith("sitemap:"):
+                    sitemap_url = line.split(":", 1)[1].strip()
+                    log("info", f"Found sitemap in robots.txt: {sitemap_url}")
+                    return sitemap_url
+    except Exception as e:
+        log("warn", f"Could not parse robots.txt: {e}")
+    return None
+
 def cleanup_process_pool(executor):
     """Clean up process pool to prevent zombie processes."""
     try:
@@ -345,7 +361,7 @@ LINK_SCORE_MAP = {
     "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": SCORING_CONSTANTS["NEGATIVE_VETO_SCORE"]}
 }
 
-def score_link(link_url: str, link_text: str, primary_language: str = 'en') -> Tuple[int, str]:
+def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tuple[int, str]:
     score = 0
     rationale = []
     lower_text = link_text.lower()
@@ -356,13 +372,14 @@ def score_link(link_url: str, link_text: str, primary_language: str = 'en') -> T
     if lower_text in language_names:
         score -= SCORING_CONSTANTS["LANGUAGE_PENALTY"]
 
-    # Contextual language penalty - penalize URLs that don't match the site's primary language
-    lang_codes = {'/de/': 'de', '/es/': 'es', '/fr/': 'fr', '/it/': 'it', '/pt/': 'pt', '/ja/': 'ja', '/ko/': 'ko', '/zh/': 'zh', '/ru/': 'ru', '/nl/': 'nl'}
-    for code, lang in lang_codes.items():
-        if code in link_url and lang != primary_language:
+    # --- Language Penalty (User-Aligned) ---
+    # Penalize URLs that contain a language code that is NOT the preferred one.
+    lang_codes = ['/de/', '/es/', '/fr/', '/it/', '/pt/', '/ja/', '/ko/', '/zh/', '/ru/', '/nl/']
+    for code in lang_codes:
+        if code in link_url and code.strip('/') != preferred_lang:
             score -= 15
-            rationale.append(f"Lang Mismatch: -15 ({lang}≠{primary_language})")
-            break
+            rationale.append(f"Lang Penalty: -15 (non-{preferred_lang})")
+            break  # Apply penalty only once
 
     # --- Main Keyword Scoring (First Past the Post) ---
     tier_order = ["identity", "strategy", "operations", "culture", "people"]
@@ -1022,7 +1039,7 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 
     return final_social_text
 
-def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_url: str, primary_language: str = 'en') -> Optional[str]:
+def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
     log("info", "Searching for a better corporate portal...")
     best_candidate = None
     highest_score = 0
@@ -1035,7 +1052,7 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
 
     for link_url, link_text in discovered_links:
         if "http" in link_url and _get_root_word(link_url) == initial_root_word and urlparse(link_url).netloc != initial_netloc:
-            score, _ = score_link(link_url, link_text, primary_language)  # Unpack tuple, ignore rationale
+            score, _ = score_link(link_url, link_text, preferred_lang)  # Unpack tuple, ignore rationale
             if score > highest_score:
                 highest_score = score
                 best_candidate = link_url
@@ -1047,8 +1064,12 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
         log("info", "No high-quality corporate portal found. Continuing with the initial URL.")
         return None
 
-def discover_links_from_sitemap(homepage_url: str) -> Optional[Tuple[List[Tuple[str, str]], Optional[str]]]:
+def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -> Optional[Tuple[List[Tuple[str, str]], Optional[str]]]:
     """Discover links from sitemap and return detected language context.
+    
+    Args:
+        homepage_url: The base URL to search for sitemaps
+        preferred_lang: The preferred language code (default: 'en')
     
     Returns:
         Tuple of (links, detected_language) where detected_language is extracted from chosen sitemap URL
@@ -1060,77 +1081,84 @@ def discover_links_from_sitemap(homepage_url: str) -> Optional[Tuple[List[Tuple[
     try:
         response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
         response.raise_for_status()
-        final_url = str(response.url)
-        log("info", f"Sitemap fetch successful. Final URL: {final_url}")
+    except httpx.HTTPStatusError:
+        log("warn", f"/sitemap.xml not found. Checking robots.txt as a fallback.")
+        sitemap_url = find_sitemap_from_robots_txt(homepage_url)
+        if not sitemap_url:
+            log("warn", "Sitemap not found in /sitemap.xml or robots.txt.")
+            return None, None
+        response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+        response.raise_for_status()
+    
+    final_url = str(response.url)
+    log("info", f"Sitemap fetch successful. Final URL: {final_url}")
 
-        content = response.content
-        namespace = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        root = ET.fromstring(content)
+    content = response.content
+    namespace = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+    root = ET.fromstring(content)
 
-        if root.tag.endswith('sitemapindex'):
-            log("info", "Sitemap index found. Searching for the best page-sitemap...")
-            sitemaps = [elem.text for elem in root.findall('sm:sitemap/sm:loc', namespace)]
+    if root.tag.endswith('sitemapindex'):
+        log("info", "Sitemap index found. Searching for the best page-sitemap...")
+        sitemaps = [elem.text for elem in root.findall('sm:sitemap/sm:loc', namespace)]
 
-            # IMPROVED: Implement intelligent sitemap scoring to find the most relevant one
-            best_sitemap_url = None
-            highest_score = -1
+        # IMPROVED: Implement intelligent sitemap scoring aligned with preferred language
+        best_sitemap_url = None
+        highest_score = -1
+        
+        for sm_url in sitemaps:
+            score = 0
+            # Heavily prioritize global/corporate sitemaps
+            if "global" in sm_url or "corporate" in sm_url: score += 150
+            if "main" in sm_url or "pages" in sm_url: score += 50
+            # Use preferred_lang parameter for language bonus
+            if f"/{preferred_lang}" in sm_url: score += 25
             
-            for sm_url in sitemaps:
-                score = 0
-                # Heavily prioritize global/corporate sitemaps
-                if "global" in sm_url or "corporate" in sm_url: score += 150
-                if "main" in sm_url or "pages" in sm_url: score += 50
-                if "/en" in sm_url or "en/" in sm_url: score += 25  # Stronger preference for English
-                
-                # Penalize country-specific sitemaps heavily
-                if re.search(r'/[a-z]{2}/', sm_url) and "global" not in sm_url: score -= 50
-                
-                # Additional preferences for brand-relevant content
-                if any(keyword in sm_url for keyword in ['page', 'post', 'company', 'about', 'article']): score += 25
-                
-                log("debug", f"Sitemap {sm_url} scored {score}")
-                if score > highest_score:
-                    highest_score = score
-                    best_sitemap_url = sm_url
+            # Penalize non-preferred language sitemaps
+            if re.search(r'/[a-z]{2}/', sm_url) and not f"/{preferred_lang}" in sm_url: score -= 50
+            
+            # Additional preferences for brand-relevant content
+            if any(keyword in sm_url for keyword in ['page', 'post', 'company', 'about', 'article']): score += 25
+            
+            log("debug", f"Sitemap {sm_url} scored {score}")
+            if score > highest_score:
+                highest_score = score
+                best_sitemap_url = sm_url
 
-            if best_sitemap_url:
-                log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {highest_score})")
-                
-                # DYNAMIC LANGUAGE CONTEXT: Extract language from chosen sitemap URL
-                lang_patterns = {
-                    '/en/': 'en', '/en.': 'en', '_en.': 'en', '-en.': 'en',
-                    '/de/': 'de', '/de.': 'de', '_de.': 'de', '-de.': 'de',
-                    '/es/': 'es', '/es.': 'es', '_es.': 'es', '-es.': 'es',
-                    '/fr/': 'fr', '/fr.': 'fr', '_fr.': 'fr', '-fr.': 'fr',
-                    '/it/': 'it', '/it.': 'it', '_it.': 'it', '-it.': 'it',
-                    '/pt/': 'pt', '/pt.': 'pt', '_pt.': 'pt', '-pt.': 'pt',
-                    '/ja/': 'ja', '/ja.': 'ja', '_ja.': 'ja', '-ja.': 'ja',
-                    '/zh/': 'zh', '/zh.': 'zh', '_zh.': 'zh', '-zh.': 'zh',
-                    '/global/en': 'en', 'global-en': 'en'  # Special cases for global sitemaps
-                }
-                
-                for pattern, lang in lang_patterns.items():
-                    if pattern in best_sitemap_url.lower():
-                        detected_sitemap_lang = lang
-                        log("info", f"🌐 Dynamic Language Context: Detected '{lang}' from sitemap URL")
-                        break
-                
-                response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
-                response.raise_for_status()
-                root = ET.fromstring(response.content)
-            else:
-                log("warn", "No suitable sitemap found in sitemap index.")
-                return None, None
-
-        urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
-        if not urls:
+        if best_sitemap_url:
+            log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {highest_score})")
+            
+            # DYNAMIC LANGUAGE CONTEXT: Extract language from chosen sitemap URL
+            lang_patterns = {
+                '/en/': 'en', '/en.': 'en', '_en.': 'en', '-en.': 'en',
+                '/de/': 'de', '/de.': 'de', '_de.': 'de', '-de.': 'de',
+                '/es/': 'es', '/es.': 'es', '_es.': 'es', '-es.': 'es',
+                '/fr/': 'fr', '/fr.': 'fr', '_fr.': 'fr', '-fr.': 'fr',
+                '/it/': 'it', '/it.': 'it', '_it.': 'it', '-it.': 'it',
+                '/pt/': 'pt', '/pt.': 'pt', '_pt.': 'pt', '-pt.': 'pt',
+                '/ja/': 'ja', '/ja.': 'ja', '_ja.': 'ja', '-ja.': 'ja',
+                '/zh/': 'zh', '/zh.': 'zh', '_zh.': 'zh', '-zh.': 'zh',
+                '/global/en': 'en', 'global-en': 'en'  # Special cases for global sitemaps
+            }
+            
+            for pattern, lang in lang_patterns.items():
+                if pattern in best_sitemap_url.lower():
+                    detected_sitemap_lang = lang
+                    log("info", f"🌐 Dynamic Language Context: Detected '{lang}' from sitemap URL")
+                    break
+            
+            response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+        else:
+            log("warn", "No suitable sitemap found in sitemap index.")
             return None, None
 
-        log("info", f"Found {len(urls)} links in sitemap.")
-        return [(url, url.split('/')[-1].replace('-', ' ')) for url in urls], detected_sitemap_lang
-    except Exception as e:
-        log("warn", f"Sitemap not found or failed to parse: {e}")
+    urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
+    if not urls:
         return None, None
+
+    log("info", f"Found {len(urls)} links in sitemap.")
+    return [(url, url.split('/')[-1].replace('-', ' ')) for url in urls], detected_sitemap_lang
 
 def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
     """Extracts links from raw HTML content."""
@@ -1319,7 +1347,7 @@ def summarize_results(all_results: list) -> dict:
     
     return summary
 
-def run_full_scan_stream(url: str, cache: dict):
+def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
     # DEBUG: Message tracking
     def debug_yield(message_data):
         """Debug wrapper to log all yielded messages"""
@@ -1366,7 +1394,7 @@ def run_full_scan_stream(url: str, cache: dict):
         yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(all_discovered_links)} links in HTML', 'timestamp': time.time()})
         
         yield debug_yield({'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()})
-        sitemap_result = discover_links_from_sitemap(initial_url)
+        sitemap_result = discover_links_from_sitemap(initial_url, preferred_lang)
         sitemap_links = None
         sitemap_detected_lang = None
         if sitemap_result:
@@ -1390,7 +1418,7 @@ def run_full_scan_stream(url: str, cache: dict):
         # --- Phase 2: High-Value Subdomain Discovery ---
         # FIXED: True Two-Pocket Strategy - find additional sources without pivoting
         yield debug_yield({'type': 'activity', 'message': f'🔎 Searching for corporate portals...', 'timestamp': time.time()})
-        subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url, primary_language)
+        subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url, preferred_lang)
         if subdomain_portal_url:
             log("info", f"🎯 Found high-value subdomain: {subdomain_portal_url}. Adding its links to our discovery pool.")
             yield debug_yield({'type': 'activity', 'message': f'🎯 Found corporate portal - expanding discovery...', 'timestamp': time.time()})
@@ -1402,7 +1430,7 @@ def run_full_scan_stream(url: str, cache: dict):
                     subdomain_links = discover_links_from_html(subdomain_html, subdomain_portal_url)
                     # Additional sitemap discovery from the subdomain
                     yield debug_yield({'type': 'activity', 'message': f'📄 Checking portal sitemap...', 'timestamp': time.time()})
-                    subdomain_sitemap_result = discover_links_from_sitemap(subdomain_portal_url)
+                    subdomain_sitemap_result = discover_links_from_sitemap(subdomain_portal_url, preferred_lang)
                     if subdomain_sitemap_result:
                         subdomain_sitemap_links, subdomain_lang = subdomain_sitemap_result
                         if subdomain_sitemap_links:
@@ -1480,7 +1508,7 @@ def run_full_scan_stream(url: str, cache: dict):
                     progress_pct = int((processed_count / total_unique) * 100) if total_unique > 0 else 100
                     yield debug_yield({'type': 'activity', 'message': f'📊 Scoring links... {processed_count}/{total_unique} ({progress_pct}%)', 'timestamp': time.time()})
                 
-                score, rationale = score_link(cleaned_url, link_text, primary_language)
+                score, rationale = score_link(cleaned_url, link_text, preferred_lang)
                 if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:  # Business-relevant content threshold
                     scored_links.append({"url": cleaned_url, "text": link_text, "score": score, "rationale": rationale})
         
