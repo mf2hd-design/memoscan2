@@ -13,7 +13,7 @@ except ImportError:
     # Fallback with XXE protection
     import xml.etree.ElementTree as ET
     import warnings
-    warnings.warn("defusedxml not available, using xml.etree.ElementTree with limited XXE protection", SecurityWarning)
+    warnings.warn("defusedxml not available, using xml.etree.ElementTree with limited XXE protection", UserWarning)
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
