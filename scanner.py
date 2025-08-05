@@ -277,21 +277,118 @@ def cleanup_cache():
 # --- START: FEEDBACK MECHANISM ---
 FEEDBACK_FILE = "feedback_log.jsonl"
 
-def record_feedback(analysis_id: str, key_name: str, feedback_type: str, comment: Optional[str] = None):
-    """Records user feedback for a specific AI analysis."""
+def record_feedback(analysis_id: str, key_name: str, feedback_type: str, 
+                   comment: Optional[str] = None, ai_score: Optional[int] = None, 
+                   user_score: Optional[int] = None, confidence: Optional[int] = None,
+                   brand_context: Optional[str] = None):
+    """Records enhanced user feedback for AI learning and prompt improvement."""
     feedback_entry = {
         "timestamp": time.time(),
         "analysis_id": analysis_id,
         "key_name": key_name,
-        "feedback_type": feedback_type,
-        "comment": comment
+        "feedback_type": feedback_type,  # "too_high", "about_right", "too_low"
+        "comment": comment,
+        "ai_score": ai_score,  # What the AI originally scored (0-5)
+        "user_score": user_score,  # What the user thinks it should be (0-5)
+        "confidence": confidence,  # AI's confidence level (0-100)
+        "brand_context": brand_context,  # Brief brand description for pattern analysis
+        "score_difference": (user_score - ai_score) if (user_score is not None and ai_score is not None) else None
     }
     try:
         with open(FEEDBACK_FILE, "a") as f:
             f.write(json.dumps(feedback_entry) + "\n")
-        log("info", f"Recorded feedback for analysis_id {analysis_id}, key {key_name}: {feedback_type}")
+        log("info", f"Recorded enhanced feedback for analysis_id {analysis_id}, key {key_name}: {feedback_type} (AI: {ai_score}, User: {user_score})")
     except Exception as e:
         log("error", f"Failed to record feedback to file: {e}")
+# --- START: FEEDBACK ANALYTICS FOR AI LEARNING ---
+
+def analyze_feedback_patterns():
+    """Analyze feedback patterns to identify prompt improvement opportunities."""
+    if not os.path.exists(FEEDBACK_FILE):
+        return {"error": "No feedback data available"}
+    
+    feedback_data = []
+    try:
+        with open(FEEDBACK_FILE, "r") as f:
+            for line in f:
+                if line.strip():
+                    feedback_data.append(json.loads(line))
+    except Exception as e:
+        log("error", f"Failed to read feedback data: {e}")
+        return {"error": "Failed to read feedback data"}
+    
+    if not feedback_data:
+        return {"error": "No feedback entries found"}
+    
+    analysis = {
+        "total_feedback": len(feedback_data),
+        "by_key": {},
+        "systematic_issues": {},
+        "confidence_correlation": {},
+        "recent_trends": {}
+    }
+    
+    # Analyze by memorability key
+    for entry in feedback_data:
+        key = entry["key_name"]
+        if key not in analysis["by_key"]:
+            analysis["by_key"][key] = {
+                "total": 0, "too_high": 0, "too_low": 0, "about_right": 0,
+                "avg_score_diff": 0, "score_diffs": []
+            }
+        
+        key_stats = analysis["by_key"][key]
+        key_stats["total"] += 1
+        key_stats[entry["feedback_type"]] += 1
+        
+        if entry["score_difference"] is not None:
+            key_stats["score_diffs"].append(entry["score_difference"])
+    
+    # Calculate averages and identify systematic issues
+    for key, stats in analysis["by_key"].items():
+        if stats["score_diffs"]:
+            stats["avg_score_diff"] = round(sum(stats["score_diffs"]) / len(stats["score_diffs"]), 2)
+        
+        # Identify systematic biases
+        total_directional = stats["too_high"] + stats["too_low"]
+        if total_directional >= 3:  # Need minimum feedback for reliability
+            if stats["too_high"] / total_directional > 0.7:
+                analysis["systematic_issues"][key] = "AI consistently over-scores"
+            elif stats["too_low"] / total_directional > 0.7:
+                analysis["systematic_issues"][key] = "AI consistently under-scores"
+    
+    return analysis
+
+def get_prompt_improvements_from_feedback():
+    """Generate specific prompt improvements based on feedback analysis."""
+    patterns = analyze_feedback_patterns()
+    
+    if "error" in patterns:
+        return patterns
+    
+    improvements = {
+        "conservative_adjustments": [],  # For over-scoring keys
+        "generous_adjustments": [],     # For under-scoring keys
+        "examples_needed": [],          # Keys needing better examples
+        "confidence_issues": []         # Low confidence correlating with poor feedback
+    }
+    
+    for key, issue in patterns.get("systematic_issues", {}).items():
+        if "over-scores" in issue:
+            improvements["conservative_adjustments"].append({
+                "key": key,
+                "adjustment": f"Be more conservative with {key} scoring. Users frequently rate this too high.",
+                "avg_diff": patterns["by_key"][key]["avg_score_diff"]
+            })
+        elif "under-scores" in issue:
+            improvements["generous_adjustments"].append({
+                "key": key,
+                "adjustment": f"Be more generous with {key} scoring. Users frequently rate this too low.",
+                "avg_diff": patterns["by_key"][key]["avg_score_diff"]
+            })
+    
+    return improvements
+
 # --- END: FEEDBACK MECHANISM ---
 
 def _clean_url(url: str) -> str:
