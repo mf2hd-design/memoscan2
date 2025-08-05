@@ -127,6 +127,7 @@ def run_scan_in_background(sid, data, scan_id=None):
                 print(f"Scan {scan_id} was cancelled or expired, stopping", flush=True)
                 break
                 
+            print(f"📡 APP.PY FORWARDING MESSAGE: {update.get('type', 'unknown')} - {update}", flush=True)
             socketio.emit("scan_update", update, room=sid)
             socketio.sleep(0)
     except ValueError as e:

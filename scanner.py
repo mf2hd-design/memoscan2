@@ -1111,6 +1111,12 @@ def summarize_results(all_results: list) -> dict:
     return summary
 
 def run_full_scan_stream(url: str, cache: dict):
+    # DEBUG: Message tracking
+    def debug_yield(message_data):
+        """Debug wrapper to log all yielded messages"""
+        log("debug", f"🚀 YIELDING MESSAGE: {message_data}")
+        return message_data
+    
     # Bulletproof environment detection
     IS_PRODUCTION = (
         os.getenv('SCANNER_ENV', '').lower() == 'production' or
@@ -1132,8 +1138,8 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'error', 'message': f'Invalid URL: {error_msg}'}
             return
 
-        yield {'type': 'status', 'message': 'Step 1/5: Discovering all brand pages...', 'phase': 'discovery', 'progress': 10}
-        yield {'type': 'activity', 'message': f'🌐 Starting scan at {initial_url}', 'timestamp': time.time()}
+        yield debug_yield({'type': 'status', 'message': 'Step 1/5: Discovering all brand pages...', 'phase': 'discovery', 'progress': 10})
+        yield debug_yield({'type': 'activity', 'message': f'🌐 Starting scan at {initial_url}', 'timestamp': time.time()})
         log("info", f"Starting scan at validated URL: {initial_url}")
 
         # --- Phase 1: Initial Domain Discovery ---
@@ -1145,11 +1151,11 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'error', 'message': f'Failed to fetch the initial URL: {e}'}
             return
 
-        yield {'type': 'activity', 'message': f'🔍 Analyzing HTML structure...', 'timestamp': time.time()}
+        yield debug_yield({'type': 'activity', 'message': f'🔍 Analyzing HTML structure...', 'timestamp': time.time()})
         all_discovered_links = discover_links_from_html(homepage_html, initial_url)
-        yield {'type': 'metric', 'key': 'html_links', 'value': len(all_discovered_links)}
+        yield debug_yield({'type': 'metric', 'key': 'html_links', 'value': len(all_discovered_links)})
         
-        yield {'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()}
+        yield debug_yield({'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()})
         sitemap_result = discover_links_from_sitemap(initial_url)
         sitemap_links = None
         sitemap_detected_lang = None
@@ -1157,8 +1163,8 @@ def run_full_scan_stream(url: str, cache: dict):
             sitemap_links, sitemap_detected_lang = sitemap_result
             if sitemap_links:
                 all_discovered_links.extend(sitemap_links)
-                yield {'type': 'activity', 'message': f'✅ Found {len(sitemap_links)} pages in sitemap', 'timestamp': time.time()}
-                yield {'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)}
+                yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(sitemap_links)} pages in sitemap', 'timestamp': time.time()})
+                yield debug_yield({'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)})
 
         # Detect the primary language from HTML first
         primary_language = detect_primary_language(homepage_html)
@@ -1167,7 +1173,7 @@ def run_full_scan_stream(url: str, cache: dict):
         if sitemap_detected_lang:
             log("info", f"🔄 Updating language context from '{primary_language}' to '{sitemap_detected_lang}' based on chosen sitemap")
             primary_language = sitemap_detected_lang
-            yield {'type': 'activity', 'message': f'🌍 Detected site language: {sitemap_detected_lang.upper()}', 'timestamp': time.time()}
+            yield debug_yield({'type': 'activity', 'message': f'🌍 Detected site language: {sitemap_detected_lang.upper()}', 'timestamp': time.time()})
 
         # --- Phase 2: High-Value Subdomain Discovery ---
         # FIXED: True Two-Pocket Strategy - find additional sources without pivoting
@@ -1190,8 +1196,8 @@ def run_full_scan_stream(url: str, cache: dict):
                                 log("info", f"🔄 Subdomain sitemap suggests '{subdomain_lang}' language context")
                     all_discovered_links.extend(subdomain_links)
                     log("info", f"✅ Two-Pocket Strategy: Added {len(subdomain_links)} links from high-value subdomain")
-                    yield {'type': 'activity', 'message': f'🎯 Added {len(subdomain_links)} links from corporate portal', 'timestamp': time.time()}
-                    yield {'type': 'metric', 'key': 'subdomain_links', 'value': len(subdomain_links)}
+                    yield debug_yield({'type': 'activity', 'message': f'🎯 Added {len(subdomain_links)} links from corporate portal', 'timestamp': time.time()})
+                    yield debug_yield({'type': 'metric', 'key': 'subdomain_links', 'value': len(subdomain_links)})
             except Exception as e:
                 log("warn", f"Could not fetch high-value subdomain {subdomain_portal_url}: {e}")
 
