@@ -863,9 +863,16 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
         log("info", "No high-quality corporate portal found. Continuing with the initial URL.")
         return None
 
-def discover_links_from_sitemap(homepage_url: str) -> Optional[List[Tuple[str, str]]]:
+def discover_links_from_sitemap(homepage_url: str) -> Optional[Tuple[List[Tuple[str, str]], Optional[str]]]:
+    """Discover links from sitemap and return detected language context.
+    
+    Returns:
+        Tuple of (links, detected_language) where detected_language is extracted from chosen sitemap URL
+    """
     log("info", "Attempting to discover links from sitemap...")
     sitemap_url = urljoin(homepage_url, "/sitemap.xml")
+    detected_sitemap_lang = None
+    
     try:
         response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
         response.raise_for_status()
@@ -904,22 +911,42 @@ def discover_links_from_sitemap(homepage_url: str) -> Optional[List[Tuple[str, s
 
             if best_sitemap_url:
                 log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {highest_score})")
+                
+                # DYNAMIC LANGUAGE CONTEXT: Extract language from chosen sitemap URL
+                lang_patterns = {
+                    '/en/': 'en', '/en.': 'en', '_en.': 'en', '-en.': 'en',
+                    '/de/': 'de', '/de.': 'de', '_de.': 'de', '-de.': 'de',
+                    '/es/': 'es', '/es.': 'es', '_es.': 'es', '-es.': 'es',
+                    '/fr/': 'fr', '/fr.': 'fr', '_fr.': 'fr', '-fr.': 'fr',
+                    '/it/': 'it', '/it.': 'it', '_it.': 'it', '-it.': 'it',
+                    '/pt/': 'pt', '/pt.': 'pt', '_pt.': 'pt', '-pt.': 'pt',
+                    '/ja/': 'ja', '/ja.': 'ja', '_ja.': 'ja', '-ja.': 'ja',
+                    '/zh/': 'zh', '/zh.': 'zh', '_zh.': 'zh', '-zh.': 'zh',
+                    '/global/en': 'en', 'global-en': 'en'  # Special cases for global sitemaps
+                }
+                
+                for pattern, lang in lang_patterns.items():
+                    if pattern in best_sitemap_url.lower():
+                        detected_sitemap_lang = lang
+                        log("info", f"🌐 Dynamic Language Context: Detected '{lang}' from sitemap URL")
+                        break
+                
                 response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
                 response.raise_for_status()
                 root = ET.fromstring(response.content)
             else:
                 log("warn", "No suitable sitemap found in sitemap index.")
-                return None
+                return None, None
 
         urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
         if not urls:
-            return None
+            return None, None
 
         log("info", f"Found {len(urls)} links in sitemap.")
-        return [(url, url.split('/')[-1].replace('-', ' ')) for url in urls]
+        return [(url, url.split('/')[-1].replace('-', ' ')) for url in urls], detected_sitemap_lang
     except Exception as e:
         log("warn", f"Sitemap not found or failed to parse: {e}")
-        return None
+        return None, None
 
 def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
     """Extracts links from raw HTML content."""
@@ -1105,7 +1132,8 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'error', 'message': f'Invalid URL: {error_msg}'}
             return
 
-        yield {'type': 'status', 'message': 'Step 1/5: Discovering all brand pages...'}
+        yield {'type': 'status', 'message': 'Step 1/5: Discovering all brand pages...', 'phase': 'discovery', 'progress': 10}
+        yield {'type': 'activity', 'message': f'🌐 Starting scan at {initial_url}', 'timestamp': time.time()}
         log("info", f"Starting scan at validated URL: {initial_url}")
 
         # --- Phase 1: Initial Domain Discovery ---
@@ -1117,29 +1145,60 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'error', 'message': f'Failed to fetch the initial URL: {e}'}
             return
 
+        yield {'type': 'activity', 'message': f'🔍 Analyzing HTML structure...', 'timestamp': time.time()}
         all_discovered_links = discover_links_from_html(homepage_html, initial_url)
-        sitemap_links = discover_links_from_sitemap(initial_url)
-        if sitemap_links:
-            all_discovered_links.extend(sitemap_links)
+        yield {'type': 'metric', 'key': 'html_links', 'value': len(all_discovered_links)}
+        
+        yield {'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()}
+        sitemap_result = discover_links_from_sitemap(initial_url)
+        sitemap_links = None
+        sitemap_detected_lang = None
+        if sitemap_result:
+            sitemap_links, sitemap_detected_lang = sitemap_result
+            if sitemap_links:
+                all_discovered_links.extend(sitemap_links)
+                yield {'type': 'activity', 'message': f'✅ Found {len(sitemap_links)} pages in sitemap', 'timestamp': time.time()}
+                yield {'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)}
 
-        # Detect the primary language early for better subdomain discovery
+        # Detect the primary language from HTML first
         primary_language = detect_primary_language(homepage_html)
+        
+        # DYNAMIC LANGUAGE CONTEXT: Update language based on sitemap if detected
+        if sitemap_detected_lang:
+            log("info", f"🔄 Updating language context from '{primary_language}' to '{sitemap_detected_lang}' based on chosen sitemap")
+            primary_language = sitemap_detected_lang
+            yield {'type': 'activity', 'message': f'🌍 Detected site language: {sitemap_detected_lang.upper()}', 'timestamp': time.time()}
 
         # --- Phase 2: High-Value Subdomain Discovery ---
+        # FIXED: True Two-Pocket Strategy - find additional sources without pivoting
         subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url, primary_language)
         if subdomain_portal_url:
-            log("info", f"Found high-value subdomain: {subdomain_portal_url}. Scanning it for additional links.")
+            log("info", f"🎯 Found high-value subdomain: {subdomain_portal_url}. Adding its links to our discovery pool.")
             try:
                 _, subdomain_html = fetch_page_content_robustly(subdomain_portal_url)
                 if subdomain_html:
                     subdomain_links = discover_links_from_html(subdomain_html, subdomain_portal_url)
+                    # Additional sitemap discovery from the subdomain
+                    subdomain_sitemap_result = discover_links_from_sitemap(subdomain_portal_url)
+                    if subdomain_sitemap_result:
+                        subdomain_sitemap_links, subdomain_lang = subdomain_sitemap_result
+                        if subdomain_sitemap_links:
+                            subdomain_links.extend(subdomain_sitemap_links)
+                            log("info", f"✅ Added {len(subdomain_sitemap_links)} links from subdomain sitemap")
+                            # Update language context if subdomain provides clearer signal
+                            if subdomain_lang and subdomain_lang != primary_language:
+                                log("info", f"🔄 Subdomain sitemap suggests '{subdomain_lang}' language context")
                     all_discovered_links.extend(subdomain_links)
+                    log("info", f"✅ Two-Pocket Strategy: Added {len(subdomain_links)} links from high-value subdomain")
+                    yield {'type': 'activity', 'message': f'🎯 Added {len(subdomain_links)} links from corporate portal', 'timestamp': time.time()}
+                    yield {'type': 'metric', 'key': 'subdomain_links', 'value': len(subdomain_links)}
             except Exception as e:
                 log("warn", f"Could not fetch high-value subdomain {subdomain_portal_url}: {e}")
 
         # --- Phase 3: Scoring and Analysis ---
+        # CRITICAL: Never pivot - always use initial URL as homepage
         homepage_url = initial_url
-        log("info", f"Confirmed scan homepage: {homepage_url}")
+        log("info", f"✅ Confirmed scan homepage (no pivot): {homepage_url}")
 
         if not all_discovered_links:
             log("warn", f"No links discovered from {homepage_url}. Proceeding with homepage analysis only.")
@@ -1165,7 +1224,9 @@ def run_full_scan_stream(url: str, cache: dict):
 
         yield {'type': 'status', 'message': f'Detected primary language: {primary_language.upper()}'}
 
-        yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...'}
+        yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...', 'phase': 'scoring', 'progress': 30}
+        yield {'type': 'activity', 'message': f'📊 Analyzing {len(all_discovered_links)} discovered links...', 'timestamp': time.time()}
+        yield {'type': 'metric', 'key': 'total_links', 'value': len(all_discovered_links)}
         scored_links = []
         unique_urls_for_scoring = set()
         for link_url, link_text in all_discovered_links:
@@ -1177,6 +1238,8 @@ def run_full_scan_stream(url: str, cache: dict):
                     scored_links.append({"url": cleaned_url, "text": link_text, "score": score, "rationale": rationale})
         
         scored_links.sort(key=lambda x: x["score"], reverse=True)
+        yield {'type': 'metric', 'key': 'high_value_pages', 'value': len(scored_links)}
+        yield {'type': 'activity', 'message': f'✨ Identified {len(scored_links)} business-relevant pages', 'timestamp': time.time()}
         
         # Enhanced logging with rationale display
         top_10 = scored_links[:10]
@@ -1203,7 +1266,8 @@ def run_full_scan_stream(url: str, cache: dict):
             for data in capture_screenshots_playwright(other_pages_to_screenshot):
                 yield {'type': 'screenshot_ready', **data}
         
-        yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
+        yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...', 'phase': 'analysis', 'progress': 40}
+        yield {'type': 'activity', 'message': f'📑 Processing {len(priority_pages)} priority pages...', 'timestamp': time.time()}
         page_html_map = {homepage_url: final_homepage_html}
         
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
@@ -1219,6 +1283,8 @@ def run_full_scan_stream(url: str, cache: dict):
                         page_html_map[url] = html
                         circuit_breaker.record_success()
                         log("info", f"✅ Sequential fetch successful for {url}")
+                        yield {'type': 'activity', 'message': f'✅ Analyzed page {len(page_html_map)}/{len(priority_pages)}', 'timestamp': time.time()}
+                        yield {'type': 'progress', 'current': len(page_html_map), 'total': len(priority_pages), 'phase': 'page_fetch'}
                     else:
                         log("warn", f"⚠️ Sequential fetch for {url} returned no content.")
                         circuit_breaker.record_failure()
@@ -1264,13 +1330,15 @@ def run_full_scan_stream(url: str, cache: dict):
         if len(text_corpus + social_corpus) > MAX_CORPUS_LENGTH:
             log("info", f"📄 Text corpus truncated from {len(text_corpus + social_corpus)} to {MAX_CORPUS_LENGTH} characters")
 
-        yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
+        yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...', 'phase': 'synthesis', 'progress': 60}
+        yield {'type': 'activity', 'message': '🧠 AI analyzing brand identity...', 'timestamp': time.time()}
         brand_summary = call_openai_for_synthesis(full_corpus)
         
-        yield {'type': 'status', 'message': 'Step 4/5: Performing detailed analysis...'}
+        yield {'type': 'status', 'message': 'Step 4/5: Performing detailed analysis...', 'phase': 'ai_analysis', 'progress': 70}
         all_results = []
-        for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
-            yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
+        for i, (key, prompt) in enumerate(MEMORABILITY_KEYS_PROMPTS.items()):
+            yield {'type': 'status', 'message': f'Analyzing key: {key}...', 'phase': 'ai_analysis', 'progress': 70 + (i * 5)}
+            yield {'type': 'activity', 'message': f'🔍 Evaluating {key} memorability...', 'timestamp': time.time()}
             try:
                 key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
                 analysis_uid = str(uuid.uuid4())
@@ -1286,14 +1354,16 @@ def run_full_scan_stream(url: str, cache: dict):
             all_results.append(result_obj)
             yield result_obj
         
-        yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
+        yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...', 'phase': 'summary', 'progress': 95}
+        yield {'type': 'activity', 'message': '📝 Generating strategic recommendations...', 'timestamp': time.time()}
         summary_text = call_openai_for_executive_summary(all_results) 
         yield {'type': 'summary', 'text': summary_text}
         
         quantitative_summary = summarize_results(all_results)
         yield {'type': 'quantitative_summary', 'data': quantitative_summary}
         
-        yield {'type': 'complete', 'message': f'✅ Analysis complete! Used {processing_mode} processing.'}
+        yield {'type': 'complete', 'message': f'✅ Analysis complete! Used {processing_mode} processing.', 'progress': 100}
+        yield {'type': 'activity', 'message': '🎉 Scan completed successfully!', 'timestamp': time.time()}
 
     except Exception as e:
         log("error", f"The main stream failed: {e}")

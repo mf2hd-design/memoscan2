@@ -177,7 +177,14 @@ def handle_disconnect():
 
 @app.route("/")
 def index():
-    return send_from_directory('templates', 'index.html')
+    # Use production UI with fallbacks
+    try:
+        return send_from_directory('templates', 'index_production.html')
+    except:
+        try:
+            return send_from_directory('templates', 'index_enhanced.html')
+        except:
+            return send_from_directory('templates', 'index.html')
 
 @app.route("/screenshot/<screenshot_id>")
 def get_screenshot(screenshot_id):
