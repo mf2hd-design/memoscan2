@@ -380,8 +380,8 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
         log("error", f"Scrapfly error for {url}: {e}")
         return None, None
 
-def fetch_html_with_playwright(url: str, retried: bool = False) -> Optional[str]:
-    log("info", f"Activating Playwright fallback for URL: {url}")
+def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    log("info", f"Activating Playwright fallback for URL: {url} (Screenshot: {take_screenshot})")
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(headless=True)
@@ -391,14 +391,24 @@ def fetch_html_with_playwright(url: str, retried: bool = False) -> Optional[str]
             prepare_page_for_capture(page)
             
             html_content = page.content()
+            screenshot_b64 = None
+            
+            if take_screenshot:
+                try:
+                    screenshot_bytes = page.screenshot(full_page=True, type='png')
+                    screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                    log("info", f"✅ PLAYWRIGHT SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes for {url}")
+                except Exception as e:
+                    log("error", f"❌ PLAYWRIGHT SCREENSHOT FAILED for {url}: {e}")
+            
             browser.close()
-            return html_content
+            return screenshot_b64, html_content
         except Exception as e:
             log("error", f"Playwright failed for {url}: {e}")
             if "browser has crashed" in str(e).lower() and not retried:
                 log("warn", "Restarting Playwright browser...")
-                return fetch_html_with_playwright(url, retried=True)
-            return None
+                return fetch_html_with_playwright(url, retried=True, take_screenshot=take_screenshot)
+            return None, None
 
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     try:
@@ -412,27 +422,31 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
             else:
                 log("warn", f"Scrapfly returned non-HTML content for {url}, falling back to Playwright for HTML.")
             
-            # CRITICAL FIX: Preserve screenshot even when falling back to Playwright for HTML
+            # ENHANCED FIX: Use Playwright screenshot when Scrapfly fails or when preserving existing screenshot
             if take_screenshot and screenshot:
+                # Preserve existing Scrapfly screenshot and get HTML from Playwright
                 log("info", f"🔧 PRESERVING SCRAPFLY SCREENSHOT: {len(screenshot)} bytes while using Playwright HTML")
-                html = fetch_html_with_playwright(url)
-                return screenshot, html  # ← Keep the screenshot!
+                _, html = fetch_html_with_playwright(url, take_screenshot=False)
+                return screenshot, html
+            elif take_screenshot:
+                # Scrapfly failed to get screenshot, use Playwright for both
+                log("info", f"🔧 USING PLAYWRIGHT FOR SCREENSHOT: Scrapfly failed, trying Playwright")
+                screenshot, html = fetch_html_with_playwright(url, take_screenshot=True)
+                return screenshot, html
             else:
-                html = fetch_html_with_playwright(url)
+                # No screenshot needed, just get HTML
+                _, html = fetch_html_with_playwright(url, take_screenshot=False)
                 return None, html
     except Exception as e:
         log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright.")
-        # Try to get screenshot from failed Scrapfly call
-        screenshot = None
-        try:
-            screenshot, _ = _fetch_page_data_scrapfly(url, take_screenshot=take_screenshot)
-            if screenshot:
-                log("info", f"🔧 RECOVERED SCRAPFLY SCREENSHOT: {len(screenshot)} bytes after HTML failure")
-        except:
-            pass
-        
-        html = fetch_html_with_playwright(url)
-        return screenshot, html
+        # Complete fallback to Playwright for both screenshot and HTML
+        if take_screenshot:
+            log("info", f"🔧 COMPLETE PLAYWRIGHT FALLBACK: Getting both screenshot and HTML from Playwright")
+            screenshot, html = fetch_html_with_playwright(url, take_screenshot=True)
+            return screenshot, html
+        else:
+            _, html = fetch_html_with_playwright(url, take_screenshot=False)
+            return None, html
 
 # --- END: HELPER CLASSES AND FUNCTIONS ---
 
