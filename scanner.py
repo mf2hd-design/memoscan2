@@ -10,10 +10,27 @@ import gc
 try:
     from defusedxml import ElementTree as ET
 except ImportError:
-    # Fallback with XXE protection
-    import xml.etree.ElementTree as ET
+    # SECURITY: Use safe XML parsing to prevent XXE attacks
+    import xml.etree.ElementTree as ET_unsafe
     import warnings
-    warnings.warn("defusedxml not available, using xml.etree.ElementTree with limited XXE protection", UserWarning)
+    warnings.warn("defusedxml not available, using xml.etree.ElementTree with custom XXE protection", UserWarning)
+    
+    # Create a safe XML parser with XXE protection
+    class SafeXMLParser:
+        @staticmethod
+        def fromstring(data):
+            # Create parser with disabled external entity processing
+            parser = ET_unsafe.XMLParser()
+            # Disable external entity processing to prevent XXE
+            parser.parser.DefaultHandler = lambda data: None
+            parser.parser.ExternalEntityRefHandler = lambda *args: False
+            try:
+                return ET_unsafe.fromstring(data, parser=parser)
+            except ET_unsafe.ParseError as e:
+                log("error", f"XML parsing failed: {e}")
+                raise
+    
+    ET = SafeXMLParser
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
@@ -85,6 +102,28 @@ CONFIG = {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     ]
 }
+
+# Scoring System Constants
+SCORING_CONSTANTS = {
+    "MIN_BUSINESS_SCORE": 5,        # Minimum score threshold for business relevance
+    "LANGUAGE_PENALTY": 20,         # Penalty for language selection links
+    "NEGATIVE_VETO_SCORE": -50,     # Penalty for negative pattern matches
+    "LANGUAGE_BONUS": 10,           # Bonus for proper language links
+    "PATH_DEPTH_THRESHOLD": 3,      # Path depth before penalties apply
+    "PATH_DEPTH_PENALTY": 5,        # Penalty per extra path segment
+    "FILE_EXTENSION_PENALTY": 100,  # Penalty for non-HTML file extensions
+    "HIGH_VALUE_PORTAL_THRESHOLD": 25,  # Minimum score for high-value portal detection
+    "CRITICAL_KEYWORD_PENALTY_REDUCTION": 2,  # Divisor for critical keyword path penalties
+}
+
+# Business Tier Scoring Hierarchy
+BUSINESS_TIER_SCORES = {
+    "identity": 40,    # Highest priority: brand, mission, values
+    "strategy": 30,    # High priority: strategy, about, company
+    "operations": 20,  # Medium priority: products, services
+    "culture": 10,     # Lower priority: culture, sustainability
+    "people": 5,       # Lowest priority: leadership, team
+}
 # --- END: CONFIGURATION AND CONSTANTS ---
 
 # --- START: REGEX AND SCORING LOGIC ---
@@ -95,6 +134,9 @@ NEGATIVE_REGEX = [
     # Legal & Compliance
     r"\b(impressum|imprint|legal|disclaimer|compliance|datenschutz|data-protection|privacy|terms|cookies?|policy|governance|bylaws|tax[-_]strategy)\b", r"\b(agb|bedingungen|rechtliches|politica-de-privacidad|aviso-legal|terminos|condiciones)\b",
     r"\b(terms[-_]of[-_]sales?|conditions[-_]of[-_]sales?|terms[-_]of[-_]service|general[-_]conditions[-_]of[-_]sales?|general[-_]conditions)\b",
+
+    # Website Tools & Overly Specific Content
+    r"\b(finder|selector|database|catalog|category|categories)\b",
     
     # Subscriptions & Marketing
     r"\b(newsletter|subscribe|subscription|unsubscribe|boletin|suscripcion|darse-de-baja)\b",
@@ -142,10 +184,11 @@ def _compile_patterns():
     global COMPILED_PATTERNS
     
     pattern_groups = {
-        "critical": [r"\b(brand|purpose|values|strategy|products|services|operations)\b"],
-        "high": [r"company", r"about", r"story", r"mission", r"vision", r"culture", r"who[-_]we[-_]are", r"what[-_]we[-_]do", r"investors?"],
-        "medium": [r"solutions", r"pipeline", r"research", r"innovation", r"capabilities", r"industries", r"technology"],
-        "low": [r"leadership", r"team", "management", r"history", r"sustainability", r"responsibility", r"esg"],
+        "identity": [r"\b(brand|purpose|values|mission|vision)\b"],
+        "strategy": [r"\b(strategy|about|company|who[-_]we[-_]are)\b"],
+        "operations": [r"\b(products|services|solutions|operations|what[-_]we[-_]do)\b"],
+        "culture": [r"\b(story|culture|innovation|sustainability|responsibility|esg)\b"],
+        "people": [r"\b(leadership|team|management|history)\b"],
         "language": [r"/en/", r"lang=en"],
         "negative": NEGATIVE_REGEX
     }
@@ -157,81 +200,77 @@ def _compile_patterns():
 _compile_patterns()
 
 LINK_SCORE_MAP = {
-    "critical": {"patterns": COMPILED_PATTERNS["critical"], "score": 30},
-    "high": {"patterns": COMPILED_PATTERNS["high"], "score": 20},
-    "medium": {"patterns": COMPILED_PATTERNS["medium"], "score": 10},
-    "low": {"patterns": COMPILED_PATTERNS["low"], "score": 5},
-    "language": {"patterns": COMPILED_PATTERNS["language"], "score": 10},
-    "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": -50}
+    "identity": {"patterns": COMPILED_PATTERNS["identity"], "score": BUSINESS_TIER_SCORES["identity"]},
+    "strategy": {"patterns": COMPILED_PATTERNS["strategy"], "score": BUSINESS_TIER_SCORES["strategy"]},
+    "operations": {"patterns": COMPILED_PATTERNS["operations"], "score": BUSINESS_TIER_SCORES["operations"]},
+    "culture": {"patterns": COMPILED_PATTERNS["culture"], "score": BUSINESS_TIER_SCORES["culture"]},
+    "people": {"patterns": COMPILED_PATTERNS["people"], "score": BUSINESS_TIER_SCORES["people"]},
+    "language": {"patterns": COMPILED_PATTERNS["language"], "score": SCORING_CONSTANTS["LANGUAGE_BONUS"]},
+    "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": SCORING_CONSTANTS["NEGATIVE_VETO_SCORE"]}
 }
 
-def score_link(link_url: str, link_text: str) -> int:
+def score_link(link_url: str, link_text: str) -> Tuple[int, str]:
     score = 0
+    rationale = []
     lower_text = link_text.lower()
     combined_text = f"{link_url} {lower_text}"
 
     # Language selection penalty
     language_names = ['english', 'español', 'deutsch', 'français', 'português', 'en', 'es', 'de', 'fr', 'pt']
     if lower_text in language_names:
-        score -= 20
+        score -= SCORING_CONSTANTS["LANGUAGE_PENALTY"]
 
-    # PHASE 1: Calculate positive score based on highest-value keyword match (first past the post)
-    tier_order = ["critical", "high", "medium", "low"]
-    assigned_score = False
-    matched_tier = None
-    
+    # --- Main Keyword Scoring (First Past the Post) ---
+    tier_order = ["identity", "strategy", "operations", "culture", "people"]
+    is_critical = False
     for tier_name in tier_order:
-        tier = LINK_SCORE_MAP[tier_name]
+        tier = LINK_SCORE_MAP[tier_name] 
         for compiled_pattern in tier["patterns"]:
             if compiled_pattern.search(combined_text):
                 score += tier["score"]
-                assigned_score = True
-                matched_tier = tier_name
+                rationale.append(f"Base: {tier['score']} ({tier_name})")
+                if tier_name in ["identity", "strategy"]:
+                    is_critical = True
                 break
-        if assigned_score:
+        if rationale:
             break
 
-    # Language bonus (separate from tier scoring)
+    # --- Negative Keyword Scoring (Always runs) ---
+    for compiled_pattern in LINK_SCORE_MAP["negative"]["patterns"]:
+        if compiled_pattern.search(combined_text):
+            score += LINK_SCORE_MAP["negative"]["score"]
+            rationale.append(f"Veto: {LINK_SCORE_MAP['negative']['score']}")
+            break
+
+    # --- Bonuses and Penalties ---
     language_patterns = LINK_SCORE_MAP['language']['patterns']
     for compiled_pattern in language_patterns:
         if compiled_pattern.search(combined_text):
             score += LINK_SCORE_MAP['language']['score']
-            break  # Only apply language bonus once
+            rationale.append(f"Lang: +{LINK_SCORE_MAP['language']['score']}")
+            break
 
-    # PHASE 2: Always check for negative patterns as a veto (decoupled from positive scoring)
-    for compiled_pattern in LINK_SCORE_MAP["negative"]["patterns"]:
-        if compiled_pattern.search(combined_text):
-            score += LINK_SCORE_MAP["negative"]["score"]  # This is -50
-            break  # Single negative match is enough
-
-    # PHASE 3: Apply path depth penalty with Critical Keyword Safety Net
     try:
         path = urlparse(link_url).path
         # Properly calculate path depth by splitting on '/' and filtering empty segments
         path_segments = [segment for segment in path.split('/') if segment]
         path_depth = len(path_segments)
         
-        if path_depth > 3:
-            # Base penalty: subtract 5 points for each level beyond depth 3
-            penalty = (path_depth - 3) * 5
-            
-            # CRITICAL KEYWORD SAFETY NET: Halve penalty for critical keywords
-            if matched_tier == "critical":
-                penalty = penalty // 2
-                log("debug", f"Applied halved depth penalty of {penalty} to critical keyword at {link_url} (depth: {path_depth})")
-            else:
-                log("debug", f"Applied full depth penalty of {penalty} to {link_url} (depth: {path_depth})")
-            
-            score -= penalty
-
+        if path_depth > SCORING_CONSTANTS["PATH_DEPTH_THRESHOLD"]:
+            penalty = (path_depth - SCORING_CONSTANTS["PATH_DEPTH_THRESHOLD"]) * SCORING_CONSTANTS["PATH_DEPTH_PENALTY"]
+            if is_critical:
+                penalty //= SCORING_CONSTANTS["CRITICAL_KEYWORD_PENALTY_REDUCTION"]
+            if penalty > 0:
+                score -= penalty
+                rationale.append(f"Depth: -{penalty}")
     except Exception:
-        pass  # Ignore parsing errors on malformed URLs
+        pass
 
     # File extension penalty
     if any(link_url.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]): 
-        score -= 100
+        score -= SCORING_CONSTANTS["FILE_EXTENSION_PENALTY"]
         
-    return score
+    return score, " ".join(rationale)
 # --- END: REGEX AND SCORING LOGIC ---
 
 # --- START: HELPER CLASSES AND FUNCTIONS ---
@@ -320,6 +359,48 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
 
 SHARED_CACHE = {}
 load_dotenv()
+
+def validate_configuration():
+    """Validate critical configuration at startup to fail fast if misconfigured."""
+    errors = []
+    
+    # Check required API keys
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key or len(openai_key.strip()) < 10:
+        errors.append("OPENAI_API_KEY environment variable is missing or invalid")
+    
+    # Validate numeric constants
+    try:
+        for key, value in SCORING_CONSTANTS.items():
+            if not isinstance(value, (int, float)):
+                errors.append(f"SCORING_CONSTANTS['{key}'] must be a number, got: {value}")
+            # Allow negative values for penalty scores
+            elif key in ["NEGATIVE_VETO_SCORE"] and value >= 0:
+                errors.append(f"SCORING_CONSTANTS['{key}'] should be negative (penalty), got: {value}")
+            elif key not in ["NEGATIVE_VETO_SCORE"] and value < 0:
+                errors.append(f"SCORING_CONSTANTS['{key}'] should be positive, got: {value}")
+    except Exception as e:
+        errors.append(f"Error validating SCORING_CONSTANTS: {e}")
+    
+    # Validate business tier hierarchy makes sense
+    tier_scores = list(BUSINESS_TIER_SCORES.values())
+    if tier_scores != sorted(tier_scores, reverse=True):
+        errors.append("BUSINESS_TIER_SCORES should be in descending order of priority")
+    
+    # Check file extensions are properly formatted
+    for ext in CONFIG["ignored_extensions"]:
+        if not ext.startswith('.'):
+            errors.append(f"File extension '{ext}' should start with a dot")
+    
+    if errors:
+        error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
+        log("error", error_msg)
+        raise ValueError(error_msg)
+    else:
+        log("info", "✅ Configuration validation passed")
+
+# Validate configuration on import
+validate_configuration()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Memory management configuration
@@ -709,12 +790,12 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
 
     for link_url, link_text in discovered_links:
         if "http" in link_url and _get_root_word(link_url) == initial_root_word and urlparse(link_url).netloc != initial_netloc:
-            score = score_link(link_url, link_text)
+            score, _ = score_link(link_url, link_text)  # Unpack tuple, ignore rationale
             if score > highest_score:
                 highest_score = score
                 best_candidate = link_url
     
-    if highest_score > 25:
+    if highest_score > SCORING_CONSTANTS["HIGH_VALUE_PORTAL_THRESHOLD"]:
         log("info", f"High-quality portal found with score {highest_score}. Pivoting to: {best_candidate}")
         return best_candidate
     else:
@@ -942,6 +1023,17 @@ def summarize_results(all_results: list) -> dict:
     return summary
 
 def run_full_scan_stream(url: str, cache: dict):
+    # Bulletproof environment detection
+    IS_PRODUCTION = (
+        os.getenv('SCANNER_ENV', '').lower() == 'production' or
+        os.getenv('RENDER_SERVICE_ID', '') != '' or
+        os.getenv('RENDER', '').lower() == 'true' or
+        'render.com' in os.getenv('RENDER_EXTERNAL_URL', '')
+    )
+    
+    processing_mode = "Sequential (Production)" if IS_PRODUCTION else "Parallel (Development)"
+    log("info", f"Environment: {processing_mode} processing mode enabled")
+    
     circuit_breaker = CircuitBreaker(failure_threshold=CONFIG["circuit_breaker_threshold"])
     try:
         # Validate URL before processing
@@ -1014,23 +1106,20 @@ def run_full_scan_stream(url: str, cache: dict):
             cleaned_url = _clean_url(link_url)
             if cleaned_url not in unique_urls_for_scoring:
                 unique_urls_for_scoring.add(cleaned_url)
-                score = score_link(cleaned_url, link_text)
-                if score > 0: 
-                    scored_links.append({"url": cleaned_url, "text": link_text, "score": score})
+                score, rationale = score_link(cleaned_url, link_text)
+                if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:  # Business-relevant content threshold
+                    scored_links.append({"url": cleaned_url, "text": link_text, "score": score, "rationale": rationale})
         
         scored_links.sort(key=lambda x: x["score"], reverse=True)
         
-        # Enhanced logging: Format top 10 links with clear scoring breakdown
+        # Enhanced logging with rationale display
         top_10 = scored_links[:10]
-        log("info", f"Top {len(top_10)} most relevant links found:")
+        log("info", f"🎯 Top {len(top_10)} Business-Relevant Links (Score > {SCORING_CONSTANTS['MIN_BUSINESS_SCORE']}):")
         for i, link in enumerate(top_10, 1):
-            # Truncate URL and text for readability
             url_display = link["url"] if len(link["url"]) <= 60 else link["url"][:57] + "..."
             text_display = link["text"] if len(link["text"]) <= 30 else link["text"][:27] + "..."
             log("info", f"  {i}. {url_display} (Score: {link['score']}) - \"{text_display}\"")
-        
-        # Also log the raw data for detailed analysis if needed
-        log("details", top_10)
+            log("info", f"     📝 Rationale: {link['rationale']}")
 
         priority_pages, found_urls = [], set()
         if homepage_url not in found_urls:
@@ -1040,7 +1129,7 @@ def run_full_scan_stream(url: str, cache: dict):
             if link["url"] not in found_urls:
                 priority_pages.append(link["url"]); found_urls.add(link["url"])
         
-        log("info", "Final priority pages selected for analysis", priority_pages)
+        log("info", f"📋 Final priority pages selected for analysis ({len(priority_pages)} pages):", priority_pages)
 
         other_pages_to_screenshot = [p for p in priority_pages if p != homepage_url]
         if other_pages_to_screenshot:
@@ -1053,49 +1142,46 @@ def run_full_scan_stream(url: str, cache: dict):
         
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
         
-        # Use sequential processing on Render to avoid memory exhaustion
-        render_env = os.getenv('RENDER', '').lower()
-        render_url = os.getenv('RENDER_EXTERNAL_URL', '')
-        is_render = render_env == 'true' or (render_url and 'render.com' in render_url)
-        
-        if is_render or len(other_pages_to_fetch) <= 2:
-            # Sequential processing for memory-constrained environments
-            log("info", f"Using sequential processing for {len(other_pages_to_fetch)} pages (Render deployment detected)")
+        # Hybrid processing logic
+        if IS_PRODUCTION or len(other_pages_to_fetch) <= 2:
+            # Sequential processing for production environments
+            log("info", f"🔄 Using sequential processing for {len(other_pages_to_fetch)} pages (Production mode)")
             for url in other_pages_to_fetch:
                 try:
                     _, html = fetch_page_content_robustly(url)
                     if html:
                         page_html_map[url] = html
                         circuit_breaker.record_success()
-                        log("info", f"Sequential fetch successful for {url}")
+                        log("info", f"✅ Sequential fetch successful for {url}")
                     else:
-                        log("warn", f"Sequential fetch for {url} returned no content.")
+                        log("warn", f"⚠️ Sequential fetch for {url} returned no content.")
                         circuit_breaker.record_failure()
                     
                     # Force garbage collection after each page to manage memory
                     gc.collect()
                 except Exception as e:
-                    log("error", f"Sequential fetch for {url} failed: {e}")
+                    log("error", f"❌ Sequential fetch for {url} failed: {e}")
                     circuit_breaker.record_failure()
                     # Continue with other pages even if one fails
                     continue
         else:
-            # Parallel processing for local/high-memory environments
-            log("info", f"Using parallel processing for {len(other_pages_to_fetch)} pages")
-            with ProcessPoolExecutor(max_workers=2) as executor:  # Reduced from 4 to 2
+            # Parallel processing for local/development environments
+            log("info", f"⚡ Using parallel processing for {len(other_pages_to_fetch)} pages (Development mode)")
+            with ProcessPoolExecutor(max_workers=2) as executor:
                 future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
                 for future in future_to_url:
                     url = future_to_url[future]
                     try:
-                        _, html = future.result(timeout=60)  # Add timeout
+                        _, html = future.result(timeout=60)
                         if html:
                             page_html_map[url] = html
                             circuit_breaker.record_success()
+                            log("info", f"✅ Parallel fetch successful for {url}")
                         else:
-                            log("warn", f"Parallel fetch for {url} returned no content.")
+                            log("warn", f"⚠️ Parallel fetch for {url} returned no content.")
                             circuit_breaker.record_failure()
                     except Exception as e:
-                        log("error", f"Parallel fetch for {url} failed: {e}")
+                        log("error", f"❌ Parallel fetch for {url} failed: {e}")
                         circuit_breaker.record_failure()
 
         text_corpus = ""
@@ -1110,7 +1196,7 @@ def run_full_scan_stream(url: str, cache: dict):
         # Limit corpus length to prevent memory exhaustion and improve AI analysis quality
         full_corpus = (text_corpus + social_corpus)[:MAX_CORPUS_LENGTH]
         if len(text_corpus + social_corpus) > MAX_CORPUS_LENGTH:
-            log("info", f"Text corpus truncated from {len(text_corpus + social_corpus)} to {MAX_CORPUS_LENGTH} characters")
+            log("info", f"📄 Text corpus truncated from {len(text_corpus + social_corpus)} to {MAX_CORPUS_LENGTH} characters")
 
         yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
         brand_summary = call_openai_for_synthesis(full_corpus)
@@ -1141,7 +1227,7 @@ def run_full_scan_stream(url: str, cache: dict):
         quantitative_summary = summarize_results(all_results)
         yield {'type': 'quantitative_summary', 'data': quantitative_summary}
         
-        yield {'type': 'complete', 'message': 'Analysis finished.'}
+        yield {'type': 'complete', 'message': f'✅ Analysis complete! Used {processing_mode} processing.'}
 
     except Exception as e:
         log("error", f"The main stream failed: {e}")
