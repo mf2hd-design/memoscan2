@@ -57,13 +57,90 @@ from typing import Optional, Dict, List, Tuple
 
 # --- START: HELPER FUNCTIONS ---
 
+def safe_api_key(key: str) -> str:
+    """Safely format API keys for logging by masking most characters."""
+    if not key or len(key) < 8:
+        return "INVALID"
+    return f"{key[:4]}...{key[-4:]}"
+
+def retry_with_backoff(func, max_retries=3, base_delay=1, exceptions=(Exception,)):
+    """Retry function with exponential backoff."""
+    import random
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except exceptions as e:
+            if attempt == max_retries - 1:
+                raise e
+            
+            # Exponential backoff with jitter
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+            log("info", f"🔄 RETRY ATTEMPT {attempt + 1}/{max_retries} after {delay:.2f}s: {type(e).__name__}")
+            time.sleep(delay)
+
+def cleanup_process_pool(executor):
+    """Clean up process pool to prevent zombie processes."""
+    try:
+        executor.shutdown(wait=True, timeout=30)
+        log("info", "✅ Process pool cleanly shutdown")
+    except Exception as e:
+        log("error", f"❌ Failed to cleanly shutdown process pool: {e}")
+        # Force terminate remaining processes if possible
+        if hasattr(executor, '_processes'):
+            for process in executor._processes.values():
+                if process.is_alive():
+                    log("warn", f"🔪 Force terminating process {process.pid}")
+                    process.terminate()
+
+# Environment-based log level configuration
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_LEVELS = {'DEBUG': 0, 'INFO': 1, 'WARN': 2, 'ERROR': 3}
+
+def should_log(level: str) -> bool:
+    """Check if message should be logged based on configured log level."""
+    return LOG_LEVELS.get(level.upper(), 1) >= LOG_LEVELS.get(LOG_LEVEL, 1)
+
 def log(level, message, data=None):
     import json
-    formatted_message = f"[{level.upper()}] {message}"
-    print(formatted_message, flush=True)
-    if data:
-        details_message = f"[DETAILS] {json.dumps(data, indent=2, ensure_ascii=False)}"
-        print(details_message, flush=True)
+    import time
+    if not should_log(level):
+        return
+    
+    # Check if we should use structured JSON logging
+    use_json_logging = os.getenv('JSON_LOGGING', 'false').lower() == 'true'
+    
+    if use_json_logging:
+        # Structured JSON logging for production
+        log_entry = {
+            "timestamp": time.time(),
+            "level": level.upper(),
+            "message": message,
+            "service": "memoscan2-scanner"
+        }
+        
+        if data:
+            # Sanitize sensitive data before logging
+            safe_data = data
+            if isinstance(data, dict):
+                safe_data = {k: safe_api_key(v) if k.lower().endswith(('key', 'token', 'secret')) and isinstance(v, str) else v 
+                            for k, v in data.items()}
+            log_entry["data"] = safe_data
+        
+        print(json.dumps(log_entry, ensure_ascii=False), flush=True)
+    else:
+        # Traditional logging format
+        formatted_message = f"[{level.upper()}] {message}"
+        print(formatted_message, flush=True)
+        if data:
+            # Sanitize sensitive data before logging
+            safe_data = data
+            if isinstance(data, dict):
+                safe_data = {k: safe_api_key(v) if k.lower().endswith(('key', 'token', 'secret')) and isinstance(v, str) else v 
+                            for k, v in data.items()}
+            details_message = f"[DETAILS] {json.dumps(safe_data, indent=2, ensure_ascii=False)}"
+            print(details_message, flush=True)
 
 def _get_sld(url: str) -> str:
     """Extracts the Second-Level Domain (e.g., 'google.com', 'google.co.uk')."""
@@ -143,6 +220,14 @@ def detect_primary_language(html_content: str) -> str:
 # --- END: HELPER FUNCTIONS ---
 
 # --- START: CONFIGURATION AND CONSTANTS ---
+# Environment-configurable timeouts and limits
+TIMEOUTS = {
+    "scrapfly_request": int(os.getenv('SCRAPFLY_TIMEOUT', '180')),
+    "playwright_page_load": int(os.getenv('PLAYWRIGHT_TIMEOUT', '90000')),  # in milliseconds
+    "playwright_screenshot": int(os.getenv('SCREENSHOT_TIMEOUT', '60')),
+    "openai_request": int(os.getenv('OPENAI_TIMEOUT', '120')),
+}
+
 CONFIG = {
     "retries": 3,
     "rate_limit_delay": 1,
@@ -355,45 +440,73 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
     if not api_key:
         log("error", "❌ SCRAPFLY_KEY environment variable not set.")
         return None, None
+    
+    def _make_request():
+        return _scrapfly_request_inner(url, api_key, take_screenshot)
+    
     try:
-        # Note: Not specifying "format" parameter means Scrapfly returns raw HTML in result.content
-        params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "domcontentloaded", "rendering_wait": 3000, "retry": True, "country": "us", "proxy_pool": "public_residential_pool"}
-        if take_screenshot:
-            params["screenshots[main]"] = "fullpage"
-            params["screenshot_flags"] = "load_images,block_banners"
-        with httpx.Client(proxies=None) as client:
-            response = client.get("https://api.scrapfly.io/scrape", params=params, timeout=180)
-            response.raise_for_status()
-            data = response.json()
+        # Retry transient errors with exponential backoff
+        return retry_with_backoff(
+            _make_request, 
+            max_retries=3, 
+            base_delay=1,
+            exceptions=(httpx.TimeoutError, httpx.ConnectError)
+        )
+    except (httpx.HTTPStatusError, Exception) as e:
+        # Don't retry client errors (4xx) or other non-transient issues
+        return _handle_scrapfly_error(url, e)
+
+def _scrapfly_request_inner(url: str, api_key: str, take_screenshot: bool):
+    # Note: Not specifying "format" parameter means Scrapfly returns raw HTML in result.content
+    params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "domcontentloaded", "rendering_wait": 3000, "retry": True, "country": "us", "proxy_pool": "public_residential_pool"}
+    if take_screenshot:
+        params["screenshots[main]"] = "fullpage"
+        params["screenshot_flags"] = "load_images,block_banners"
+    with httpx.Client(proxies=None) as client:
+        response = client.get("https://api.scrapfly.io/scrape", params=params, timeout=TIMEOUTS["scrapfly_request"])
+        response.raise_for_status()
+        data = response.json()
+        
+        # Get raw HTML content from Scrapfly response
+        html_content = data["result"]["content"]
+        
+        # DIAGNOSTIC: Log what Scrapfly actually returned
+        if html_content:
+            log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
+        else:
+            log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
             
-            # Get raw HTML content from Scrapfly response
-            html_content = data["result"]["content"]
-            
-            # DIAGNOSTIC: Log what Scrapfly actually returned
-            if html_content:
-                log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
-            else:
-                log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
-                
-            screenshot_b64 = None
-            if take_screenshot and "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
-                screenshot_url = data["result"]["screenshots"]["main"]["url"]
-                log("info", f"📸 SCRAPFLY SCREENSHOT URL: {screenshot_url}")
-                img_response = client.get(screenshot_url, params={"key": api_key}, timeout=60)
-                img_response.raise_for_status()
-                screenshot_b64 = base64.b64encode(img_response.content).decode('utf-8')
-                log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes")
-            elif take_screenshot:
-                log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
-            return screenshot_b64, html_content
-    except Exception as e:
+        screenshot_b64 = None
+        if take_screenshot and "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
+            screenshot_url = data["result"]["screenshots"]["main"]["url"]
+            log("info", f"📸 SCRAPFLY SCREENSHOT URL: {screenshot_url}")
+            img_response = client.get(screenshot_url, params={"key": api_key}, timeout=TIMEOUTS["playwright_screenshot"])
+            img_response.raise_for_status()
+            screenshot_b64 = base64.b64encode(img_response.content).decode('utf-8')
+            log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes")
+        elif take_screenshot:
+            log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
+        return screenshot_b64, html_content
+
+def _handle_scrapfly_error(url: str, e: Exception) -> Tuple[None, None]:
+    """Handle different types of Scrapfly errors with appropriate logging."""
+    if isinstance(e, httpx.TimeoutError):
+        log("warn", f"⏱️ SCRAPFLY TIMEOUT for {url}: Request timed out after {TIMEOUTS['scrapfly_request']}s")
+    elif isinstance(e, httpx.HTTPStatusError):
+        if e.response.status_code == 429:
+            log("warn", f"🚫 SCRAPFLY RATE LIMIT for {url}: Too many requests")
+        elif e.response.status_code == 422:
+            log("warn", f"❌ SCRAPFLY VALIDATION ERROR for {url}: {e.response.text[:200]}")
+        else:
+            log("error", f"❌ SCRAPFLY HTTP ERROR {e.response.status_code} for {url}: {e.response.text[:200]}")
+    else:
         error_msg = str(e)
         if "UNABLE_TO_TAKE_SCREENSHOT" in error_msg:
-            log("warn", f"⏱️ SCRAPFLY TIMEOUT - Screenshot budget exceeded for {url}: {e}")
+            log("warn", f"⏱️ SCRAPFLY SCREENSHOT TIMEOUT for {url}: Screenshot budget exceeded")
             log("info", f"🔄 FALLING BACK TO PLAYWRIGHT for screenshot capture")
         else:
-            log("error", f"Scrapfly error for {url}: {e}")
-        return None, None
+            log("error", f"❌ SCRAPFLY UNEXPECTED ERROR for {url}: {type(e).__name__}: {e}")
+    return None, None
 
 def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     log("info", f"Activating Playwright fallback for URL: {url} (Screenshot: {take_screenshot})")
@@ -402,7 +515,7 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(user_agent=get_random_user_agent())
             page = context.new_page()
-            page.goto(url, wait_until="load", timeout=90000)
+            page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
             prepare_page_for_capture(page)
             
             html_content = page.content()
@@ -426,8 +539,15 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
             return None, None
 
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
+    MAX_HTML_SIZE = 10 * 1024 * 1024  # 10MB limit
+    
     try:
         screenshot, html = _fetch_page_data_scrapfly(url, take_screenshot=take_screenshot)
+        
+        # Check and limit HTML size to prevent memory issues
+        if html and len(html) > MAX_HTML_SIZE:
+            log("warn", f"📄 HTML CONTENT TOO LARGE for {url}: {len(html)} bytes, truncating to {MAX_HTML_SIZE}")
+            html = html[:MAX_HTML_SIZE]
         # Enhanced HTML validation - check for actual HTML content, not just '<' prefix
         if html and html.strip():
             html_lower = html.lower().strip()
@@ -1143,7 +1263,7 @@ def capture_screenshots_playwright(urls):
                     log("info", f"Ignoring non-HTML link for screenshot: {url}")
                     continue
                 log("info", f"Navigating to {url}")
-                page.goto(url, wait_until="load", timeout=90000)
+                page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
                 prepare_page_for_capture(page)
                 img_bytes = page.screenshot(full_page=True, type="jpeg", quality=70)
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
@@ -1432,7 +1552,8 @@ def run_full_scan_stream(url: str, cache: dict):
             log("info", f"⚡ Using parallel processing for {len(other_pages_to_fetch)} pages (Development mode)")
             yield debug_yield({'type': 'activity', 'message': f'⚡ Fetching {len(other_pages_to_fetch)} priority pages (parallel)...', 'timestamp': time.time()})
             
-            with ProcessPoolExecutor(max_workers=2) as executor:
+            executor = ProcessPoolExecutor(max_workers=2)
+            try:
                 future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
                 completed_count = 0
                 total_count = len(other_pages_to_fetch)
@@ -1455,6 +1576,9 @@ def run_full_scan_stream(url: str, cache: dict):
                         log("error", f"❌ Parallel fetch for {url} failed: {e}")
                         circuit_breaker.record_failure()
                         yield debug_yield({'type': 'activity', 'message': f'❌ Page {completed_count}/{total_count} fetch failed', 'timestamp': time.time()})
+            finally:
+                # Ensure proper cleanup
+                cleanup_process_pool(executor)
 
         yield debug_yield({'type': 'activity', 'message': f'📝 Extracting text from {len(priority_pages)} pages...', 'timestamp': time.time()})        
         text_corpus = ""
