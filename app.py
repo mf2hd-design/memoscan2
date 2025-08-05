@@ -7,6 +7,7 @@ gevent.monkey.patch_all()
 import os
 import base64
 import time
+import uuid
 from collections import defaultdict, deque
 from flask import Flask, request, send_from_directory, send_file, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
@@ -22,7 +23,43 @@ RATE_LIMIT_REQUESTS = 5  # requests per window
 RATE_LIMIT_WINDOW = 300  # 5 minutes in seconds
 rate_limit_store = defaultdict(deque)
 
+# Request timeout and concurrency protection
+REQUEST_TIMEOUT = 600  # 10 minutes maximum per scan
+MAX_CONCURRENT_SCANS = 10  # per server instance
+active_scans = {}  # {scan_id: start_time}
+
 class RateLimiter:
+    last_cleanup = time.time()
+    CLEANUP_INTERVAL = 3600  # 1 hour cleanup cycle
+    
+    @staticmethod
+    def _cleanup_old_entries():
+        """Periodically clean up old IP entries to prevent memory growth."""
+        now = time.time()
+        if now - RateLimiter.last_cleanup > RateLimiter.CLEANUP_INTERVAL:
+            cutoff_time = now - RATE_LIMIT_WINDOW
+            ips_to_remove = []
+            
+            for ip, requests in rate_limit_store.items():
+                # Remove old requests from each IP
+                while requests and requests[0] < cutoff_time:
+                    requests.popleft()
+                # Mark completely empty entries for removal
+                if not requests:
+                    ips_to_remove.append(ip)
+            
+            # Clean up empty IP entries
+            removed_count = 0
+            for ip in ips_to_remove:
+                if ip in rate_limit_store:  # Double-check existence
+                    del rate_limit_store[ip]
+                    removed_count += 1
+            
+            if removed_count > 0:
+                print(f"Rate limiter cleanup: removed {removed_count} inactive IP entries", flush=True)
+            
+            RateLimiter.last_cleanup = now
+    
     @staticmethod
     def is_rate_limited(client_ip: str) -> tuple[bool, str]:
         """Check if client is rate limited.
@@ -30,6 +67,9 @@ class RateLimiter:
         Returns:
             tuple: (is_limited, message)
         """
+        # Perform periodic cleanup to prevent memory leaks
+        RateLimiter._cleanup_old_entries()
+        
         now = time.time()
         client_requests = rate_limit_store[client_ip]
         
@@ -64,11 +104,29 @@ else:
 
 socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
 
-def run_scan_in_background(sid, data):
+def cleanup_expired_scans():
+    """Remove expired scans to prevent resource leaks."""
+    now = time.time()
+    expired_scans = [scan_id for scan_id, start_time in active_scans.items() 
+                     if now - start_time > REQUEST_TIMEOUT]
+    
+    for scan_id in expired_scans:
+        del active_scans[scan_id]
+    
+    if expired_scans:
+        print(f"Cleaned up {len(expired_scans)} expired scans", flush=True)
+
+def run_scan_in_background(sid, data, scan_id=None):
     url = data.get("url")
-    print(f"BACKGROUND SCAN STARTED for SID: {sid} on URL: {url}", flush=True)
+    print(f"BACKGROUND SCAN STARTED for SID: {sid} on URL: {url} (scan_id: {scan_id})", flush=True)
+    
     try:
         for update in run_full_scan_stream(url, SHARED_CACHE):
+            # Check if scan has been cancelled or expired
+            if scan_id and scan_id not in active_scans:
+                print(f"Scan {scan_id} was cancelled or expired, stopping", flush=True)
+                break
+                
             socketio.emit("scan_update", update, room=sid)
             socketio.sleep(0)
     except ValueError as e:
@@ -102,7 +160,10 @@ def run_scan_in_background(sid, data):
             "message": "An unexpected error occurred. Please try again later."
         }, room=sid)
     finally:
-        print(f"BACKGROUND SCAN FINISHED for SID: {sid}", flush=True)
+        # Clean up scan tracking
+        if scan_id and scan_id in active_scans:
+            del active_scans[scan_id]
+        print(f"BACKGROUND SCAN FINISHED for SID: {sid} (scan_id: {scan_id})", flush=True)
 
 @socketio.on('connect')
 def handle_connect():
@@ -126,6 +187,20 @@ def get_screenshot(screenshot_id):
     img_data = base64.b64decode(img_base64)
     return send_file(BytesIO(img_data), mimetype='image/png')
 
+@app.route("/health")
+def health_check():
+    """Health check endpoint for monitoring and load balancers."""
+    cleanup_expired_scans()  # Clean up while we're checking health
+    
+    return jsonify({
+        "status": "healthy",
+        "active_scans": len(active_scans),
+        "cache_size": len(SHARED_CACHE),
+        "rate_limit_ips": len(rate_limit_store),
+        "timestamp": time.time(),
+        "version": "2.0.0"
+    }), 200
+
 @app.route("/feedback", methods=["POST"])
 def handle_feedback():
     try:
@@ -146,6 +221,15 @@ def handle_feedback():
 
 @socketio.on('start_scan')
 def handle_start_scan(data):
+    # Clean up expired scans first
+    cleanup_expired_scans()
+    
+    # Check concurrent scan limit
+    if len(active_scans) >= MAX_CONCURRENT_SCANS:
+        emit("scan_update", {"type": "error", "message": "Server is busy. Please try again in a few minutes."})
+        print(f"Rejected scan request: {len(active_scans)} concurrent scans already running", flush=True)
+        return
+    
     # Get client IP for rate limiting
     client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.environ.get('REMOTE_ADDR', 'unknown'))
     
@@ -169,5 +253,9 @@ def handle_start_scan(data):
         print(f"URL validation failed for {url}: {error_msg}", flush=True)
         return
 
-    socketio.start_background_task(run_scan_in_background, request.sid, data)
-    print(f"Dispatched scan to background task for SID: {request.sid} from IP: {client_ip}", flush=True)
+    # Create scan tracking ID and register the scan
+    scan_id = str(uuid.uuid4())
+    active_scans[scan_id] = time.time()
+    
+    socketio.start_background_task(run_scan_in_background, request.sid, data, scan_id)
+    print(f"Dispatched scan to background task for SID: {request.sid} from IP: {client_ip} (scan_id: {scan_id})", flush=True)
