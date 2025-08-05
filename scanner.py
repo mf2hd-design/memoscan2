@@ -408,15 +408,31 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
             return screenshot, html
         else:
             if not html:
-                log("warn", f"Scrapfly returned empty content for {url}, falling back to Playwright.")
+                log("warn", f"Scrapfly returned empty content for {url}, falling back to Playwright for HTML.")
             else:
-                log("warn", f"Scrapfly returned non-HTML content for {url}, falling back to Playwright.")
-            html = fetch_html_with_playwright(url)
-            return None, html
+                log("warn", f"Scrapfly returned non-HTML content for {url}, falling back to Playwright for HTML.")
+            
+            # CRITICAL FIX: Preserve screenshot even when falling back to Playwright for HTML
+            if take_screenshot and screenshot:
+                log("info", f"🔧 PRESERVING SCRAPFLY SCREENSHOT: {len(screenshot)} bytes while using Playwright HTML")
+                html = fetch_html_with_playwright(url)
+                return screenshot, html  # ← Keep the screenshot!
+            else:
+                html = fetch_html_with_playwright(url)
+                return None, html
     except Exception as e:
         log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright.")
+        # Try to get screenshot from failed Scrapfly call
+        screenshot = None
+        try:
+            screenshot, _ = _fetch_page_data_scrapfly(url, take_screenshot=take_screenshot)
+            if screenshot:
+                log("info", f"🔧 RECOVERED SCRAPFLY SCREENSHOT: {len(screenshot)} bytes after HTML failure")
+        except:
+            pass
+        
         html = fetch_html_with_playwright(url)
-        return None, html
+        return screenshot, html
 
 # --- END: HELPER CLASSES AND FUNCTIONS ---
 
