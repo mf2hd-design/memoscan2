@@ -1,29 +1,4 @@
-print(">>> RUNNING FIXED SCANNER VERSION <<<")
-from datetime import datetime
-
-def timestamp():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-
-def _get_sld(url):
-    from urllib.parse import urlparse
-    try:
-        netloc = urlparse(url).netloc
-        if not netloc:
-            return ""
-        # FIX: Added logic to strip 'www.' for more accurate domain comparison
-        if netloc.startswith('www.'):
-            netloc = netloc[4:]
-        parts = netloc.split('.')
-        return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
-    except Exception as e:
-        print(f"[{timestamp()}] [ERROR] Failed to extract SLD: {e}")
-        return ""
-
-def _is_same_brand_domain(url1: str, url2: str) -> bool:
-    return _get_sld(url1) == _get_sld(url2)
-
+print(">>> RUNNING 9:46 SCANNER VERSION <<<")
 import os
 import re
 import json
@@ -57,6 +32,49 @@ def build_scrapfly_url(target_url: str, api_key: str) -> str:
 from playwright.sync_api import sync_playwright
 from typing import Optional, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
+
+# --- START: HELPER FUNCTIONS ---
+
+def log(level, message, data=None):
+    import json
+    formatted_message = f"[{level.upper()}] {message}"
+    print(formatted_message, flush=True)
+    if data:
+        details_message = f"[DETAILS] {json.dumps(data, indent=2, ensure_ascii=False)}"
+        print(details_message, flush=True)
+
+def _get_sld(url: str) -> str:
+    """Extracts the Second-Level Domain (e.g., 'google.com', 'google.co.uk')."""
+    try:
+        netloc = urlparse(url).netloc
+        if not netloc:
+            return ""
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]
+        parts = netloc.split('.')
+        return ".".join(parts[-2:]) if len(parts) >= 2 else netloc
+    except Exception as e:
+        log("error", f"Failed to extract SLD: {e}")
+        return ""
+
+def _get_root_word(url: str) -> str:
+    """Extracts the central 'word' of a domain (e.g., 'google' from 'www.google.co.uk')."""
+    try:
+        netloc = urlparse(url).netloc
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]
+        parts = netloc.split('.')
+        if len(parts) > 2 and parts[-2] in ('co', 'com', 'org', 'net', 'gov', 'edu'):
+            return parts[-3]
+        return parts[-2] if len(parts) >= 2 else parts[0]
+    except Exception:
+        return ""
+
+def _is_same_brand_domain(url1: str, url2: str) -> bool:
+    """Checks if two URLs belong to the same brand domain using SLD."""
+    return _get_sld(url1) == _get_sld(url2)
+
+# --- END: HELPER FUNCTIONS ---
 
 # --- START: CONFIGURATION AND CONSTANTS ---
 CONFIG = {
@@ -121,28 +139,6 @@ class CircuitBreaker:
         if self.failures >= self.failure_threshold: raise Exception(f"Circuit breaker triggered after {self.failures} consecutive failures.")
     def record_success(self): self.failures = 0
 
-
-
-def log(level, message, data=None): #FIX: Simplified logging and removed misplaced code
-    import json
-    formatted_message = f"[{timestamp()}] [{level.upper()}] {message}"
-    print(formatted_message, flush=True)
-    if data:
-        details_message = f"[{timestamp()}] [DETAILS] {json.dumps(data, indent=2, ensure_ascii=False)}"
-        print(details_message, flush=True)
-
-def _is_same_brand_domain(url1: str, url2: str) -> bool:
-    domain1 = _get_sld(url1)
-    domain2 = _get_sld(url2)
-    result = domain1 == domain2
-    # Debug logging for first few checks
-    if not hasattr(_is_same_brand_domain, 'log_count'):
-        _is_same_brand_domain.log_count = 0
-    if _is_same_brand_domain.log_count < 5:
-        log("debug", f"Domain check: {url1} ({domain1}) vs {url2} ({domain2}) = {result}")
-        _is_same_brand_domain.log_count += 1
-    return result
-
 def _sanitize_href(href: str) -> str:
     if not href: return ""
     return href.replace('\\"', '').replace('\\', '').strip().strip('"\'')
@@ -187,8 +183,6 @@ def fetch_html_with_playwright(url: str, retried: bool = False) -> Optional[str]
             page.goto(url, wait_until="load", timeout=90000)
             prepare_page_for_capture(page)
             
-            # Hovering logic was removed in the previous iteration based on user feedback.
-
             html_content = page.content()
             browser.close()
             return html_content
@@ -202,7 +196,6 @@ def fetch_html_with_playwright(url: str, retried: bool = False) -> Optional[str]
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     try:
         screenshot, html = _fetch_page_data_scrapfly(url, take_screenshot=take_screenshot)
-        # FIX: Add validation to ensure the returned content is actually HTML, not JSON.
         if html and html.strip().startswith('<'):
             log("info", "Scrapfly returned valid HTML content.")
             return screenshot, html
@@ -212,11 +205,11 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
             else:
                 log("warn", f"Scrapfly returned non-HTML content for {url}, falling back to Playwright.")
             html = fetch_html_with_playwright(url)
-            return None, html # Playwright fallback doesn't return screenshot
+            return None, html
     except Exception as e:
         log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright.")
         html = fetch_html_with_playwright(url)
-        return None, html # Playwright fallback doesn't return screenshot
+        return None, html
 
 def fetch_all_pages(urls: list[str]) -> Dict[str, Optional[str]]:
     results = {}
@@ -239,7 +232,6 @@ def summarize_results(all_results: list) -> dict:
     summary = {"keys_analyzed": len(all_results), "strong_keys": 0, "weak_keys": 0}
     for result in all_results:
         if 'analysis' in result and 'score' in result['analysis']:
-            # Assuming score is now out of 5 from the AI, adjust thresholds for summary
             if result["analysis"]["score"] >= 4: summary["strong_keys"] += 1
             elif result["analysis"]["score"] <= 2: summary["weak_keys"] += 1
     return summary
@@ -258,7 +250,7 @@ def record_feedback(analysis_id: str, key_name: str, feedback_type: str, comment
         "timestamp": time.time(),
         "analysis_id": analysis_id,
         "key_name": key_name,
-        "feedback_type": feedback_type, # e.g., "thumbs_up", "thumbs_down", "comment"
+        "feedback_type": feedback_type,
         "comment": comment
     }
     try:
@@ -284,10 +276,9 @@ def prepare_page_for_capture(page, max_ms=45000):
             consent_clicked = True
             break
         except Exception: 
-            pass # Button not found or clickable, try next.
+            pass
     if not consent_clicked: log("info", "No common consent banner found to click.")
     
-    # Scroll the page to trigger lazy loading
     page.evaluate("""() => { 
         const step = 800; 
         let y = 0; 
@@ -305,7 +296,6 @@ def prepare_page_for_capture(page, max_ms=45000):
         })(); 
     }""")
     
-    # Wait for visual readiness
     try:
         page.wait_for_function("() => { const imagesReady = Array.from(document.images).every(img => img.complete && img.naturalWidth > 0); const fontsReady = !('fonts' in document) || document.fonts.status === 'loaded'; const noSkeletons = !document.querySelector('[class*=skeleton],[data-skeleton],[aria-busy=\"true\"]'); return imagesReady && fontsReady && noSkeletons; }", timeout=15000)
         log("info", "Page is visually ready based on strict check.")
@@ -335,9 +325,6 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
             
             candidate_tags = []
             
-            # First, search within common social media containers (footers, headers, navs, specific divs)
-            # This helps narrow down the search and avoid false positives from main content.
-            # Look for common class names like 'social', 'footer', 'header', 'nav', 'contact', 'follow', 'icons'
             for container_tag in soup.find_all(
                 ['footer', 'header', 'nav', 'div', 'ul', 'p'],
                 class_=re.compile(r'(social|footer|header|contact|follow|icons|menu)', re.IGNORECASE)
@@ -345,38 +332,33 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 for a_tag in container_tag.find_all('a', href=True):
                     candidate_tags.append(a_tag)
 
-            # If still no candidates found in specific containers, broaden the search to all a tags
             if not candidate_tags:
                  for a_tag in soup.find_all('a', href=True):
                     candidate_tags.append(a_tag)
 
-            unique_good_links = set() # Use a set to avoid duplicate URLs
+            unique_good_links = set()
 
             for a_tag in candidate_tags:
                 href = a_tag.get('href', '')
                 aria_label = a_tag.get('aria-label', '').lower()
                 title = a_tag.get('title', '').lower()
-                text = a_tag.get_text(" ", strip=True).lower() # Also check link text
+                text = a_tag.get_text(" ", strip=True).lower()
 
                 is_relevant_link = False
 
-                # 1. Check for direct domain match in href
                 if domain_regex.search(href):
                     is_relevant_link = True
                 
-                # 2. Check aria-label, title, or link text for platform keywords
                 elif any(p.search(aria_label) for p in id_patterns) or \
                      any(p.search(title) for p in id_patterns) or \
                      any(p.search(text) for p in id_patterns):
                     is_relevant_link = True
 
-                # 3. Check class attributes of the <a> tag itself for platform keywords
                 link_classes = ' '.join(a_tag.get('class', [])).lower()
                 if any(p.search(link_classes) for p in id_patterns):
                     is_relevant_link = True
 
-                # 4. Check class attributes/alt text of child <i> or <img> tags for platform keywords
-                child_icon = a_tag.find(['i', 'img', 'svg']) # Added SVG
+                child_icon = a_tag.find(['i', 'img', 'svg'])
                 if child_icon:
                     child_classes = ' '.join(child_icon.get('class', [])).lower()
                     child_alt = child_icon.get('alt', '').lower()
@@ -386,10 +368,9 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
 
                 if is_relevant_link:
                     full_url = urljoin(base_url, href)
-                    # Final validation: Ensure the resolved URL actually points to the correct social domain
                     if domain_regex.search(full_url) and \
                        'intent' not in href and 'share' not in href and \
-                       (platform != 'instagram' or '/p/' not in href): # Filter Instagram short links
+                       (platform != 'instagram' or '/p/' not in href):
                         unique_good_links.add(full_url)
             
             good_links_list = sorted(list(unique_good_links), key=len)
@@ -398,7 +379,7 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 log("warn", f"Found {platform.capitalize()} candidate links, but none were relevant or resolved to the correct domain.")
                 continue
 
-            best_url = good_links_list[0] # Shorter URL is usually the profile base
+            best_url = good_links_list[0]
             
             log("info", f"Found and scraping best {platform.capitalize()} link: {best_url}")
             
@@ -406,7 +387,6 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 res = social_client.get(best_url, timeout=20)
                 if res.is_success:
                     social_soup = BeautifulSoup(res.text, "html.parser")
-                    # Clean the social media page content
                     for tag in social_soup(["script", "style", "nav", "footer", "header", "aside"]): 
                         tag.decompose()
                     final_social_text += f"\n\n--- Social Media Content ({platform.capitalize()}) ---\n" + social_soup.get_text(" ", strip=True)[:2000]
@@ -422,11 +402,15 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
     log("info", "Searching for a better corporate portal...")
     best_candidate = None
     highest_score = 0
-    initial_root = _get_sld(initial_url)
+    initial_root_word = _get_root_word(initial_url)
     initial_netloc = urlparse(initial_url).netloc
 
+    if not initial_root_word:
+        log("warn", "Could not determine initial root word, cannot pivot.")
+        return None
+
     for link_url, link_text in discovered_links:
-        if "http" in link_url and _get_sld(link_url) == initial_root and urlparse(link_url).netloc != initial_netloc:
+        if "http" in link_url and _get_root_word(link_url) == initial_root_word and urlparse(link_url).netloc != initial_netloc:
             score = score_link(link_url, link_text)
             if score > highest_score:
                 highest_score = score
@@ -466,7 +450,7 @@ def discover_links_from_sitemap(homepage_url: str) -> Optional[List[Tuple[str, s
                 if best_sitemap_url: break
 
             if not best_sitemap_url and sitemaps:
-                best_sitemap_url = sitemaps[0] # Fallback to the first sitemap if no priority keywords found
+                best_sitemap_url = sitemaps[0]
             
             if best_sitemap_url:
                 log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url}")
@@ -502,8 +486,7 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
         href = _sanitize_href(href_raw)
         link_url = urljoin(base_url, href)
         
-        # Log what we're checking
-        if all_links_found <= 5:  # Log first 5 for debugging
+        if all_links_found <= 5:
             log("debug", f"Found link: {href_raw} -> {link_url}")
         
         if _is_same_brand_domain(base_url, link_url):
@@ -513,7 +496,6 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
     
     if all_links_found == 0:
         log("warn", "No <a> tags found in HTML. This might be a JavaScript-rendered site.")
-        # Log a snippet of the HTML for debugging
         log("debug", f"HTML snippet (first 500 chars): {html[:500]}")
     
     return links
@@ -564,7 +546,6 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
         response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], response_format={"type": "json_object"}, temperature=0.3)
         result_json = json.loads(response.choices[0].message.content)
         validate_ai_response(result_json, ["score", "analysis", "evidence", "confidence", "confidence_rationale", "recommendation"])
-        # Validate that the score is within the 0-5 range
         if not (0 <= result_json.get("score", -1) <= 5):
             raise ValueError(f"AI returned score {result_json.get('score')} which is not in the 0-5 range.")
         return key_name, result_json
@@ -590,7 +571,7 @@ def capture_screenshots_playwright(urls):
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent=get_random_user_agent())
         page = context.new_page()
-        for url in urls[:4]: # Limit to 4 screenshots as per original logic
+        for url in urls[:4]:
             try:
                 if any(urlparse(url).path.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]):
                     log("info", f"Ignoring non-HTML link for screenshot: {url}")
@@ -629,7 +610,6 @@ def run_full_scan_stream(url: str, cache: dict):
         yield {'type': 'status', 'message': 'Step 1/5: Initializing scan & finding corporate portal...'}
         initial_url = _clean_url(url)
         
-        # --- PHASE 1: CONFIRM THE CORRECT DOMAIN ---
         log("info", f"Starting scan at initial URL: {initial_url}")
         try:
             _, initial_html = fetch_page_content_robustly(initial_url)
@@ -646,9 +626,6 @@ def run_full_scan_stream(url: str, cache: dict):
         homepage_url = _clean_url(corporate_portal_url) if corporate_portal_url else initial_url
         log("info", f"Confirmed scan homepage: {homepage_url}")
 
-        # --- PHASE 2: DISCOVER ALL LINKS FROM THE CONFIRMED DOMAIN ---
-        # Fetch homepage content again (potentially for the pivot URL)
-        # and get screenshot (needed for AI later)
         try:
             homepage_screenshot_b64, homepage_html = fetch_page_content_robustly(homepage_url, take_screenshot=True)
             if not homepage_html: raise Exception("Could not fetch homepage content for link discovery and screenshot.")
@@ -657,16 +634,14 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'error', 'message': f'Failed to fetch homepage URL for link discovery/screenshot: {e}'}
             return
 
-        # Attempt sitemap first
         discovered_links = discover_links_from_sitemap(homepage_url)
         
         if not discovered_links:
             log("warn", "Sitemap failed. Falling back to robust homepage HTML scrape for link discovery.")
-            discovered_links = discover_links_from_html(homepage_html, homepage_url) # Use the already fetched homepage_html
+            discovered_links = discover_links_from_html(homepage_html, homepage_url)
             
         if not discovered_links: 
             log("warn", f"No links discovered from {homepage_url}. Proceeding with homepage analysis only.")
-            # Instead of failing, continue with just the homepage
             discovered_links = [(homepage_url, "Homepage")]
             yield {'type': 'status', 'message': 'Warning: Could not discover additional pages. Analyzing homepage only.'}
 
@@ -687,7 +662,6 @@ def run_full_scan_stream(url: str, cache: dict):
             if cleaned_url not in unique_urls_for_scoring:
                 unique_urls_for_scoring.add(cleaned_url)
                 score = score_link(cleaned_url, link_text)
-                # Only include links with a positive score in the candidates, effectively filtering out generic negatives early
                 if score > 0: 
                     scored_links.append({"url": cleaned_url, "text": link_text, "score": score})
         
@@ -698,7 +672,7 @@ def run_full_scan_stream(url: str, cache: dict):
         if homepage_url not in found_urls:
             priority_pages.append(homepage_url); found_urls.add(homepage_url)
         for link in scored_links:
-            if len(priority_pages) >= 5: break # Limit number of pages to analyze deeply
+            if len(priority_pages) >= 5: break
             if link["url"] not in found_urls:
                 priority_pages.append(link["url"]); found_urls.add(link["url"])
         
@@ -707,14 +681,12 @@ def run_full_scan_stream(url: str, cache: dict):
         other_pages_to_screenshot = [p for p in priority_pages if p != homepage_url]
         if other_pages_to_screenshot:
             yield {'type': 'status', 'message': 'Capturing visual evidence from key pages...'}
-            # The capture_screenshots_playwright function already limits to 4, effectively taking screenshots
-            # for up to the first 4 other priority pages, plus the homepage.
             for data in capture_screenshots_playwright(other_pages_to_screenshot):
                 yield {'type': 'screenshot_ready', **data}
         
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages in parallel...'}
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
-        page_html_map = {homepage_url: homepage_html} # Reuse homepage HTML already fetched
+        page_html_map = {homepage_url: homepage_html}
         if other_pages_to_fetch:
             try:
                 parallel_results = fetch_all_pages(other_pages_to_fetch)
@@ -723,7 +695,7 @@ def run_full_scan_stream(url: str, cache: dict):
                 circuit_breaker.record_success()
             except Exception as e:
                 circuit_breaker.record_failure()
-                raise e # Re-raise to fail early if too many fetch errors
+                raise e
 
         text_corpus = ""
         for page_url in priority_pages:
@@ -734,35 +706,31 @@ def run_full_scan_stream(url: str, cache: dict):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + extract_relevant_text(soup)
         
-        full_corpus = (text_corpus + social_corpus)[:40000] # Truncate to avoid excessive token usage
+        full_corpus = (text_corpus + social_corpus)[:40000]
 
         yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
         brand_summary = call_openai_for_synthesis(full_corpus)
         
         yield {'type': 'status', 'message': 'Step 4/5: Performing detailed analysis...'}
-        all_results = [] # This list will hold all individual key analysis results
+        all_results = []
         for key, prompt in MEMORABILITY_KEYS_PROMPTS.items():
             yield {'type': 'status', 'message': f'Analyzing key: {key}...'}
             try:
                 key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
-                # Assign a unique ID for this analysis result for feedback tracking
                 analysis_uid = str(uuid.uuid4())
                 result_json['analysis_id'] = analysis_uid 
                 circuit_breaker.record_success()
             except Exception as e:
                 circuit_breaker.record_failure()
                 log("error", f"Analysis of key '{key}' failed. Circuit breaker status: {circuit_breaker.failures} failures. Error: {e}")
-                # We can choose to yield an error for this key or simply skip it
-                # For now, let's yield an error for the key and continue if possible
                 yield {'type': 'result_error', 'key': key_name, 'message': f"Analysis failed: {e}"}
-                continue # Continue to next key if one fails, but log it.
+                continue
             
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}
             all_results.append(result_obj)
             yield result_obj
         
         yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...'}
-        # Pass the correctly named variable 'all_results'
         summary_text = call_openai_for_executive_summary(all_results) 
         yield {'type': 'summary', 'text': summary_text}
         
@@ -774,7 +742,7 @@ def run_full_scan_stream(url: str, cache: dict):
     except Exception as e:
         log("error", f"The main stream failed: {e}")
         import traceback
-        traceback.print_exc() # Print full traceback for debugging
+        traceback.print_exc()
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
 
 if __name__ == '__main__':
