@@ -124,6 +124,18 @@
             <p>Click any thumbnail to enlarge.</p>
             <div id="screenshot-container"></div>
         </div>
+    <!-- Debug Panel (collapsed by default) -->
+    <details id="debug-panel" style="margin-top: 2rem; background: #fff; padding: 1rem 1.5rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,.08);">
+      <summary style="cursor: pointer; font-weight: bold; color: var(--primary-color); font-size: 1rem;">🔧 Debug Info (click to expand)</summary>
+      <div id="debug-content" style="font-size: 0.9rem; color: var(--text-light); margin-top: 1rem;">
+        <ul>
+          <li><strong>Homepage only:</strong> <span id="debug-homepage-only">unknown</span></li>
+          <li><strong>Pages discovered:</strong> <span id="debug-pages-discovered">0</span></li>
+          <li><strong>Pages analyzed:</strong> <span id="debug-pages-analyzed">0</span></li>
+          <li><strong>Used fallback (Playwright):</strong> <span id="debug-playwright">unknown</span></li>
+        </ul>
+      </div>
+    </details>
     </div>
 
     <div id="modal-overlay">
@@ -145,6 +157,20 @@
     const summaryText = document.getElementById("summary-text");
     
     const socket = io();
+    let debugInfo = {
+        homepageOnly: false,
+        discoveredPages: 0,
+        analyzedPages: 0,
+        usedPlaywright: false
+    };
+
+    function updateDebugPanel() {
+        document.getElementById("debug-homepage-only").textContent = debugInfo.homepageOnly ? "yes" : "no";
+        document.getElementById("debug-pages-discovered").textContent = debugInfo.discoveredPages;
+        document.getElementById("debug-pages-analyzed").textContent = debugInfo.analyzedPages;
+        document.getElementById("debug-playwright").textContent = debugInfo.usedPlaywright ? "yes" : "no";
+    }
+
 
     socket.on('connect', () => { statusContainer.innerHTML = `<div>Ready.</div>`; });
     socket.on('disconnect', () => { statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`; });
@@ -168,13 +194,27 @@
     socket.on('scan_update', (msg) => {
         switch(msg.type) {
             case 'status':
+                if (msg.message.toLowerCase().includes("homepage only")) {
+                    debugInfo.homepageOnly = true;
+                    updateDebugPanel();
+                }
+
                 statusContainer.innerHTML += `<div>${msg.message}</div>`;
                 statusContainer.scrollTop = statusContainer.scrollHeight;
                 break;
+            case 'debug':
+                if (msg.message.includes("Playwright fallback")) {
+                    debugInfo.usedPlaywright = true;
+                    updateDebugPanel();
+                }
+                break;
+
             case 'error':
                 resultsGrid.innerHTML += `<div class="result-block error">${msg.message}</div>`;
                 break;
             case 'screenshot_ready':
+                debugInfo.discoveredPages++;
+                updateDebugPanel();
                 evidenceGallery.style.display = 'block';
                 const figure = document.createElement('figure');
                 figure.className = 'screenshot-item';
@@ -193,6 +233,8 @@
                 screenshotContainer.appendChild(figure);
                 break;
             case 'result':
+                debugInfo.analyzedPages++;
+                updateDebugPanel();
                 renderResultBlock(msg.key, msg.analysis);
                 break;
             case 'summary':
