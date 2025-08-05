@@ -1019,10 +1019,27 @@ def call_openai_for_synthesis(corpus):
 
 def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_screenshot_b64, brand_summary):
     log("info", f"Analyzing key: {key_name}")
+    
+    # DIAGNOSTIC: Check screenshot parameter
+    has_screenshot = homepage_screenshot_b64 is not None
+    screenshot_size = len(homepage_screenshot_b64) if has_screenshot else 0
+    log("info", f"🔍 SCREENSHOT DIAGNOSTIC - {key_name}: has_screenshot={has_screenshot}, size={screenshot_size} bytes")
+    
     try:
         content = [{"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"}, {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"}]
         if homepage_screenshot_b64:
+            # DIAGNOSTIC: Validate base64 format
+            try:
+                import base64
+                base64.b64decode(homepage_screenshot_b64[:100])  # Test decode first 100 chars
+                log("info", f"✅ BASE64 VALIDATION - {key_name}: Screenshot data is valid base64 format")
+            except Exception as e:
+                log("error", f"❌ BASE64 VALIDATION - {key_name}: Invalid base64 data: {e}")
+            
             content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{homepage_screenshot_b64}"}})
+            log("info", f"🖼️ OPENAI REQUEST - {key_name}: Including screenshot in OpenAI API call ({len(homepage_screenshot_b64)} bytes)")
+        else:
+            log("warn", f"❌ OPENAI REQUEST - {key_name}: NO SCREENSHOT - sending text-only to OpenAI")
         
         system_prompt = f"""You are a senior brand strategist from Saffron Brand Consultants, providing an expert evaluation.
         {prompt_template}
@@ -1040,7 +1057,15 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
         The "confidence" score should be an integer from 0 to 100 representing your certainty in this analysis.
         """
         
+        # Make OpenAI API call
+        log("info", f"🚀 CALLING OPENAI API - {key_name}: Sending request with {len(content)} content items")
         response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], response_format={"type": "json_object"}, temperature=0.3)
+        
+        # Log successful API response
+        log("info", f"✅ OPENAI API SUCCESS - {key_name}: Received response from GPT-4V")
+        if homepage_screenshot_b64:
+            log("info", f"🎯 CONFIRMED: OpenAI processed image data for {key_name} analysis")
+        
         result_json = json.loads(response.choices[0].message.content)
         validate_ai_response(result_json, ["score", "analysis", "evidence", "confidence", "confidence_rationale", "recommendation"])
         if not (0 <= result_json.get("score", -1) <= 5):
@@ -1420,6 +1445,13 @@ def run_full_scan_stream(url: str, cache: dict):
                 has_screenshot = homepage_screenshot_b64 is not None
                 screenshot_size = len(homepage_screenshot_b64) if has_screenshot else 0
                 log("info", f"🧠 AI ANALYSIS {key}: Screenshot={has_screenshot}, Size={screenshot_size} bytes")
+                
+                # DIAGNOSTIC: Double-check screenshot before sending to OpenAI
+                if has_screenshot and screenshot_size > 0:
+                    log("info", f"✅ PASSING SCREENSHOT TO OPENAI - {key}: {screenshot_size} bytes of screenshot data")
+                else:
+                    log("error", f"❌ NO SCREENSHOT DATA TO SEND TO OPENAI - {key}: This will be text-only analysis")
+                
                 key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
                 analysis_uid = str(uuid.uuid4())
                 result_json['analysis_id'] = analysis_uid 
