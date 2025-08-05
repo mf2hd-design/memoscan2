@@ -719,7 +719,7 @@
         }
         
         static requestAnimationFrame(callback) {
-            return window.requestAnimationFrame || window.setTimeout;
+            return (window.requestAnimationFrame || window.setTimeout)(callback);
         }
     }
     
@@ -758,18 +758,14 @@
         }
         
         async processMessage(msg) {
-            console.log('🎯 PROCESSING MESSAGE:', msg.type, msg);
             switch (msg.type) {
                 case 'status':
-                    console.log('📊 Processing status update:', msg.progress, msg.phase);
                     MemoScan.progressTracker.updateProgress(msg.progress || 0, msg.phase);
                     break;
                 case 'activity':
-                    console.log('🔔 Processing activity:', msg.message);
                     MemoScan.activityFeed.addItem(msg.message, msg.timestamp);
                     break;
                 case 'metric':
-                    console.log('📈 Processing metric:', msg.key, msg.value);
                     MemoScan.metricsDashboard.updateMetric(msg.key, msg.value);
                     break;
                 case 'progress':
@@ -885,7 +881,7 @@
             PerformanceUtils.requestAnimationFrame(() => {
                 feed.insertBefore(item, feed.firstChild);
                 this.cleanupOldItems(feed);
-            })();
+            });
         }
         
         cleanupOldItems(feed) {
@@ -946,7 +942,7 @@
                 setTimeout(() => {
                     card.classList.remove('updating');
                 }, 300);
-            })();
+            });
         }
         
         updateScreenshotCount() {
@@ -1047,7 +1043,6 @@
             });
             
             this.socket.on('scan_update', (msg) => {
-                console.log('🔥 FRONTEND RECEIVED MESSAGE:', msg);
                 this.messageQueue.add(msg);
             });
         }
