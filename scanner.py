@@ -350,10 +350,10 @@ def get_random_user_agent() -> str:
     return CONFIG["user_agents"][uuid.uuid4().int % len(CONFIG["user_agents"])]
 
 def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
-    log("info", f"Fetching data for {url} (Screenshot: {take_screenshot})")
+    log("info", f"🔍 SCRAPFLY REQUEST: {url} (Screenshot: {take_screenshot})")
     api_key = os.getenv("SCRAPFLY_KEY")
     if not api_key:
-        log("error", "SCRAPFLY_KEY environment variable not set.")
+        log("error", "❌ SCRAPFLY_KEY environment variable not set.")
         return None, None
     try:
         params = {"key": api_key, "url": url, "render_js": True, "asp": True, "auto_scroll": True, "wait_for_selector": "footer a, nav a, main a, [role='main'] a, [class*='footer'] a", "rendering_stage": "complete", "rendering_wait": 7000, "format": "json", "country": "us", "proxy_pool": "public_residential_pool"}
@@ -368,9 +368,13 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
             screenshot_b64 = None
             if take_screenshot and "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
                 screenshot_url = data["result"]["screenshots"]["main"]["url"]
+                log("info", f"📸 SCRAPFLY SCREENSHOT URL: {screenshot_url}")
                 img_response = client.get(screenshot_url, params={"key": api_key}, timeout=60)
                 img_response.raise_for_status()
                 screenshot_b64 = base64.b64encode(img_response.content).decode('utf-8')
+                log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes")
+            elif take_screenshot:
+                log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
             return screenshot_b64, html_content
     except Exception as e:
         log("error", f"Scrapfly error for {url}: {e}")
@@ -1212,17 +1216,24 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'status', 'message': 'Warning: Could not discover additional pages. Analyzing homepage only.'}
 
         try:
+            log("info", f"🔍 ATTEMPTING HOMEPAGE SCREENSHOT: {homepage_url}")
             homepage_screenshot_b64, final_homepage_html = fetch_page_content_robustly(homepage_url, take_screenshot=True)
             if homepage_screenshot_b64:
+                log("info", f"✅ HOMEPAGE SCREENSHOT SUCCESS: {len(homepage_screenshot_b64)} bytes")
                 # Clean up cache before adding new entries to prevent memory exhaustion
                 cleanup_cache()
                 image_id = str(uuid.uuid4())
                 cache[image_id] = homepage_screenshot_b64
-                yield {'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url}
+                yield debug_yield({'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url})
+                yield debug_yield({'type': 'activity', 'message': f'📸 Homepage screenshot captured', 'timestamp': time.time()})
+            else:
+                log("error", f"❌ HOMEPAGE SCREENSHOT FAILED: No screenshot data returned")
+                yield debug_yield({'type': 'activity', 'message': f'⚠️ Homepage screenshot failed - AI will run without visual context', 'timestamp': time.time()})
         except Exception as e:
-            log("warn", f"Could not take homepage screenshot: {e}")
+            log("error", f"❌ HOMEPAGE SCREENSHOT EXCEPTION: {e}")
             homepage_screenshot_b64 = None
             final_homepage_html = homepage_html
+            yield debug_yield({'type': 'activity', 'message': f'⚠️ Homepage screenshot error - AI will run without visual context', 'timestamp': time.time()})
 
         homepage_soup = BeautifulSoup(final_homepage_html, "html.parser")
         social_corpus = get_social_media_text(homepage_soup, homepage_url)
@@ -1346,6 +1357,9 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'status', 'message': f'Analyzing key: {key}...', 'phase': 'ai_analysis', 'progress': 70 + (i * 5)}
             yield {'type': 'activity', 'message': f'🔍 Evaluating {key} memorability...', 'timestamp': time.time()}
             try:
+                has_screenshot = homepage_screenshot_b64 is not None
+                screenshot_size = len(homepage_screenshot_b64) if has_screenshot else 0
+                log("info", f"🧠 AI ANALYSIS {key}: Screenshot={has_screenshot}, Size={screenshot_size} bytes")
                 key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
                 analysis_uid = str(uuid.uuid4())
                 result_json['analysis_id'] = analysis_uid 
