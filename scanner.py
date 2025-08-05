@@ -365,6 +365,13 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
             response.raise_for_status()
             data = response.json()
             html_content = data["result"]["content"]
+            
+            # DIAGNOSTIC: Log what Scrapfly actually returned
+            if html_content:
+                log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
+            else:
+                log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
+                
             screenshot_b64 = None
             if take_screenshot and "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
                 screenshot_url = data["result"]["screenshots"]["main"]["url"]
@@ -418,14 +425,25 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     try:
         screenshot, html = _fetch_page_data_scrapfly(url, take_screenshot=take_screenshot)
-        if html and html.strip().startswith('<'):
-            log("info", "Scrapfly returned valid HTML content.")
-            return screenshot, html
-        else:
-            if not html:
-                log("warn", f"Scrapfly returned empty content for {url}, falling back to Playwright for HTML.")
+        # Enhanced HTML validation - check for actual HTML content, not just '<' prefix
+        if html and html.strip():
+            html_lower = html.lower().strip()
+            # Check for various valid HTML patterns
+            is_valid_html = (
+                html_lower.startswith('<!doctype') or  # DOCTYPE declaration
+                html_lower.startswith('<html') or      # HTML tag
+                html_lower.startswith('<!--') or       # HTML comment
+                '<html' in html_lower[:200] or         # HTML tag within first 200 chars
+                '<head' in html_lower[:500]            # HEAD tag within first 500 chars
+            )
+            
+            if is_valid_html:
+                log("info", f"✅ SCRAPFLY VALID HTML: {len(html)} characters, starts with: {html[:50].strip()}")
+                return screenshot, html
             else:
-                log("warn", f"Scrapfly returned non-HTML content for {url}, falling back to Playwright for HTML.")
+                log("warn", f"❌ SCRAPFLY INVALID HTML: Content doesn't appear to be HTML. First 100 chars: {html[:100]}")
+        else:
+            log("warn", f"❌ SCRAPFLY EMPTY CONTENT for {url}, falling back to Playwright for HTML.")
             
             # ENHANCED FIX: Use Playwright screenshot when Scrapfly fails or when preserving existing screenshot
             if take_screenshot and screenshot:
