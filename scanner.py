@@ -94,7 +94,7 @@ NEGATIVE_REGEX = [
     
     # Legal & Compliance
     r"\b(impressum|imprint|legal|disclaimer|compliance|datenschutz|data-protection|privacy|terms|cookies?|policy|governance|bylaws|tax[-_]strategy)\b", r"\b(agb|bedingungen|rechtliches|politica-de-privacidad|aviso-legal|terminos|condiciones)\b",
-    r"\b(terms[-_]of[-_]sale|conditions[-_]of[-_]sale|terms[-_]of[-_]service|general[-_]conditions)\b",
+    r"\b(terms[-_]of[-_]sales?|conditions[-_]of[-_]sales?|terms[-_]of[-_]service|general[-_]conditions[-_]of[-_]sales?|general[-_]conditions)\b",
     
     # Subscriptions & Marketing
     r"\b(newsletter|subscribe|subscription|unsubscribe|boletin|suscripcion|darse-de-baja)\b",
@@ -155,6 +155,17 @@ def _compile_patterns():
 
 # Initialize compiled patterns
 _compile_patterns()
+
+# Re-compile patterns if NEGATIVE_REGEX was updated after initial compilation
+def _recompile_negative_patterns():
+    """Re-compile negative patterns after updates."""
+    global COMPILED_PATTERNS
+    COMPILED_PATTERNS["negative"] = [re.compile(pattern, re.IGNORECASE) for pattern in NEGATIVE_REGEX]
+    # Update the LINK_SCORE_MAP reference
+    LINK_SCORE_MAP["negative"]["patterns"] = COMPILED_PATTERNS["negative"]
+
+# Ensure negative patterns are up-to-date
+_recompile_negative_patterns()
 
 LINK_SCORE_MAP = {
     "critical": {"patterns": COMPILED_PATTERNS["critical"], "score": 30},
