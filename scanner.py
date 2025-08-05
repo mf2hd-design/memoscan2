@@ -88,6 +88,7 @@ NEGATIVE_REGEX = [
     
     # Legal & Compliance
     r"\b(impressum|imprint|legal|disclaimer|compliance|datenschutz|data-protection|privacy|terms|cookies?|policy|governance|bylaws|tax[-_]strategy)\b", r"\b(agb|bedingungen|rechtliches|politica-de-privacidad|aviso-legal|terminos|condiciones)\b",
+    r"\b(terms[-_]of[-_]sale|conditions[-_]of[-_]sale|terms[-_]of[-_]service|general[-_]conditions)\b",
     
     # Subscriptions & Marketing
     r"\b(newsletter|subscribe|subscription|unsubscribe|boletin|suscripcion|darse-de-baja)\b",
@@ -675,25 +676,35 @@ def discover_links_from_sitemap(homepage_url: str) -> Optional[List[Tuple[str, s
             log("info", "Sitemap index found. Searching for the best page-sitemap...")
             sitemaps = [elem.text for elem in root.findall('sm:sitemap/sm:loc', namespace)]
 
-            priority_keywords = ['page', 'post', 'company', 'about', 'article']
+            # IMPROVED: Implement intelligent sitemap scoring to find the most relevant one
             best_sitemap_url = None
-            for keyword in priority_keywords:
-                for sm_url in sitemaps:
-                    if keyword in sm_url:
-                        best_sitemap_url = sm_url
-                        break
-                if best_sitemap_url: break
-
-            if not best_sitemap_url and sitemaps:
-                best_sitemap_url = sitemaps[0]
+            highest_score = -1
             
+            for sm_url in sitemaps:
+                score = 0
+                # Heavily prioritize global/corporate sitemaps
+                if "global" in sm_url or "corporate" in sm_url: score += 100
+                if "main" in sm_url or "pages" in sm_url: score += 50
+                if "en" in sm_url: score += 10  # Slight preference for English
+                
+                # Penalize country-specific sitemaps heavily
+                if re.search(r'/[a-z]{2}/', sm_url) and "global" not in sm_url: score -= 50
+                
+                # Additional preferences for brand-relevant content
+                if any(keyword in sm_url for keyword in ['page', 'post', 'company', 'about', 'article']): score += 25
+                
+                log("debug", f"Sitemap {sm_url} scored {score}")
+                if score > highest_score:
+                    highest_score = score
+                    best_sitemap_url = sm_url
+
             if best_sitemap_url:
-                log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url}")
+                log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {highest_score})")
                 response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
                 response.raise_for_status()
                 root = ET.fromstring(response.content)
             else:
-                log("warn", "No sitemap URLs found in sitemap index.")
+                log("warn", "No suitable sitemap found in sitemap index.")
                 return None
 
         urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
