@@ -1247,14 +1247,14 @@ def run_full_scan_stream(url: str, cache: dict):
             log("info", f"🔍 ATTEMPTING HOMEPAGE SCREENSHOT: {homepage_url}")
             homepage_screenshot_b64, final_homepage_html = fetch_page_content_robustly(homepage_url, take_screenshot=True)
             if homepage_screenshot_b64:
-                log("info", f"✅ HOMEPAGE SCREENSHOT SUCCESS: {len(homepage_screenshot_b64)} bytes")
-                # Clean up cache before adding new entries to prevent memory exhaustion
+                log("info", f"✅ HOMEPAGE SCREENSHOT SUCCESS: {len(homepage_screenshot_b64)} bytes - FOR AI ANALYSIS AND FRONTEND DISPLAY")
+                # Homepage screenshot is used for BOTH AI analysis AND frontend display
                 cleanup_cache()
                 image_id = str(uuid.uuid4())
                 cache[image_id] = homepage_screenshot_b64
                 yield debug_yield({'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url})
                 log("info", f"🎯 HOMEPAGE SCREENSHOT EMITTED: id={image_id}, url={homepage_url}")
-                yield debug_yield({'type': 'activity', 'message': f'📸 Homepage screenshot captured', 'timestamp': time.time()})
+                yield debug_yield({'type': 'activity', 'message': f'📸 Homepage screenshot captured for AI and display', 'timestamp': time.time()})
             else:
                 log("error", f"❌ HOMEPAGE SCREENSHOT FAILED: No screenshot data returned")
                 yield debug_yield({'type': 'activity', 'message': f'⚠️ Homepage screenshot failed - AI will run without visual context', 'timestamp': time.time()})
