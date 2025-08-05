@@ -69,12 +69,12 @@
             height: 4px;
             background: linear-gradient(90deg, var(--primary-color), #00c3ff);
             transform: translateX(-100%);
-            animation: shimmer 2s infinite;
+            animation: shimmer 20s infinite;
             will-change: transform;
         }
         
         @keyframes shimmer {
-            0% { transform: translateX(-100%); }
+            0%, 95% { transform: translateX(-100%); }
             100% { transform: translateX(100%); }
         }
         
@@ -758,14 +758,18 @@
         }
         
         async processMessage(msg) {
+            console.log('🎯 PROCESSING MESSAGE:', msg.type, msg);
             switch (msg.type) {
                 case 'status':
+                    console.log('📊 Processing status update:', msg.progress, msg.phase);
                     MemoScan.progressTracker.updateProgress(msg.progress || 0, msg.phase);
                     break;
                 case 'activity':
+                    console.log('🔔 Processing activity:', msg.message);
                     MemoScan.activityFeed.addItem(msg.message, msg.timestamp);
                     break;
                 case 'metric':
+                    console.log('📈 Processing metric:', msg.key, msg.value);
                     MemoScan.metricsDashboard.updateMetric(msg.key, msg.value);
                     break;
                 case 'progress':
@@ -1043,6 +1047,7 @@
             });
             
             this.socket.on('scan_update', (msg) => {
+                console.log('🔥 FRONTEND RECEIVED MESSAGE:', msg);
                 this.messageQueue.add(msg);
             });
         }
