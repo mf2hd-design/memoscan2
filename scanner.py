@@ -15,19 +15,29 @@ except ImportError:
     import warnings
     warnings.warn("defusedxml not available, using xml.etree.ElementTree with custom XXE protection", UserWarning)
     
-    # Create a safe XML parser with XXE protection
+    # Create a safe XML parser with XXE protection and robust error handling
     class SafeXMLParser:
         @staticmethod
         def fromstring(data):
             # Create parser with disabled external entity processing
             parser = ET_unsafe.XMLParser()
-            # Disable external entity processing to prevent XXE
-            parser.parser.DefaultHandler = lambda data: None
-            parser.parser.ExternalEntityRefHandler = lambda *args: False
+            # Robust XXE protection with proper error handling
+            try:
+                if hasattr(parser, 'parser') and parser.parser:
+                    parser.parser.DefaultHandler = lambda data: None
+                    parser.parser.ExternalEntityRefHandler = lambda *args: False
+                else:
+                    log("warn", "XML parser attributes not accessible, using basic protection")
+            except AttributeError as e:
+                log("warn", f"Could not configure XML parser security features: {e}")
+            
             try:
                 return ET_unsafe.fromstring(data, parser=parser)
             except ET_unsafe.ParseError as e:
                 log("error", f"XML parsing failed: {e}")
+                raise
+            except Exception as e:
+                log("error", f"Unexpected XML parsing error: {e}")
                 raise
     
     ET = SafeXMLParser
@@ -88,6 +98,47 @@ def _is_same_root_word_domain(url1: str, url2: str) -> bool:
     if not root1:
         return False
     return root1 == _get_root_word(url2)
+
+def detect_primary_language(html_content: str) -> str:
+    """Detect the primary language of a website from HTML content.
+    
+    Returns:
+        str: Two-letter language code (e.g., 'en', 'de', 'es') or 'en' as fallback
+    """
+    try:
+        soup = BeautifulSoup(html_content, "html.parser")
+        
+        # Method 1: Check <html lang=""> attribute (most reliable)
+        html_tag = soup.find('html')
+        if html_tag and html_tag.get('lang'):
+            lang = html_tag.get('lang')[:2].lower()
+            # Validate it's a known language code
+            if lang in ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ko', 'zh', 'ru', 'nl', 'sv', 'da', 'no']:
+                log("info", f"🌐 Detected primary language: {lang} (from html tag)")
+                return lang
+        
+        # Method 2: Check meta content-language tag
+        lang_meta = soup.find('meta', attrs={'http-equiv': 'content-language'})
+        if lang_meta and lang_meta.get('content'):
+            lang = lang_meta.get('content')[:2].lower()
+            if lang in ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ko', 'zh', 'ru', 'nl', 'sv', 'da', 'no']:
+                log("info", f"🌐 Detected primary language: {lang} (from meta tag)")
+                return lang
+        
+        # Method 3: Check for language-specific meta tags
+        og_locale = soup.find('meta', attrs={'property': 'og:locale'})
+        if og_locale and og_locale.get('content'):
+            lang = og_locale.get('content')[:2].lower()
+            if lang in ['en', 'de', 'es', 'fr', 'it', 'pt', 'ja', 'ko', 'zh', 'ru', 'nl', 'sv', 'da', 'no']:
+                log("info", f"🌐 Detected primary language: {lang} (from og:locale)")
+                return lang
+        
+        log("info", "🌐 No explicit language detected, defaulting to English")
+        return 'en'  # Safe fallback
+        
+    except Exception as e:
+        log("warn", f"Language detection failed: {e}, defaulting to English")
+        return 'en'
 
 # --- END: HELPER FUNCTIONS ---
 
@@ -209,7 +260,7 @@ LINK_SCORE_MAP = {
     "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": SCORING_CONSTANTS["NEGATIVE_VETO_SCORE"]}
 }
 
-def score_link(link_url: str, link_text: str) -> Tuple[int, str]:
+def score_link(link_url: str, link_text: str, primary_language: str = 'en') -> Tuple[int, str]:
     score = 0
     rationale = []
     lower_text = link_text.lower()
@@ -219,6 +270,14 @@ def score_link(link_url: str, link_text: str) -> Tuple[int, str]:
     language_names = ['english', 'español', 'deutsch', 'français', 'português', 'en', 'es', 'de', 'fr', 'pt']
     if lower_text in language_names:
         score -= SCORING_CONSTANTS["LANGUAGE_PENALTY"]
+
+    # Contextual language penalty - penalize URLs that don't match the site's primary language
+    lang_codes = {'/de/': 'de', '/es/': 'es', '/fr/': 'fr', '/it/': 'it', '/pt/': 'pt', '/ja/': 'ja', '/ko/': 'ko', '/zh/': 'zh', '/ru/': 'ru', '/nl/': 'nl'}
+    for code, lang in lang_codes.items():
+        if code in link_url and lang != primary_language:
+            score -= 15
+            rationale.append(f"Lang Mismatch: -15 ({lang}≠{primary_language})")
+            break
 
     # --- Main Keyword Scoring (First Past the Post) ---
     tier_order = ["identity", "strategy", "operations", "culture", "people"]
@@ -583,10 +642,12 @@ def get_prompt_improvements_from_feedback():
 # --- END: FEEDBACK MECHANISM ---
 
 def _clean_url(url: str) -> str:
-    """Clean and validate URL with security checks."""
+    """Clean and validate URL with security checks and www normalization."""
     url = url.strip()
     if not url.startswith(("http://", "https://")): 
         url = "https://" + url
+    # Remove www. prefix to prevent duplicate URLs (basf.com == www.basf.com)
+    url = url.replace('//www.', '//')
     return url.split("#")[0]
 
 def _validate_url(url: str) -> tuple[bool, str]:
@@ -777,7 +838,7 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 
     return final_social_text
 
-def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_url: str) -> Optional[str]:
+def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_url: str, primary_language: str = 'en') -> Optional[str]:
     log("info", "Searching for a better corporate portal...")
     best_candidate = None
     highest_score = 0
@@ -790,7 +851,7 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
 
     for link_url, link_text in discovered_links:
         if "http" in link_url and _get_root_word(link_url) == initial_root_word and urlparse(link_url).netloc != initial_netloc:
-            score, _ = score_link(link_url, link_text)  # Unpack tuple, ignore rationale
+            score, _ = score_link(link_url, link_text, primary_language)  # Unpack tuple, ignore rationale
             if score > highest_score:
                 highest_score = score
                 best_candidate = link_url
@@ -826,9 +887,9 @@ def discover_links_from_sitemap(homepage_url: str) -> Optional[List[Tuple[str, s
             for sm_url in sitemaps:
                 score = 0
                 # Heavily prioritize global/corporate sitemaps
-                if "global" in sm_url or "corporate" in sm_url: score += 100
+                if "global" in sm_url or "corporate" in sm_url: score += 150
                 if "main" in sm_url or "pages" in sm_url: score += 50
-                if "en" in sm_url: score += 10  # Slight preference for English
+                if "/en" in sm_url or "en/" in sm_url: score += 25  # Stronger preference for English
                 
                 # Penalize country-specific sitemaps heavily
                 if re.search(r'/[a-z]{2}/', sm_url) and "global" not in sm_url: score -= 50
@@ -1061,8 +1122,11 @@ def run_full_scan_stream(url: str, cache: dict):
         if sitemap_links:
             all_discovered_links.extend(sitemap_links)
 
+        # Detect the primary language early for better subdomain discovery
+        primary_language = detect_primary_language(homepage_html)
+
         # --- Phase 2: High-Value Subdomain Discovery ---
-        subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url)
+        subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url, primary_language)
         if subdomain_portal_url:
             log("info", f"Found high-value subdomain: {subdomain_portal_url}. Scanning it for additional links.")
             try:
@@ -1099,6 +1163,8 @@ def run_full_scan_stream(url: str, cache: dict):
         social_corpus = get_social_media_text(homepage_soup, homepage_url)
         yield {'type': 'status', 'message': 'Social media text captured.' if social_corpus else 'No social media links found.'}
 
+        yield {'type': 'status', 'message': f'Detected primary language: {primary_language.upper()}'}
+
         yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...'}
         scored_links = []
         unique_urls_for_scoring = set()
@@ -1106,7 +1172,7 @@ def run_full_scan_stream(url: str, cache: dict):
             cleaned_url = _clean_url(link_url)
             if cleaned_url not in unique_urls_for_scoring:
                 unique_urls_for_scoring.add(cleaned_url)
-                score, rationale = score_link(cleaned_url, link_text)
+                score, rationale = score_link(cleaned_url, link_text, primary_language)
                 if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:  # Business-relevant content threshold
                     scored_links.append({"url": cleaned_url, "text": link_text, "score": score, "rationale": rationale})
         
