@@ -94,18 +94,48 @@ CONFIG = {
 
 # --- START: REGEX AND SCORING LOGIC ---
 NEGATIVE_REGEX = [
+    # Account Management
     r"\b(log(in|out)?|sign(in|up)|register|account|my-account)\b", r"\b(anmelden|abmelden|registrieren|konto)\b", r"\b(iniciar-sesion|cerrar-sesion|crear-cuenta|cuenta)\b",
-    r"\b(impressum|imprint|legal|disclaimer|compliance|datenschutz|privacy|terms|cookies?)\b", r"\b(agb|bedingungen|rechtliches|politica-de-privacidad|aviso-legal|terminos|condiciones)\b",
+    
+    # Legal & Compliance
+    r"\b(impressum|imprint|legal|disclaimer|compliance|datenschutz|data-protection|privacy|terms|cookies?|policy|governance|bylaws|tax[-_]strategy)\b", r"\b(agb|bedingungen|rechtliches|politica-de-privacidad|aviso-legal|terminos|condiciones)\b",
+    
+    # Subscriptions & Marketing
     r"\b(newsletter|subscribe|subscription|unsubscribe|boletin|suscripcion|darse-de-baja)\b",
+    
+    # Human Resources & Careers
     r"\b(jobs?|career(s)?|vacancies|internships?|apply|karriere|stellenangebote|bewerbung|praktikum|empleo|trabajo|vacantes|postulaciones|reclutamiento)\b",
+    
+    # E-commerce & Shopping
     r"\b(basket|cart|checkout|shop|store|ecommerce|wishlist|warenkorb|kaufen|bestellen|einkaufen|carrito|tienda|comprar|pago|pedido)\b",
+    
+    # Website Tools & Technical Pages
     r"\b(calculator|tool|search|filter|compare|rechner|suche|vergleich|calculadora|buscar|comparar|filtro)\b",
     r"\b(404|not-found|error|redirect|sitemap|robots|tracking|rss|weiterleitung|umleitung|redireccion|mapa-del_sitio|seguimiento)\b",
+    
+    # Customer Support & Help
+    r"\b(faq(s)?|help|support|contact|customer[-_]service|knowledge[-_]base)\b",
+    
+    # Developer & Partner Portals
+    r"\b(api|developer(s)?|sdk|docs|documentation|partner(s)?|supplier(s)?|vendor(s)?|affiliate(s)?|portal)\b",
+    
+    # Location Finders
+    r"\b(locations?|store[-_]finder|dealer[-_]locator|find[-_]a[-_]store)\b",
+
+    # Media & Asset Libraries
+    r"\b(gallery|media[-_]kit|brand[-_]assets)\b",
+
+    # Accessibility
+    r"\b(accessibility|wcag)\b",
+
+    # Press Releases & Content Marketing (often not core brand)
     r"\b(press[-_]release(s)?)\b",
-    r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck)\b",
     r"\b(news|events|blogs?|articles?|updates?|media|press|spotlight|stories)\b",
     r"\b(whitepapers?|webinars?|case[-_]stud(y|ies)|customer[-_]stor(y|ies))\b",
-    r"\b(resources?|insights?|downloads?)\b"
+    r"\b(resources?|insights?|downloads?)\b",
+    
+    # Investor Relations & Financial Reporting
+    r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck|shareholder(s)?|stock|sec[-_]filing(s)?|financials?)\b"
 ]
 
 LINK_SCORE_MAP = {
@@ -619,57 +649,65 @@ def extract_relevant_text(soup: BeautifulSoup) -> str:
 def run_full_scan_stream(url: str, cache: dict):
     circuit_breaker = CircuitBreaker(failure_threshold=CONFIG["circuit_breaker_threshold"])
     try:
-        yield {'type': 'status', 'message': 'Step 1/5: Initializing scan & finding corporate portal...'}
+        yield {'type': 'status', 'message': 'Step 1/5: Discovering all brand pages...'}
         initial_url = _clean_url(url)
-        
         log("info", f"Starting scan at initial URL: {initial_url}")
+
+        # --- Phase 1: Initial Domain Discovery ---
         try:
-            _, initial_html = fetch_page_content_robustly(initial_url)
-            if not initial_html: raise Exception("Could not fetch initial URL content.")
+            _, homepage_html = fetch_page_content_robustly(initial_url)
+            if not homepage_html: raise Exception("Could not fetch initial URL content.")
         except Exception as e:
             log("error", f"Failed to fetch the initial URL: {e}")
             yield {'type': 'error', 'message': f'Failed to fetch the initial URL: {e}'}
             return
 
-        initial_soup = BeautifulSoup(initial_html, "html.parser")
-        initial_links = discover_links_from_html(initial_html, initial_url)
+        # This is our first "pocket" of links, from the main domain.
+        all_discovered_links = discover_links_from_html(homepage_html, initial_url)
+        sitemap_links = discover_links_from_sitemap(initial_url)
+        if sitemap_links:
+            all_discovered_links.extend(sitemap_links)
 
-        corporate_portal_url = find_best_corporate_portal(initial_links, initial_url)
-        homepage_url = _clean_url(corporate_portal_url) if corporate_portal_url else initial_url
+        # --- Phase 2: High-Value Subdomain Discovery (The "Second Pocket") ---
+        subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url)
+        if subdomain_portal_url:
+            log("info", f"Found high-value subdomain: {subdomain_portal_url}. Scanning it for additional links.")
+            try:
+                _, subdomain_html = fetch_page_content_robustly(subdomain_portal_url)
+                if subdomain_html:
+                    subdomain_links = discover_links_from_html(subdomain_html, subdomain_portal_url)
+                    all_discovered_links.extend(subdomain_links)
+            except Exception as e:
+                log("warn", f"Could not fetch high-value subdomain {subdomain_portal_url}: {e}")
+
+        # --- Phase 3: Scoring and Analysis on the Combined Link Pool ---
+        homepage_url = initial_url
         log("info", f"Confirmed scan homepage: {homepage_url}")
 
-        try:
-            homepage_screenshot_b64, homepage_html = fetch_page_content_robustly(homepage_url, take_screenshot=True)
-            if not homepage_html: raise Exception("Could not fetch homepage content for link discovery and screenshot.")
-        except Exception as e:
-            log("error", f"Failed to fetch homepage URL for link discovery/screenshot: {e}")
-            yield {'type': 'error', 'message': f'Failed to fetch homepage URL for link discovery/screenshot: {e}'}
-            return
-
-        discovered_links = discover_links_from_sitemap(homepage_url)
-        
-        if not discovered_links:
-            log("warn", "Sitemap failed. Falling back to robust homepage HTML scrape for link discovery.")
-            discovered_links = discover_links_from_html(homepage_html, homepage_url)
-            
-        if not discovered_links: 
+        if not all_discovered_links:
             log("warn", f"No links discovered from {homepage_url}. Proceeding with homepage analysis only.")
-            discovered_links = [(homepage_url, "Homepage")]
+            all_discovered_links = [(homepage_url, "Homepage")]
             yield {'type': 'status', 'message': 'Warning: Could not discover additional pages. Analyzing homepage only.'}
 
-        if homepage_screenshot_b64:
-            image_id = str(uuid.uuid4())
-            cache[image_id] = homepage_screenshot_b64
-            yield {'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url}
+        try:
+            homepage_screenshot_b64, final_homepage_html = fetch_page_content_robustly(homepage_url, take_screenshot=True)
+            if homepage_screenshot_b64:
+                image_id = str(uuid.uuid4())
+                cache[image_id] = homepage_screenshot_b64
+                yield {'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url}
+        except Exception as e:
+            log("warn", f"Could not take homepage screenshot: {e}")
+            homepage_screenshot_b64 = None
+            final_homepage_html = homepage_html
 
-        homepage_soup = BeautifulSoup(homepage_html, "html.parser")
+        homepage_soup = BeautifulSoup(final_homepage_html, "html.parser")
         social_corpus = get_social_media_text(homepage_soup, homepage_url)
         yield {'type': 'status', 'message': 'Social media text captured.' if social_corpus else 'No social media links found.'}
 
         yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...'}
         scored_links = []
         unique_urls_for_scoring = set()
-        for link_url, link_text in discovered_links:
+        for link_url, link_text in all_discovered_links:
             cleaned_url = _clean_url(link_url)
             if cleaned_url not in unique_urls_for_scoring:
                 unique_urls_for_scoring.add(cleaned_url)
@@ -697,12 +735,11 @@ def run_full_scan_stream(url: str, cache: dict):
                 yield {'type': 'screenshot_ready', **data}
         
         yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages in parallel...'}
+        page_html_map = {homepage_url: final_homepage_html}
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
-        page_html_map = {homepage_url: homepage_html}
         if other_pages_to_fetch:
             try:
                 parallel_results = fetch_all_pages(other_pages_to_fetch)
-                if all(v is None for v in parallel_results.values()): raise Exception("All parallel page fetches failed.")
                 page_html_map.update(parallel_results)
                 circuit_breaker.record_success()
             except Exception as e:
