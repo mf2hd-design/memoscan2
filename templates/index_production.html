@@ -153,6 +153,13 @@
             color: var(--text-light);
         }
         
+        .time-remaining {
+            font-size: 0.8rem;
+            color: var(--info-color);
+            margin-top: 0.5rem;
+            font-weight: 500;
+        }
+        
         .progress-bar-wrapper {
             background: #e0e0e0;
             height: 8px;
@@ -612,6 +619,9 @@
                 <div class="phase-indicator">
                     <i class="fas fa-circle-notch fa-spin"></i> <span class="phase-text">Initializing...</span>
                 </div>
+                <div class="time-remaining">
+                    <i class="fas fa-clock"></i> <span id="time-remaining-text">Calculating time remaining...</span>
+                </div>
             </div>
         </div>
         
@@ -799,10 +809,29 @@
     class ProgressTracker {
         constructor() {
             this.currentPhase = '';
+            this.startTime = null;
+            this.progressHistory = [];
             this.updateProgress = PerformanceUtils.throttle(this.updateProgress.bind(this), 100);
+            this.updateTimeRemaining = PerformanceUtils.throttle(this.updateTimeRemaining.bind(this), 1000);
         }
         
         updateProgress(percentage, phase) {
+            const now = Date.now();
+            
+            // Initialize start time
+            if (!this.startTime && percentage > 0) {
+                this.startTime = now;
+            }
+            
+            // Track progress history for better time estimation
+            if (this.startTime && percentage > 0) {
+                this.progressHistory.push({ time: now, progress: percentage });
+                // Keep only last 10 data points for accuracy
+                if (this.progressHistory.length > 10) {
+                    this.progressHistory.shift();
+                }
+            }
+            
             const progressBar = document.querySelector('.progress-bar');
             const progressPercentage = document.querySelector('.progress-percentage');
             const phaseText = document.querySelector('.phase-text');
@@ -832,6 +861,88 @@
                 if (phaseText) {
                     phaseText.textContent = phaseMessages[phase] || 'Processing...';
                 }
+            }
+            
+            // Update time remaining estimate
+            this.updateTimeRemaining(percentage);
+        }
+        
+        updateTimeRemaining(percentage) {
+            const timeRemainingElement = document.getElementById('time-remaining-text');
+            if (!timeRemainingElement || !this.startTime || percentage <= 0 || percentage >= 100) {
+                if (timeRemainingElement && percentage >= 100) {
+                    timeRemainingElement.textContent = 'Analysis complete!';
+                }
+                return;
+            }
+            
+            const now = Date.now();
+            const elapsed = now - this.startTime;
+            
+            // Use recent progress data for more accurate estimation
+            if (this.progressHistory.length >= 2) {
+                const recent = this.progressHistory.slice(-5); // Last 5 data points
+                const oldestRecent = recent[0];
+                const newestRecent = recent[recent.length - 1];
+                
+                const progressDelta = newestRecent.progress - oldestRecent.progress;
+                const timeDelta = newestRecent.time - oldestRecent.time;
+                
+                if (progressDelta > 0 && timeDelta > 0) {
+                    const progressRate = progressDelta / timeDelta; // progress per ms
+                    const remainingProgress = 100 - percentage;
+                    const estimatedTimeRemaining = remainingProgress / progressRate;
+                    
+                    // Convert to human readable format
+                    const seconds = Math.round(estimatedTimeRemaining / 1000);
+                    const timeText = this.formatTime(seconds);
+                    
+                    if (seconds > 0 && seconds < 600) { // Show estimate only if reasonable (0-10 mins)
+                        timeRemainingElement.textContent = `About ${timeText} remaining`;
+                    } else {
+                        timeRemainingElement.textContent = 'Calculating time remaining...';
+                    }
+                    return;
+                }
+            }
+            
+            // Fallback: simple linear estimation
+            if (percentage > 0) {
+                const estimatedTotal = (elapsed / percentage) * 100;
+                const remaining = estimatedTotal - elapsed;
+                const seconds = Math.round(remaining / 1000);
+                
+                if (seconds > 0 && seconds < 600) {
+                    const timeText = this.formatTime(seconds);
+                    timeRemainingElement.textContent = `About ${timeText} remaining`;
+                } else {
+                    timeRemainingElement.textContent = 'Almost done...';
+                }
+            }
+        }
+        
+        formatTime(seconds) {
+            if (seconds < 60) {
+                return `${seconds} second${seconds !== 1 ? 's' : ''}`;
+            } else {
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                if (remainingSeconds === 0) {
+                    return `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+                } else {
+                    return `${minutes}m ${remainingSeconds}s`;
+                }
+            }
+        }
+        
+        reset() {
+            this.startTime = null;
+            this.progressHistory = [];
+            this.currentPhase = '';
+            
+            const timeRemainingElement = document.getElementById('time-remaining-text');
+            if (timeRemainingElement) {
+                timeRemainingElement.textContent = 'Calculating time remaining...';
             }
         }
         
@@ -1098,8 +1209,9 @@
             document.getElementById('screenshot-container').innerHTML = '';
             document.getElementById('activity-items').innerHTML = '';
             
-            // Reset metrics
+            // Reset metrics and progress tracker
             this.metricsDashboard.reset();
+            this.progressTracker.reset();
         }
         
         showUIElements() {
