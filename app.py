@@ -201,28 +201,86 @@ def health_check():
         "version": "2.0.0"
     }), 200
 
+def validate_feedback_input(data):
+    """Validate and sanitize feedback input to prevent XSS and data issues."""
+    import html
+    
+    errors = []
+    
+    # Validate required fields
+    analysis_id = data.get("analysis_id", "").strip()
+    key_name = data.get("key_name", "").strip()
+    feedback_type = data.get("feedback_type", "").strip()
+    
+    if not analysis_id or len(analysis_id) > 100:
+        errors.append("Invalid analysis ID")
+    if not key_name or key_name not in ["Emotion", "Attention", "Story", "Involvement", "Repetition", "Consistency"]:
+        errors.append("Invalid key name")
+    if feedback_type not in ["too_high", "about_right", "too_low"]:
+        errors.append("Invalid feedback type")
+    
+    # Validate and sanitize scores
+    ai_score = data.get("ai_score")
+    user_score = data.get("user_score")
+    confidence = data.get("confidence")
+    
+    if ai_score is not None and not (isinstance(ai_score, int) and 0 <= ai_score <= 5):
+        errors.append("AI score must be integer between 0-5")
+    if user_score is not None and not (isinstance(user_score, int) and 0 <= user_score <= 5):
+        errors.append("User score must be integer between 0-5")
+    if confidence is not None and not (isinstance(confidence, int) and 0 <= confidence <= 100):
+        errors.append("Confidence must be integer between 0-100")
+    
+    # Sanitize text inputs
+    comment = data.get("comment", "").strip()
+    brand_context = data.get("brand_context", "").strip()
+    
+    if len(comment) > 1000:
+        errors.append("Comment too long (max 1000 characters)")
+    if len(brand_context) > 200:
+        errors.append("Brand context too long (max 200 characters)")
+    
+    # Sanitize HTML/script content to prevent XSS
+    comment = html.escape(comment) if comment else None
+    brand_context = html.escape(brand_context) if brand_context else None
+    
+    return errors, {
+        "analysis_id": analysis_id,
+        "key_name": key_name,
+        "feedback_type": feedback_type,
+        "comment": comment,
+        "ai_score": ai_score,
+        "user_score": user_score,
+        "confidence": confidence,
+        "brand_context": brand_context
+    }
+
 @app.route("/feedback", methods=["POST"])
 def handle_feedback():
     try:
         data = request.get_json()
-        analysis_id = data.get("analysis_id")
-        key_name = data.get("key_name")
-        feedback_type = data.get("feedback_type")  # "too_high", "about_right", "too_low"
-        comment = data.get("comment")
-        ai_score = data.get("ai_score")  # Original AI score
-        user_score = data.get("user_score")  # User's corrected score
-        confidence = data.get("confidence")  # AI confidence level
-        brand_context = data.get("brand_context")  # Brief brand description
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+        
+        # Validate and sanitize input
+        errors, sanitized_data = validate_feedback_input(data)
+        if errors:
+            return jsonify({"status": "error", "message": "; ".join(errors)}), 400
 
-        if not all([analysis_id, key_name, feedback_type]):
-            return jsonify({"status": "error", "message": "Missing required feedback data"}), 400
-
-        record_feedback(analysis_id, key_name, feedback_type, comment, 
-                       ai_score, user_score, confidence, brand_context)
+        record_feedback(
+            sanitized_data["analysis_id"], 
+            sanitized_data["key_name"], 
+            sanitized_data["feedback_type"], 
+            sanitized_data["comment"],
+            sanitized_data["ai_score"], 
+            sanitized_data["user_score"], 
+            sanitized_data["confidence"], 
+            sanitized_data["brand_context"]
+        )
         return jsonify({"status": "success", "message": "Enhanced feedback recorded"}), 200
     except Exception as e:
         print(f"Error handling feedback: {e}", flush=True)
-        return jsonify({"status": "error", "message": f"Failed to record feedback: {str(e)}"}), 500
+        return jsonify({"status": "error", "message": "Failed to record feedback"}), 500
 
 @app.route("/feedback/analytics")
 def feedback_analytics():

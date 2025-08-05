@@ -261,9 +261,27 @@
                 break;
             case 'summary':
                 summaryContainer.style.display = 'block';
-                // --- THIS IS THE FIX for formatting ---
-                // We use the marked() function to safely convert Markdown to HTML
-                summaryText.innerHTML = marked.parse(msg.text);
+                // XSS Prevention: Sanitize HTML output from marked.parse()
+                const htmlContent = marked.parse(msg.text);
+                // Create temporary DOM to sanitize content
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = htmlContent;
+                // Remove any script tags or dangerous attributes
+                tempDiv.querySelectorAll('script').forEach(script => script.remove());
+                tempDiv.querySelectorAll('*').forEach(el => {
+                    // Remove potentially dangerous attributes
+                    ['onclick', 'onload', 'onerror', 'onmouseover', 'onfocus'].forEach(attr => {
+                        el.removeAttribute(attr);
+                    });
+                    // Remove javascript: and data: URLs from href and src
+                    ['href', 'src'].forEach(attr => {
+                        const value = el.getAttribute(attr);
+                        if (value && (value.startsWith('javascript:') || value.startsWith('data:'))) {
+                            el.removeAttribute(attr);
+                        }
+                    });
+                });
+                summaryText.innerHTML = tempDiv.innerHTML;
                 break;
             case 'complete':
                 statusContainer.innerHTML += `<div><strong>${msg.message}</strong></div>`;

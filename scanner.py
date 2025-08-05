@@ -281,7 +281,7 @@ def record_feedback(analysis_id: str, key_name: str, feedback_type: str,
                    comment: Optional[str] = None, ai_score: Optional[int] = None, 
                    user_score: Optional[int] = None, confidence: Optional[int] = None,
                    brand_context: Optional[str] = None):
-    """Records enhanced user feedback for AI learning and prompt improvement."""
+    """Records enhanced user feedback for AI learning and prompt improvement with atomic writes."""
     feedback_entry = {
         "timestamp": time.time(),
         "analysis_id": analysis_id,
@@ -294,12 +294,58 @@ def record_feedback(analysis_id: str, key_name: str, feedback_type: str,
         "brand_context": brand_context,  # Brief brand description for pattern analysis
         "score_difference": (user_score - ai_score) if (user_score is not None and ai_score is not None) else None
     }
+    
+    # Use atomic writes to prevent corruption from concurrent access
+    temp_file = f"{FEEDBACK_FILE}.tmp.{uuid.uuid4()}"
     try:
-        with open(FEEDBACK_FILE, "a") as f:
+        # Write to temporary file first
+        with open(temp_file, "w") as f:
             f.write(json.dumps(feedback_entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())  # Force write to disk
+        
+        # Atomic append by reading existing + new content
+        feedback_lines = []
+        if os.path.exists(FEEDBACK_FILE):
+            try:
+                with open(FEEDBACK_FILE, "r") as f:
+                    feedback_lines = f.readlines()
+            except (IOError, OSError):
+                log("warn", "Could not read existing feedback file, creating new one")
+        
+        # Add new feedback
+        with open(temp_file, "r") as f:
+            feedback_lines.extend(f.readlines())
+        
+        # Atomic replace
+        final_temp = f"{FEEDBACK_FILE}.final.{uuid.uuid4()}"
+        with open(final_temp, "w") as f:
+            f.writelines(feedback_lines)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        # Atomic move (rename is atomic on POSIX systems)
+        os.rename(final_temp, FEEDBACK_FILE)
+        
         log("info", f"Recorded enhanced feedback for analysis_id {analysis_id}, key {key_name}: {feedback_type} (AI: {ai_score}, User: {user_score})")
+        
+    except OSError as e:
+        if e.errno == 28:  # No space left on device
+            log("error", "Disk space full - cannot record feedback")
+        else:
+            log("error", f"OS error recording feedback: {e}")
+        raise
     except Exception as e:
         log("error", f"Failed to record feedback to file: {e}")
+        raise
+    finally:
+        # Cleanup temporary files
+        for temp in [temp_file, final_temp]:
+            try:
+                if 'final_temp' in locals() and os.path.exists(temp):
+                    os.unlink(temp)
+            except:
+                pass
 # --- START: FEEDBACK ANALYTICS FOR AI LEARNING ---
 
 def analyze_feedback_patterns():

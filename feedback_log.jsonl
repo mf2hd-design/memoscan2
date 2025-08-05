@@ -1,0 +1,1 @@
+{"timestamp": 1754394218.831754, "analysis_id": "test-123", "key_name": "Emotion", "feedback_type": "too_high", "comment": "The AI rated this as 4/5 but I think it should be 2/5. The brand lacks emotional connection.", "ai_score": 4, "user_score": 2, "confidence": 85, "brand_context": "google.com", "score_difference": -2}
