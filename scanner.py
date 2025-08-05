@@ -156,17 +156,6 @@ def _compile_patterns():
 # Initialize compiled patterns
 _compile_patterns()
 
-# Re-compile patterns if NEGATIVE_REGEX was updated after initial compilation
-def _recompile_negative_patterns():
-    """Re-compile negative patterns after updates."""
-    global COMPILED_PATTERNS
-    COMPILED_PATTERNS["negative"] = [re.compile(pattern, re.IGNORECASE) for pattern in NEGATIVE_REGEX]
-    # Update the LINK_SCORE_MAP reference
-    LINK_SCORE_MAP["negative"]["patterns"] = COMPILED_PATTERNS["negative"]
-
-# Ensure negative patterns are up-to-date
-_recompile_negative_patterns()
-
 LINK_SCORE_MAP = {
     "critical": {"patterns": COMPILED_PATTERNS["critical"], "score": 30},
     "high": {"patterns": COMPILED_PATTERNS["high"], "score": 20},
