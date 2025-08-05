@@ -15,23 +15,11 @@ import httpx
 
 from urllib.parse import quote_plus
 
-BASE_SCRAPFLY_QUERY = (
-    "tags=player%2Cproject%3Adefault"
-    "&proxy_pool=public_residential_pool"
-    "&format=json"
-    "&asp=true"
-    "&render_js=true"
-    "&screenshots[test]=fullpage"
-    "&screenshot_flags=load_images%2Cblock_banners"
-    "&auto_scroll=true"
-)
-
-def build_scrapfly_url(target_url: str, api_key: str) -> str:
-    return f"REPLACEME_URL_PREFIX{quote_plus(target_url)}"
+# Use ProcessPoolExecutor for true isolation and reliability in parallel tasks
+from concurrent.futures import ProcessPoolExecutor
 
 from playwright.sync_api import sync_playwright
 from typing import Optional, Dict, List, Tuple
-from concurrent.futures import ThreadPoolExecutor
 
 # --- START: HELPER FUNCTIONS ---
 
@@ -156,11 +144,22 @@ def score_link(link_url: str, link_text: str) -> int:
     if lower_text in language_names:
         score -= 20
 
-    for tier in LINK_SCORE_MAP.values():
+    tier_order = ["critical", "high", "medium", "low"]
+    assigned_score = False
+    for tier_name in tier_order:
+        tier = LINK_SCORE_MAP[tier_name]
         for pattern in tier["patterns"]:
             if re.search(pattern, combined_text):
                 score += tier["score"]
-    
+                assigned_score = True
+                break
+        if assigned_score:
+            break
+
+    if re.search(LINK_SCORE_MAP['language']['patterns'][0], combined_text) or \
+       re.search(LINK_SCORE_MAP['language']['patterns'][1], combined_text):
+        score += LINK_SCORE_MAP['language']['score']
+
     path_depth = link_url.count('/') - 2
     if path_depth <= 2: 
         score += 5
@@ -253,30 +252,6 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
         html = fetch_html_with_playwright(url)
         return None, html
 
-def fetch_all_pages(urls: list[str]) -> Dict[str, Optional[str]]:
-    results = {}
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in urls}
-        for future in future_to_url:
-            url = future_to_url[future]
-            try:
-                _, html = future.result()
-                if not html: raise ValueError("Received empty HTML content.")
-                results[url] = html
-                log("info", f"Successfully fetched parallel page: {url}")
-            except Exception as e:
-                log("warn", f"Failed to fetch parallel page {url}: {e}")
-                results[url] = None
-    return results
-
-def summarize_results(all_results: list) -> dict:
-    if not all_results: return {"keys_analyzed": 0, "strong_keys": 0, "weak_keys": 0}
-    summary = {"keys_analyzed": len(all_results), "strong_keys": 0, "weak_keys": 0}
-    for result in all_results:
-        if 'analysis' in result and 'score' in result['analysis']:
-            if result["analysis"]["score"] >= 4: summary["strong_keys"] += 1
-            elif result["analysis"]["score"] <= 2: summary["weak_keys"] += 1
-    return summary
 # --- END: HELPER CLASSES AND FUNCTIONS ---
 
 SHARED_CACHE = {}
@@ -662,13 +637,12 @@ def run_full_scan_stream(url: str, cache: dict):
             yield {'type': 'error', 'message': f'Failed to fetch the initial URL: {e}'}
             return
 
-        # This is our first "pocket" of links, from the main domain.
         all_discovered_links = discover_links_from_html(homepage_html, initial_url)
         sitemap_links = discover_links_from_sitemap(initial_url)
         if sitemap_links:
             all_discovered_links.extend(sitemap_links)
 
-        # --- Phase 2: High-Value Subdomain Discovery (The "Second Pocket") ---
+        # --- Phase 2: High-Value Subdomain Discovery ---
         subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url)
         if subdomain_portal_url:
             log("info", f"Found high-value subdomain: {subdomain_portal_url}. Scanning it for additional links.")
@@ -680,7 +654,7 @@ def run_full_scan_stream(url: str, cache: dict):
             except Exception as e:
                 log("warn", f"Could not fetch high-value subdomain {subdomain_portal_url}: {e}")
 
-        # --- Phase 3: Scoring and Analysis on the Combined Link Pool ---
+        # --- Phase 3: Scoring and Analysis ---
         homepage_url = initial_url
         log("info", f"Confirmed scan homepage: {homepage_url}")
 
@@ -734,17 +708,25 @@ def run_full_scan_stream(url: str, cache: dict):
             for data in capture_screenshots_playwright(other_pages_to_screenshot):
                 yield {'type': 'screenshot_ready', **data}
         
-        yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages in parallel...'}
+        yield {'type': 'status', 'message': 'Step 2/5: Analyzing key pages...'}
         page_html_map = {homepage_url: final_homepage_html}
+        
         other_pages_to_fetch = [p for p in priority_pages if p != homepage_url]
-        if other_pages_to_fetch:
-            try:
-                parallel_results = fetch_all_pages(other_pages_to_fetch)
-                page_html_map.update(parallel_results)
-                circuit_breaker.record_success()
-            except Exception as e:
-                circuit_breaker.record_failure()
-                raise e
+        with ProcessPoolExecutor(max_workers=4) as executor:
+            future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
+            for future in future_to_url:
+                url = future_to_url[future]
+                try:
+                    _, html = future.result()
+                    if html:
+                        page_html_map[url] = html
+                        circuit_breaker.record_success()
+                    else:
+                        log("warn", f"Parallel fetch for {url} returned no content.")
+                        circuit_breaker.record_failure()
+                except Exception as e:
+                    log("error", f"Parallel fetch for {url} failed: {e}")
+                    circuit_breaker.record_failure()
 
         text_corpus = ""
         for page_url in priority_pages:
