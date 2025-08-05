@@ -1174,6 +1174,7 @@ def run_full_scan_stream(url: str, cache: dict):
         yield debug_yield({'type': 'activity', 'message': f'🔍 Analyzing HTML structure...', 'timestamp': time.time()})
         all_discovered_links = discover_links_from_html(homepage_html, initial_url)
         yield debug_yield({'type': 'metric', 'key': 'html_links', 'value': len(all_discovered_links)})
+        yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(all_discovered_links)} links in HTML', 'timestamp': time.time()})
         
         yield debug_yield({'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()})
         sitemap_result = discover_links_from_sitemap(initial_url)
@@ -1185,6 +1186,8 @@ def run_full_scan_stream(url: str, cache: dict):
                 all_discovered_links.extend(sitemap_links)
                 yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(sitemap_links)} pages in sitemap', 'timestamp': time.time()})
                 yield debug_yield({'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)})
+        else:
+            yield debug_yield({'type': 'activity', 'message': f'📄 No sitemap found - proceeding with HTML links', 'timestamp': time.time()})
 
         # Detect the primary language from HTML first
         primary_language = detect_primary_language(homepage_html)
@@ -1197,20 +1200,26 @@ def run_full_scan_stream(url: str, cache: dict):
 
         # --- Phase 2: High-Value Subdomain Discovery ---
         # FIXED: True Two-Pocket Strategy - find additional sources without pivoting
+        yield debug_yield({'type': 'activity', 'message': f'🔎 Searching for corporate portals...', 'timestamp': time.time()})
         subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url, primary_language)
         if subdomain_portal_url:
             log("info", f"🎯 Found high-value subdomain: {subdomain_portal_url}. Adding its links to our discovery pool.")
+            yield debug_yield({'type': 'activity', 'message': f'🎯 Found corporate portal - expanding discovery...', 'timestamp': time.time()})
             try:
+                yield debug_yield({'type': 'activity', 'message': f'📥 Fetching portal content...', 'timestamp': time.time()})
                 _, subdomain_html = fetch_page_content_robustly(subdomain_portal_url)
                 if subdomain_html:
+                    yield debug_yield({'type': 'activity', 'message': f'🔗 Discovering portal links...', 'timestamp': time.time()})
                     subdomain_links = discover_links_from_html(subdomain_html, subdomain_portal_url)
                     # Additional sitemap discovery from the subdomain
+                    yield debug_yield({'type': 'activity', 'message': f'📄 Checking portal sitemap...', 'timestamp': time.time()})
                     subdomain_sitemap_result = discover_links_from_sitemap(subdomain_portal_url)
                     if subdomain_sitemap_result:
                         subdomain_sitemap_links, subdomain_lang = subdomain_sitemap_result
                         if subdomain_sitemap_links:
                             subdomain_links.extend(subdomain_sitemap_links)
                             log("info", f"✅ Added {len(subdomain_sitemap_links)} links from subdomain sitemap")
+                            yield debug_yield({'type': 'activity', 'message': f'✅ Added {len(subdomain_sitemap_links)} portal sitemap links', 'timestamp': time.time()})
                             # Update language context if subdomain provides clearer signal
                             if subdomain_lang and subdomain_lang != primary_language:
                                 log("info", f"🔄 Subdomain sitemap suggests '{subdomain_lang}' language context")
@@ -1220,6 +1229,9 @@ def run_full_scan_stream(url: str, cache: dict):
                     yield debug_yield({'type': 'metric', 'key': 'subdomain_links', 'value': len(subdomain_links)})
             except Exception as e:
                 log("warn", f"Could not fetch high-value subdomain {subdomain_portal_url}: {e}")
+                yield debug_yield({'type': 'activity', 'message': f'⚠️ Portal fetch failed - continuing with main site', 'timestamp': time.time()})
+        else:
+            yield debug_yield({'type': 'activity', 'message': f'📍 No additional portals found - using main site', 'timestamp': time.time()})
 
         # --- Phase 3: Scoring and Analysis ---
         # CRITICAL: Never pivot - always use initial URL as homepage
@@ -1263,10 +1275,22 @@ def run_full_scan_stream(url: str, cache: dict):
         yield {'type': 'metric', 'key': 'total_links', 'value': len(all_discovered_links)}
         scored_links = []
         unique_urls_for_scoring = set()
+        processed_count = 0
+        total_unique = len(set(_clean_url(url) for url, _ in all_discovered_links))  # Estimate unique count
+        
+        yield debug_yield({'type': 'activity', 'message': f'🔍 Removing {len(all_discovered_links) - total_unique} duplicate URLs...', 'timestamp': time.time()})
+        
         for link_url, link_text in all_discovered_links:
             cleaned_url = _clean_url(link_url)
             if cleaned_url not in unique_urls_for_scoring:
                 unique_urls_for_scoring.add(cleaned_url)
+                processed_count += 1
+                
+                # Progress updates every 20% of links processed
+                if processed_count % max(1, total_unique // 5) == 0 or processed_count == total_unique:
+                    progress_pct = int((processed_count / total_unique) * 100) if total_unique > 0 else 100
+                    yield debug_yield({'type': 'activity', 'message': f'📊 Scoring links... {processed_count}/{total_unique} ({progress_pct}%)', 'timestamp': time.time()})
+                
                 score, rationale = score_link(cleaned_url, link_text, primary_language)
                 if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:  # Business-relevant content threshold
                     scored_links.append({"url": cleaned_url, "text": link_text, "score": score, "rationale": rationale})
@@ -1311,7 +1335,10 @@ def run_full_scan_stream(url: str, cache: dict):
         if IS_PRODUCTION or len(other_pages_to_fetch) <= 2:
             # Sequential processing for production environments
             log("info", f"🔄 Using sequential processing for {len(other_pages_to_fetch)} pages (Production mode)")
-            for url in other_pages_to_fetch:
+            yield debug_yield({'type': 'activity', 'message': f'📥 Fetching {len(other_pages_to_fetch)} priority pages (sequential)...', 'timestamp': time.time()})
+            
+            for i, url in enumerate(other_pages_to_fetch, 1):
+                yield debug_yield({'type': 'activity', 'message': f'📄 Fetching page {i}/{len(other_pages_to_fetch)}: {url.split("/")[-1] or "homepage"}...', 'timestamp': time.time()})
                 try:
                     _, html = fetch_page_content_robustly(url)
                     if html:
@@ -1334,27 +1361,41 @@ def run_full_scan_stream(url: str, cache: dict):
         else:
             # Parallel processing for local/development environments
             log("info", f"⚡ Using parallel processing for {len(other_pages_to_fetch)} pages (Development mode)")
+            yield debug_yield({'type': 'activity', 'message': f'⚡ Fetching {len(other_pages_to_fetch)} priority pages (parallel)...', 'timestamp': time.time()})
+            
             with ProcessPoolExecutor(max_workers=2) as executor:
                 future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
+                completed_count = 0
+                total_count = len(other_pages_to_fetch)
+                
                 for future in future_to_url:
                     url = future_to_url[future]
+                    completed_count += 1
                     try:
                         _, html = future.result(timeout=60)
                         if html:
                             page_html_map[url] = html
                             circuit_breaker.record_success()
                             log("info", f"✅ Parallel fetch successful for {url}")
+                            yield debug_yield({'type': 'activity', 'message': f'✅ Fetched page {completed_count}/{total_count}: {url.split("/")[-1] or "homepage"}', 'timestamp': time.time()})
                         else:
                             log("warn", f"⚠️ Parallel fetch for {url} returned no content.")
                             circuit_breaker.record_failure()
+                            yield debug_yield({'type': 'activity', 'message': f'⚠️ Page {completed_count}/{total_count} returned no content', 'timestamp': time.time()})
                     except Exception as e:
                         log("error", f"❌ Parallel fetch for {url} failed: {e}")
                         circuit_breaker.record_failure()
+                        yield debug_yield({'type': 'activity', 'message': f'❌ Page {completed_count}/{total_count} fetch failed', 'timestamp': time.time()})
 
+        yield debug_yield({'type': 'activity', 'message': f'📝 Extracting text from {len(priority_pages)} pages...', 'timestamp': time.time()})        
         text_corpus = ""
+        processed_pages = 0
+        
         for page_url in priority_pages:
             page_html = page_html_map.get(page_url)
             if page_html:
+                processed_pages += 1
+                yield debug_yield({'type': 'activity', 'message': f'📝 Processing text {processed_pages}/{len(priority_pages)}: {page_url.split("/")[-1] or "homepage"}...', 'timestamp': time.time()})
                 soup = BeautifulSoup(page_html, "html.parser")
                 for tag in soup(["script", "style", "nav", "footer", "aside", "header"]):
                     tag.decompose()
@@ -1364,6 +1405,7 @@ def run_full_scan_stream(url: str, cache: dict):
         full_corpus = (text_corpus + social_corpus)[:MAX_CORPUS_LENGTH]
         if len(text_corpus + social_corpus) > MAX_CORPUS_LENGTH:
             log("info", f"📄 Text corpus truncated from {len(text_corpus + social_corpus)} to {MAX_CORPUS_LENGTH} characters")
+            yield debug_yield({'type': 'activity', 'message': f'📄 Trimmed text corpus to optimal length ({MAX_CORPUS_LENGTH} chars)', 'timestamp': time.time()})
 
         yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...', 'phase': 'synthesis', 'progress': 60}
         yield {'type': 'activity', 'message': '🧠 AI analyzing brand identity...', 'timestamp': time.time()}
