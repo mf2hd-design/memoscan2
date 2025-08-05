@@ -73,7 +73,6 @@ def _get_root_word(url: str) -> str:
 def _is_same_root_word_domain(url1: str, url2: str) -> bool:
     """Checks if two URLs share the same core domain word (e.g., 'omv.at' and 'omv.com')."""
     root1 = _get_root_word(url1)
-    # Ensure we don't match on empty root words from invalid URLs
     if not root1:
         return False
     return root1 == _get_root_word(url2)
@@ -103,33 +102,42 @@ NEGATIVE_REGEX = [
     r"\b(calculator|tool|search|filter|compare|rechner|suche|vergleich|calculadora|buscar|comparar|filtro)\b",
     r"\b(404|not-found|error|redirect|sitemap|robots|tracking|rss|weiterleitung|umleitung|redireccion|mapa-del_sitio|seguimiento)\b",
     r"\b(press[-_]release(s)?)\b",
-    # Aggressively penalize specific investor docs/reports and general news/events/blogs/articles
     r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck)\b",
-    # Expanded to catch more general news/content sections, webinars, whitepapers, case studies, resources, insights
     r"\b(news|events|blogs?|articles?|updates?|media|press|spotlight|stories)\b",
     r"\b(whitepapers?|webinars?|case[-_]stud(y|ies)|customer[-_]stor(y|ies))\b",
-    r"\b(resources?|insights?|downloads?)\b" # General content hubs, added 'downloads'
+    r"\b(resources?|insights?|downloads?)\b"
 ]
 
 LINK_SCORE_MAP = {
-    "high": {"patterns": [r"company", r"about", r"story", r"mission", r"vision", r"purpose", r"values", r"strategy", r"strength", r"culture", r"who[-_]we[-_]are", r"credo", r"manifesto", r"why[-_]we[-_]exist", r"what[-_]we[-_]believe", r"über[-_]uns", r"unternehmen", r"unsere[-_]mission", r"unsere[-_]werte", r"quienes[-_]somos", r"nuestra[-_]historia", r"nuestros[-_]valores"], "score": 20},
-    "core_business": {"patterns": [r"products", r"solutions", r"services", r"pipeline", r"research", r"innovation", r"investors?", r"investor[-_]relations", r"offerings", r"expertise", r"what[-_]we[-_]do", r"capabilities", r"industries", r"technology"], "score": 15}, # Added 'offerings', 'expertise', 'what-we-do', 'capabilities', 'industries', 'technology'
+    "critical": {"patterns": [r"\b(brand|purpose|values|strategy|products|services|operations)\b"], "score": 30},
+    "high": {"patterns": [r"company", r"about", r"story", r"mission", r"vision", r"culture", r"who[-_]we[-_]are", r"what[-_]we[-_]do", r"investors?"], "score": 20},
+    "medium": {"patterns": [r"solutions", r"pipeline", r"research", r"innovation", r"capabilities", r"industries", r"technology"], "score": 10},
+    "low": {"patterns": [r"leadership", r"team", "management", r"history", r"sustainability", r"responsibility", r"esg"], "score": 5},
     "language": {"patterns": [r"/en/", r"lang=en"], "score": 10},
-    "medium": {"patterns": [r"leadership", r"team", r"management", r"history", r"heritage", r"legacy", r"sustainability", r"responsibility", r"esg", r"evp", r"employee-value-proposition", r"nachhaltigkeit", r"verantwortung", r"liderazgo", r"equipo", "sostenibilidad"], "score": 8},
-    "negative": {"patterns": NEGATIVE_REGEX, "score": -50} # All other negative patterns combined
+    "negative": {"patterns": NEGATIVE_REGEX, "score": -50}
 }
-
 
 def score_link(link_url: str, link_text: str) -> int:
     score = 0
-    combined_text = f"{link_url} {link_text}".lower()
+    lower_text = link_text.lower()
+    combined_text = f"{link_url} {lower_text}"
+
+    language_names = ['english', 'español', 'deutsch', 'français', 'português', 'en', 'es', 'de', 'fr', 'pt']
+    if lower_text in language_names:
+        score -= 20
+
     for tier in LINK_SCORE_MAP.values():
         for pattern in tier["patterns"]:
             if re.search(pattern, combined_text):
                 score += tier["score"]
+    
     path_depth = link_url.count('/') - 2
-    if path_depth <= 2: score += 2
-    if any(link_url.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]): score -= 100
+    if path_depth <= 2: 
+        score += 5
+
+    if any(link_url.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]): 
+        score -= 100
+        
     return score
 # --- END: REGEX AND SCORING LOGIC ---
 
@@ -420,7 +428,7 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
                 highest_score = score
                 best_candidate = link_url
     
-    if highest_score > 15:
+    if highest_score > 25:
         log("info", f"High-quality portal found with score {highest_score}. Pivoting to: {best_candidate}")
         return best_candidate
     else:
@@ -493,8 +501,6 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
         if all_links_found <= 5:
             log("debug", f"Found link: {href_raw} -> {link_url}")
         
-        # FIX: Use the looser root word check to find all related brand domains,
-        # allowing the portal finder to see potential pivot links like '.com' from '.at'.
         if _is_same_root_word_domain(base_url, link_url):
             links.append((link_url, a.get_text(strip=True)))
     
