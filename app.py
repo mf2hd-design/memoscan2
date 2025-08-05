@@ -50,9 +50,17 @@ class RateLimiter:
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
 # CORS configuration - restrict origins in production
-allowed_origins = os.getenv('ALLOWED_ORIGINS', '*').split(',')
-if allowed_origins == ['*']:
+# Default to allow Render domain and common localhost ports for development
+default_origins = 'https://memoscan2.onrender.com,http://localhost:5000,http://127.0.0.1:5000'
+allowed_origins = os.getenv('ALLOWED_ORIGINS', default_origins).split(',')
+
+# Clean up origins (remove empty strings and whitespace)
+allowed_origins = [origin.strip() for origin in allowed_origins if origin.strip()]
+
+if '*' in allowed_origins:
     print("WARNING: CORS allowing all origins. Set ALLOWED_ORIGINS environment variable for production.", flush=True)
+else:
+    print(f"CORS configured for origins: {', '.join(allowed_origins)}", flush=True)
 
 socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
 
