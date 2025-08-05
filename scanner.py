@@ -364,11 +364,39 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
             response = client.get("https://api.scrapfly.io/scrape", params=params, timeout=180)
             response.raise_for_status()
             data = response.json()
-            html_content = data["result"]["content"]
+            
+            # Check if Scrapfly returned HTML or structured data
+            raw_content = data["result"]["content"]
+            html_content = raw_content
             
             # DIAGNOSTIC: Log what Scrapfly actually returned
-            if html_content:
-                log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
+            if raw_content:
+                log("info", f"🔍 SCRAPFLY RESPONSE: {len(raw_content)} chars, starts: {repr(raw_content[:100])}")
+                
+                # Check if content is JSON (structured data) instead of HTML
+                if raw_content.strip().startswith('{') and 'structured_data' in raw_content:
+                    try:
+                        # Parse the JSON to find the actual HTML
+                        structured_data = json.loads(raw_content)
+                        # Look for HTML in various possible locations
+                        if "html" in structured_data:
+                            html_content = structured_data["html"]
+                            log("info", f"📄 EXTRACTED HTML from structured_data.html: {len(html_content)} chars")
+                        elif "browser_data" in data["result"] and "html" in data["result"]["browser_data"]:
+                            html_content = data["result"]["browser_data"]["html"]
+                            log("info", f"📄 EXTRACTED HTML from browser_data.html: {len(html_content)} chars")
+                        elif "browser_data" in data["result"] and "document" in data["result"]["browser_data"]:
+                            html_content = data["result"]["browser_data"]["document"]
+                            log("info", f"📄 EXTRACTED HTML from browser_data.document: {len(html_content)} chars")
+                        else:
+                            log("warn", f"❌ SCRAPFLY returned structured data but no HTML found in response")
+                            # Check if there's HTML in the main result
+                            if "browser_data" in data["result"]:
+                                log("info", f"🔍 browser_data keys: {list(data['result']['browser_data'].keys())[:10]}")
+                            html_content = None
+                    except json.JSONDecodeError:
+                        log("warn", f"❌ SCRAPFLY content looks like JSON but failed to parse")
+                        html_content = None
             else:
                 log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
                 
@@ -442,24 +470,28 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
                 return screenshot, html
             else:
                 log("warn", f"❌ SCRAPFLY INVALID HTML: Content doesn't appear to be HTML. First 100 chars: {html[:100]}")
+                # Fall through to Playwright fallback below
         else:
             log("warn", f"❌ SCRAPFLY EMPTY CONTENT for {url}, falling back to Playwright for HTML.")
-            
-            # ENHANCED FIX: Use Playwright screenshot when Scrapfly fails or when preserving existing screenshot
-            if take_screenshot and screenshot:
-                # Preserve existing Scrapfly screenshot and get HTML from Playwright
-                log("info", f"🔧 PRESERVING SCRAPFLY SCREENSHOT: {len(screenshot)} bytes while using Playwright HTML")
-                _, html = fetch_html_with_playwright(url, take_screenshot=False)
-                return screenshot, html
-            elif take_screenshot:
-                # Scrapfly failed to get screenshot, use Playwright for both
-                log("info", f"🔧 USING PLAYWRIGHT FOR SCREENSHOT: Scrapfly failed, trying Playwright")
-                screenshot, html = fetch_html_with_playwright(url, take_screenshot=True)
-                return screenshot, html
-            else:
-                # No screenshot needed, just get HTML
-                _, html = fetch_html_with_playwright(url, take_screenshot=False)
-                return None, html
+        
+        # Fallback to Playwright for invalid or empty HTML
+        log("info", f"🔄 FALLING BACK TO PLAYWRIGHT for {url}")
+        
+        # ENHANCED FIX: Use Playwright screenshot when Scrapfly fails or when preserving existing screenshot
+        if take_screenshot and screenshot:
+            # Preserve existing Scrapfly screenshot and get HTML from Playwright
+            log("info", f"🔧 PRESERVING SCRAPFLY SCREENSHOT: {len(screenshot)} bytes while using Playwright HTML")
+            _, html = fetch_html_with_playwright(url, take_screenshot=False)
+            return screenshot, html
+        elif take_screenshot:
+            # Scrapfly failed to get screenshot, use Playwright for both
+            log("info", f"🔧 USING PLAYWRIGHT FOR SCREENSHOT: Scrapfly failed, trying Playwright")
+            screenshot, html = fetch_html_with_playwright(url, take_screenshot=True)
+            return screenshot, html
+        else:
+            # No screenshot needed, just get HTML
+            _, html = fetch_html_with_playwright(url, take_screenshot=False)
+            return None, html
     except Exception as e:
         log("warn", f"Scrapfly failed for {url} with error: {e}. Falling back to Playwright.")
         # Complete fallback to Playwright for both screenshot and HTML
