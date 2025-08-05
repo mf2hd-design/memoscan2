@@ -142,30 +142,60 @@ def score_link(link_url: str, link_text: str) -> int:
     lower_text = link_text.lower()
     combined_text = f"{link_url} {lower_text}"
 
+    # Language selection penalty
     language_names = ['english', 'español', 'deutsch', 'français', 'português', 'en', 'es', 'de', 'fr', 'pt']
     if lower_text in language_names:
         score -= 20
 
+    # PHASE 1: Calculate positive score based on highest-value keyword match (first past the post)
     tier_order = ["critical", "high", "medium", "low"]
     assigned_score = False
+    matched_tier = None
+    
     for tier_name in tier_order:
         tier = LINK_SCORE_MAP[tier_name]
         for pattern in tier["patterns"]:
             if re.search(pattern, combined_text):
                 score += tier["score"]
                 assigned_score = True
+                matched_tier = tier_name
                 break
         if assigned_score:
             break
 
+    # Language bonus (separate from tier scoring)
     if re.search(LINK_SCORE_MAP['language']['patterns'][0], combined_text) or \
        re.search(LINK_SCORE_MAP['language']['patterns'][1], combined_text):
         score += LINK_SCORE_MAP['language']['score']
 
-    path_depth = link_url.count('/') - 2
-    if path_depth <= 2: 
-        score += 5
+    # PHASE 2: Always check for negative patterns as a veto (decoupled from positive scoring)
+    for pattern in LINK_SCORE_MAP["negative"]["patterns"]:
+        if re.search(pattern, combined_text):
+            score += LINK_SCORE_MAP["negative"]["score"]  # This is -50
+            break  # Single negative match is enough
 
+    # PHASE 3: Apply path depth penalty with Critical Keyword Safety Net
+    try:
+        path = urlparse(link_url).path
+        path_depth = path.strip('/').count('/')
+        
+        if path_depth > 3:
+            # Base penalty: subtract 5 points for each level beyond depth 3
+            penalty = (path_depth - 3) * 5
+            
+            # CRITICAL KEYWORD SAFETY NET: Halve penalty for critical keywords
+            if matched_tier == "critical":
+                penalty = penalty // 2
+                log("debug", f"Applied halved depth penalty of {penalty} to critical keyword at {link_url} (depth: {path_depth})")
+            else:
+                log("debug", f"Applied full depth penalty of {penalty} to {link_url} (depth: {path_depth})")
+            
+            score -= penalty
+
+    except Exception:
+        pass  # Ignore parsing errors on malformed URLs
+
+    # File extension penalty
     if any(link_url.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]): 
         score -= 100
         
@@ -957,7 +987,18 @@ def run_full_scan_stream(url: str, cache: dict):
                     scored_links.append({"url": cleaned_url, "text": link_text, "score": score})
         
         scored_links.sort(key=lambda x: x["score"], reverse=True)
-        log("info", "Top 10 most relevant links found:", scored_links[:10])
+        
+        # Enhanced logging: Format top 10 links with clear scoring breakdown
+        top_10 = scored_links[:10]
+        log("info", f"Top {len(top_10)} most relevant links found:")
+        for i, link in enumerate(top_10, 1):
+            # Truncate URL and text for readability
+            url_display = link["url"] if len(link["url"]) <= 60 else link["url"][:57] + "..."
+            text_display = link["text"] if len(link["text"]) <= 30 else link["text"][:27] + "..."
+            log("info", f"  {i}. {url_display} (Score: {link['score']}) - \"{text_display}\"")
+        
+        # Also log the raw data for detailed analysis if needed
+        log("details", top_10)
 
         priority_pages, found_urls = [], set()
         if homepage_url not in found_urls:
