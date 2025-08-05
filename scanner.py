@@ -1,4 +1,4 @@
-print(">>> RUNNING 9:46 SCANNER VERSION <<<")
+print(">>> RUNNING FIXED SCANNER VERSION <<<")
 import os
 import re
 import json
@@ -70,9 +70,13 @@ def _get_root_word(url: str) -> str:
     except Exception:
         return ""
 
-def _is_same_brand_domain(url1: str, url2: str) -> bool:
-    """Checks if two URLs belong to the same brand domain using SLD."""
-    return _get_sld(url1) == _get_sld(url2)
+def _is_same_root_word_domain(url1: str, url2: str) -> bool:
+    """Checks if two URLs share the same core domain word (e.g., 'omv.at' and 'omv.com')."""
+    root1 = _get_root_word(url1)
+    # Ensure we don't match on empty root words from invalid URLs
+    if not root1:
+        return False
+    return root1 == _get_root_word(url2)
 
 # --- END: HELPER FUNCTIONS ---
 
@@ -489,10 +493,12 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
         if all_links_found <= 5:
             log("debug", f"Found link: {href_raw} -> {link_url}")
         
-        if _is_same_brand_domain(base_url, link_url):
+        # FIX: Use the looser root word check to find all related brand domains,
+        # allowing the portal finder to see potential pivot links like '.com' from '.at'.
+        if _is_same_root_word_domain(base_url, link_url):
             links.append((link_url, a.get_text(strip=True)))
     
-    log("info", f"HTML link discovery: Found {all_links_found} total links, {len(links)} from same domain")
+    log("info", f"HTML link discovery: Found {all_links_found} total links, {len(links)} from same root domain")
     
     if all_links_found == 0:
         log("warn", "No <a> tags found in HTML. This might be a JavaScript-rendered site.")
