@@ -258,6 +258,22 @@ SHARED_CACHE = {}
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Memory management configuration
+MAX_CACHE_SIZE = 100  # Maximum cached screenshots
+MAX_CORPUS_LENGTH = 50000  # Prevent excessive text processing
+
+def cleanup_cache():
+    """Remove oldest entries when cache exceeds limit to prevent memory exhaustion."""
+    if len(SHARED_CACHE) > MAX_CACHE_SIZE:
+        # Remove oldest 20% of entries to free up memory
+        items_to_remove = len(SHARED_CACHE) - int(MAX_CACHE_SIZE * 0.8)
+        # Sort by insertion order (keys are UUIDs, so we'll use a simple approach)
+        items = list(SHARED_CACHE.items())
+        for i in range(min(items_to_remove, len(items))):
+            key, _ = items[i]
+            del SHARED_CACHE[key]
+        log("info", f"Cache cleanup: removed {items_to_remove} old entries, {len(SHARED_CACHE)} remaining")
+
 # --- START: FEEDBACK MECHANISM ---
 FEEDBACK_FILE = "feedback_log.jsonl"
 
@@ -656,6 +672,8 @@ def capture_screenshots_playwright(urls):
                 prepare_page_for_capture(page)
                 img_bytes = page.screenshot(full_page=True, type="jpeg", quality=70)
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
+                # Clean up cache before adding new screenshot
+                cleanup_cache()
                 uid = str(uuid.uuid4())
                 SHARED_CACHE[uid] = b64
                 results.append({"id": uid, "url": url})
@@ -682,17 +700,27 @@ def extract_relevant_text(soup: BeautifulSoup) -> str:
 def summarize_results(all_results: list) -> dict:
     """Analyzes memorability analysis results and provides quantitative summary."""
     if not all_results:
-        return {"keys_analyzed": 0, "strong_keys": 0, "weak_keys": 0}
+        return {"keys_analyzed": 0, "strong_keys": 0, "weak_keys": 0, "adequate_keys": 0, "average_score": 0.0}
     
-    summary = {"keys_analyzed": len(all_results), "strong_keys": 0, "weak_keys": 0}
+    summary = {"keys_analyzed": len(all_results), "strong_keys": 0, "weak_keys": 0, "adequate_keys": 0}
+    total_score = 0
+    valid_scores = 0
+    
     for result in all_results:
         if 'analysis' in result and 'score' in result['analysis']:
             score = result["analysis"]["score"]
+            total_score += score
+            valid_scores += 1
+            
             if score >= 4:  # Strong performance (4-5 on 0-5 scale)
                 summary["strong_keys"] += 1
             elif score <= 2:  # Weak performance (0-2 on 0-5 scale)
                 summary["weak_keys"] += 1
-            # Scores of 3 are considered "adequate" and not counted as strong/weak
+            else:  # Score of 3 is adequate
+                summary["adequate_keys"] += 1
+    
+    # Calculate average score
+    summary["average_score"] = round(total_score / valid_scores, 2) if valid_scores > 0 else 0.0
     
     return summary
 
@@ -748,6 +776,8 @@ def run_full_scan_stream(url: str, cache: dict):
         try:
             homepage_screenshot_b64, final_homepage_html = fetch_page_content_robustly(homepage_url, take_screenshot=True)
             if homepage_screenshot_b64:
+                # Clean up cache before adding new entries to prevent memory exhaustion
+                cleanup_cache()
                 image_id = str(uuid.uuid4())
                 cache[image_id] = homepage_screenshot_b64
                 yield {'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url}
@@ -819,7 +849,10 @@ def run_full_scan_stream(url: str, cache: dict):
                     tag.decompose()
                 text_corpus += f"\n\n--- Page Content ({page_url}) ---\n" + extract_relevant_text(soup)
         
-        full_corpus = (text_corpus + social_corpus)[:40000]
+        # Limit corpus length to prevent memory exhaustion and improve AI analysis quality
+        full_corpus = (text_corpus + social_corpus)[:MAX_CORPUS_LENGTH]
+        if len(text_corpus + social_corpus) > MAX_CORPUS_LENGTH:
+            log("info", f"Text corpus truncated from {len(text_corpus + social_corpus)} to {MAX_CORPUS_LENGTH} characters")
 
         yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...'}
         brand_summary = call_openai_for_synthesis(full_corpus)
