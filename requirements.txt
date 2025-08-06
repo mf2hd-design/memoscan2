@@ -43,3 +43,5 @@ wsproto==1.2.0
 zope.event==5.1.1
 zope.interface==7.2
 defusedxml==0.7.1
+psutil==5.9.8  # System resource monitoring
+bleach==6.1.0  # Enhanced HTML sanitization
