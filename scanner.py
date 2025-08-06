@@ -380,14 +380,29 @@ def _compile_patterns():
 # Initialize compiled patterns with multilingual support
 _compile_patterns()
 
+# Define raw multilingual patterns for LINK_SCORE_MAP
+LINK_SCORE_PATTERNS = {
+    "identity": [r"\b(brand|marke|marca|purpose|zweck|propósito|values|werte|valores|mission|vision)\b"],
+    "strategy": [r"\b(strategy|strategie|estrategia|about|über[-_]uns|sobre[-_]nosotros|company|unternehmen|empresa|who[-_]we[-_]are|wer[-_]wir[-_]sind|quienes[-_]somos)\b"],
+    "operations": [r"\b(products|produkte|productos|services|leistungen|servicios|solutions|lösungen|soluciones|operations|geschäftsbereiche|operaciones|what[-_]we[-_]do)\b"],
+    "culture": [r"\b(story|geschichte|historia|culture|kultur|cultura|innovation|nachhaltigkeit|sostenibilidad|responsibility|verantwortung|responsabilidad|esg)\b"],
+    "people": [r"\b(leadership|führung|liderazgo|team|equipo|management|vorstand|dirección|history)\b"],
+    "language": [r"/en/", r"lang=en"]
+}
+
+# Compile the multilingual patterns
+COMPILED_LINK_PATTERNS = {}
+for category, patterns in LINK_SCORE_PATTERNS.items():
+    COMPILED_LINK_PATTERNS[category] = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
+
 LINK_SCORE_MAP = {
-    "identity": {"patterns": COMPILED_PATTERNS["identity"], "score": BUSINESS_TIER_SCORES["identity"]},
-    "strategy": {"patterns": COMPILED_PATTERNS["strategy"], "score": BUSINESS_TIER_SCORES["strategy"]},
-    "operations": {"patterns": COMPILED_PATTERNS["operations"], "score": BUSINESS_TIER_SCORES["operations"]},
-    "culture": {"patterns": COMPILED_PATTERNS["culture"], "score": BUSINESS_TIER_SCORES["culture"]},
-    "people": {"patterns": COMPILED_PATTERNS["people"], "score": BUSINESS_TIER_SCORES["people"]},
-    "language": {"patterns": COMPILED_PATTERNS["language"], "score": SCORING_CONSTANTS["LANGUAGE_BONUS"]},
-    "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": SCORING_CONSTANTS["NEGATIVE_VETO_SCORE"]}
+    "identity": {"patterns": COMPILED_LINK_PATTERNS["identity"], "score": 40},
+    "strategy": {"patterns": COMPILED_LINK_PATTERNS["strategy"], "score": 30},
+    "operations": {"patterns": COMPILED_LINK_PATTERNS["operations"], "score": 20},
+    "culture": {"patterns": COMPILED_LINK_PATTERNS["culture"], "score": 10},
+    "people": {"patterns": COMPILED_LINK_PATTERNS["people"], "score": 5},
+    "language": {"patterns": COMPILED_LINK_PATTERNS["language"], "score": 10},
+    "negative": {"patterns": COMPILED_PATTERNS["negative"], "score": -50}
 }
 
 def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tuple[int, str]:
