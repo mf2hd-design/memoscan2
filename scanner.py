@@ -7,6 +7,7 @@ import uuid
 import time
 import signal
 import gc
+from collections import defaultdict
 try:
     from defusedxml import ElementTree as ET
 except ImportError:
@@ -529,6 +530,9 @@ def _scrapfly_request_inner(url: str, api_key: str, take_screenshot: bool):
         response.raise_for_status()
         data = response.json()
         
+        # Track API usage for cost monitoring
+        track_api_usage("scrapfly", pages=1)
+        
         # Get raw HTML content from Scrapfly response
         html_content = data["result"]["content"]
         
@@ -691,7 +695,113 @@ def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tupl
 
 # --- END: HELPER CLASSES AND FUNCTIONS ---
 
-SHARED_CACHE = {}
+# Enhanced cache with size limits and LRU eviction
+class LimitedCache:
+    def __init__(self, max_size_mb=100, max_items=1000):
+        self._cache = {}
+        self._access_times = {}
+        self._sizes = {}
+        self.max_size_bytes = max_size_mb * 1024 * 1024
+        self.max_items = max_items
+        self.total_size = 0
+        self._lock = None
+        try:
+            import threading
+            self._lock = threading.Lock()
+        except:
+            pass
+    
+    def __setitem__(self, key, value):
+        if self._lock:
+            with self._lock:
+                self._set_item(key, value)
+        else:
+            self._set_item(key, value)
+    
+    def _set_item(self, key, value):
+        # Calculate size
+        size = len(value) if isinstance(value, (str, bytes)) else len(str(value))
+        
+        # Remove old value if exists
+        if key in self._cache:
+            self.total_size -= self._sizes.get(key, 0)
+        
+        # Evict if necessary
+        while (self.total_size + size > self.max_size_bytes or 
+               len(self._cache) >= self.max_items) and self._cache:
+            self._evict_lru()
+        
+        # Add new item
+        self._cache[key] = value
+        self._sizes[key] = size
+        self._access_times[key] = time.time()
+        self.total_size += size
+    
+    def __getitem__(self, key):
+        if self._lock:
+            with self._lock:
+                return self._get_item(key)
+        else:
+            return self._get_item(key)
+    
+    def _get_item(self, key):
+        if key in self._cache:
+            self._access_times[key] = time.time()
+            return self._cache[key]
+        raise KeyError(key)
+    
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+    
+    def __contains__(self, key):
+        return key in self._cache
+    
+    def __len__(self):
+        return len(self._cache)
+    
+    def __delitem__(self, key):
+        if self._lock:
+            with self._lock:
+                self._del_item(key)
+        else:
+            self._del_item(key)
+    
+    def _del_item(self, key):
+        if key in self._cache:
+            self.total_size -= self._sizes.get(key, 0)
+            del self._cache[key]
+            del self._access_times[key]
+            del self._sizes[key]
+    
+    def _evict_lru(self):
+        """Evict least recently used item."""
+        if not self._cache:
+            return
+        
+        lru_key = min(self._access_times.keys(), key=self._access_times.get)
+        self._del_item(lru_key)
+        log("debug", f"Cache evicted LRU item: {lru_key}")
+    
+    def items(self):
+        return self._cache.items()
+    
+    def get_stats(self):
+        """Get cache statistics."""
+        return {
+            "items": len(self._cache),
+            "size_mb": self.total_size / (1024 * 1024),
+            "max_size_mb": self.max_size_bytes / (1024 * 1024),
+            "max_items": self.max_items
+        }
+
+# Configure cache limits via environment variables
+CACHE_MAX_SIZE_MB = int(os.getenv("CACHE_MAX_SIZE_MB", "100"))
+CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "1000"))
+
+SHARED_CACHE = LimitedCache(max_size_mb=CACHE_MAX_SIZE_MB, max_items=CACHE_MAX_ITEMS)
 load_dotenv()
 
 def validate_configuration():
@@ -737,6 +847,9 @@ def validate_configuration():
 validate_configuration()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Initialize data retention cleanup
+schedule_retention_cleanup()
+
 # Memory management configuration
 MAX_CACHE_SIZE = 100  # Maximum cached screenshots
 MAX_CORPUS_LENGTH = 50000  # Prevent excessive text processing
@@ -754,7 +867,10 @@ def cleanup_cache():
         log("info", f"Cache cleanup: removed {items_to_remove} old entries, {len(SHARED_CACHE)} remaining")
 
 # --- START: FEEDBACK MECHANISM ---
-FEEDBACK_FILE = "feedback_log.jsonl"
+# Use persistent storage directory - configure via environment variable
+PERSISTENT_DATA_DIR = os.getenv("PERSISTENT_DATA_DIR", "/data")
+os.makedirs(PERSISTENT_DATA_DIR, exist_ok=True)
+FEEDBACK_FILE = os.path.join(PERSISTENT_DATA_DIR, "feedback_log.jsonl")
 
 def record_feedback(analysis_id: str, key_name: str, feedback_type: str, 
                    comment: Optional[str] = None, ai_score: Optional[int] = None, 
@@ -915,6 +1031,280 @@ def get_prompt_improvements_from_feedback():
     return improvements
 
 # --- END: FEEDBACK MECHANISM ---
+
+# --- START: COST TRACKING ---
+COST_LOG_FILE = os.path.join(PERSISTENT_DATA_DIR, "api_costs.jsonl")
+
+# Approximate costs per API call (update these based on current pricing)
+API_COSTS = {
+    "gpt-4o": {"input": 0.0025, "output": 0.01},  # per 1K tokens
+    "gpt-4o-vision": {"input": 0.005, "output": 0.015},  # per 1K tokens
+    "scrapfly": 0.001,  # per page
+    "playwright": 0.0  # free but resource intensive
+}
+
+def track_api_usage(api_type: str, tokens_in: int = 0, tokens_out: int = 0, pages: int = 0):
+    """Track API usage and estimated costs."""
+    cost = 0
+    details = {"api_type": api_type, "timestamp": time.time()}
+    
+    if api_type.startswith("gpt"):
+        details["tokens_in"] = tokens_in
+        details["tokens_out"] = tokens_out
+        cost = (tokens_in / 1000 * API_COSTS.get(api_type, {}).get("input", 0) +
+                tokens_out / 1000 * API_COSTS.get(api_type, {}).get("output", 0))
+    elif api_type == "scrapfly":
+        details["pages"] = pages
+        cost = pages * API_COSTS.get("scrapfly", 0)
+    
+    details["estimated_cost"] = cost
+    
+    # Atomic write to cost log
+    temp_file = f"{COST_LOG_FILE}.tmp.{uuid.uuid4()}"
+    try:
+        with open(temp_file, "w") as f:
+            f.write(json.dumps(details) + "\n")
+        
+        # Append to existing log
+        with open(COST_LOG_FILE, "a") as f:
+            with open(temp_file, "r") as tmp:
+                f.write(tmp.read())
+    except Exception as e:
+        log("error", f"Failed to track API cost: {e}")
+    finally:
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+    
+    # Alert if costs exceed threshold
+    if cost > 1.0:  # $1 per call threshold
+        log("warn", f"High cost API call: ${cost:.2f} for {api_type}")
+    
+    return cost
+
+def get_cost_summary(hours: int = 24) -> dict:
+    """Get cost summary for the last N hours."""
+    if not os.path.exists(COST_LOG_FILE):
+        return {"error": "No cost data available"}
+    
+    cutoff_time = time.time() - (hours * 3600)
+    costs = {"total": 0, "by_api": {}, "high_cost_calls": []}
+    
+    try:
+        with open(COST_LOG_FILE, "r") as f:
+            for line in f:
+                if line.strip():
+                    entry = json.loads(line)
+                    if entry["timestamp"] > cutoff_time:
+                        costs["total"] += entry.get("estimated_cost", 0)
+                        api = entry["api_type"]
+                        costs["by_api"][api] = costs["by_api"].get(api, 0) + entry.get("estimated_cost", 0)
+                        
+                        if entry.get("estimated_cost", 0) > 0.5:
+                            costs["high_cost_calls"].append(entry)
+    except Exception as e:
+        log("error", f"Failed to analyze costs: {e}")
+    
+    return costs
+
+# --- END: COST TRACKING ---
+
+# --- START: DATA RETENTION ---
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "90"))  # Default 90 days
+CLEANUP_BATCH_SIZE = 1000  # Process in batches to avoid memory issues
+
+def cleanup_old_logs(log_file: str, retention_days: int = RETENTION_DAYS):
+    """Remove log entries older than retention period."""
+    if not os.path.exists(log_file):
+        return 0, 0
+    
+    cutoff_time = time.time() - (retention_days * 86400)
+    temp_file = f"{log_file}.cleanup.{uuid.uuid4()}"
+    
+    kept_count = 0
+    removed_count = 0
+    
+    try:
+        with open(temp_file, "w") as out_file:
+            with open(log_file, "r") as in_file:
+                batch = []
+                for line in in_file:
+                    if line.strip():
+                        try:
+                            entry = json.loads(line)
+                            if entry.get("timestamp", 0) > cutoff_time:
+                                batch.append(line)
+                                kept_count += 1
+                            else:
+                                removed_count += 1
+                            
+                            # Write batch to avoid memory issues
+                            if len(batch) >= CLEANUP_BATCH_SIZE:
+                                out_file.writelines(batch)
+                                batch = []
+                        except json.JSONDecodeError:
+                            # Keep malformed entries
+                            batch.append(line)
+                            kept_count += 1
+                
+                # Write remaining batch
+                if batch:
+                    out_file.writelines(batch)
+        
+        # Atomic replace
+        if removed_count > 0:
+            os.rename(temp_file, log_file)
+            log("info", f"Data retention cleanup: removed {removed_count} old entries, kept {kept_count}")
+        else:
+            os.unlink(temp_file)
+            log("debug", f"Data retention: no old entries to remove")
+        
+        return kept_count, removed_count
+        
+    except Exception as e:
+        log("error", f"Data retention cleanup failed: {e}")
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+        return -1, -1
+
+def run_retention_cleanup():
+    """Run data retention cleanup for all log files."""
+    log_files = [
+        (FEEDBACK_FILE, "feedback"),
+        (COST_LOG_FILE, "costs")
+    ]
+    
+    for log_file, log_type in log_files:
+        if os.path.exists(log_file):
+            kept, removed = cleanup_old_logs(log_file)
+            if kept >= 0:
+                log("info", f"Retention cleanup for {log_type}: kept {kept}, removed {removed} entries")
+
+# Schedule cleanup on startup
+import threading
+def schedule_retention_cleanup():
+    """Schedule periodic retention cleanup."""
+    def cleanup_task():
+        while True:
+            try:
+                run_retention_cleanup()
+            except Exception as e:
+                log("error", f"Retention cleanup scheduler error: {e}")
+            
+            # Run daily
+            time.sleep(86400)
+    
+    cleanup_thread = threading.Thread(target=cleanup_task, daemon=True)
+    cleanup_thread.start()
+    log("info", f"Data retention cleanup scheduled (retention: {RETENTION_DAYS} days)")
+
+# --- END: DATA RETENTION ---
+
+# --- START: METRICS TRACKING ---
+METRICS_FILE = os.path.join(PERSISTENT_DATA_DIR, "scan_metrics.jsonl")
+
+def track_scan_metric(scan_id: str, event_type: str, details: dict = None):
+    """Track scan metrics for analytics."""
+    metric_entry = {
+        "timestamp": time.time(),
+        "scan_id": scan_id,
+        "event_type": event_type,  # "started", "completed", "failed", "cancelled"
+        "details": details or {}
+    }
+    
+    # Atomic write
+    temp_file = f"{METRICS_FILE}.tmp.{uuid.uuid4()}"
+    try:
+        with open(temp_file, "w") as f:
+            f.write(json.dumps(metric_entry) + "\n")
+        
+        # Append to metrics log
+        with open(METRICS_FILE, "a") as f:
+            with open(temp_file, "r") as tmp:
+                f.write(tmp.read())
+    except Exception as e:
+        log("error", f"Failed to track metric: {e}")
+    finally:
+        if os.path.exists(temp_file):
+            os.unlink(temp_file)
+
+def get_scan_metrics(hours: int = 24) -> dict:
+    """Get scan metrics for the last N hours."""
+    if not os.path.exists(METRICS_FILE):
+        return {"error": "No metrics data available"}
+    
+    cutoff_time = time.time() - (hours * 3600)
+    metrics = {
+        "total_scans": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+        "completion_rate": 0.0,
+        "avg_duration": 0.0,
+        "by_hour": defaultdict(lambda: {"started": 0, "completed": 0})
+    }
+    
+    scans = {}
+    
+    try:
+        with open(METRICS_FILE, "r") as f:
+            for line in f:
+                if line.strip():
+                    entry = json.loads(line)
+                    if entry["timestamp"] > cutoff_time:
+                        scan_id = entry["scan_id"]
+                        event_type = entry["event_type"]
+                        
+                        if scan_id not in scans:
+                            scans[scan_id] = {"started": None, "completed": None, "status": "unknown"}
+                        
+                        if event_type == "started":
+                            scans[scan_id]["started"] = entry["timestamp"]
+                            metrics["total_scans"] += 1
+                            
+                            # Track by hour
+                            hour = time.strftime("%Y-%m-%d %H:00", time.localtime(entry["timestamp"]))
+                            metrics["by_hour"][hour]["started"] += 1
+                            
+                        elif event_type == "completed":
+                            scans[scan_id]["completed"] = entry["timestamp"]
+                            scans[scan_id]["status"] = "completed"
+                            metrics["completed"] += 1
+                            
+                            hour = time.strftime("%Y-%m-%d %H:00", time.localtime(entry["timestamp"]))
+                            metrics["by_hour"][hour]["completed"] += 1
+                            
+                        elif event_type == "failed":
+                            scans[scan_id]["status"] = "failed"
+                            metrics["failed"] += 1
+                            
+                        elif event_type == "cancelled":
+                            scans[scan_id]["status"] = "cancelled"
+                            metrics["cancelled"] += 1
+        
+        # Calculate completion rate and average duration
+        if metrics["total_scans"] > 0:
+            metrics["completion_rate"] = metrics["completed"] / metrics["total_scans"]
+            
+            # Calculate average duration for completed scans
+            durations = []
+            for scan_data in scans.values():
+                if scan_data["started"] and scan_data["completed"]:
+                    duration = scan_data["completed"] - scan_data["started"]
+                    durations.append(duration)
+            
+            if durations:
+                metrics["avg_duration"] = sum(durations) / len(durations)
+        
+        # Convert defaultdict to regular dict for JSON serialization
+        metrics["by_hour"] = dict(metrics["by_hour"])
+        
+    except Exception as e:
+        log("error", f"Failed to analyze metrics: {e}")
+        return {"error": str(e)}
+    
+    return metrics
+
+# --- END: METRICS TRACKING ---
 
 def _clean_url(url: str) -> str:
     """Clean and validate URL with security checks and www normalization."""
@@ -1279,6 +1669,9 @@ def call_openai_for_synthesis(corpus):
     try:
         synthesis_prompt = f"Analyze the following text from a company's website and social media. Provide a concise, one-paragraph summary of the brand's mission, tone, and primary offerings. This summary will be used as context for further analysis.\n\n---\n{corpus}\n---"
         response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": synthesis_prompt}], temperature=0.2)
+        # Track API usage
+        if hasattr(response, 'usage'):
+            track_api_usage("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
         return response.choices[0].message.content
     except Exception as e:
         log("error", f"AI synthesis failed: {e}")
@@ -1343,6 +1736,10 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
         log("info", f"✅ OPENAI API SUCCESS - {key_name}: Received response from GPT-4V")
         log("info", f"📊 TOKEN USAGE - {key_name}: {usage.total_tokens} total ({usage.prompt_tokens} prompt + {usage.completion_tokens} completion)")
         
+        # Track API usage for cost monitoring
+        api_type = "gpt-4o-vision" if any(isinstance(item, dict) and item.get("type") == "image_url" for item in content if isinstance(item, list) for item in content) else "gpt-4o"
+        track_api_usage(api_type, usage.prompt_tokens, usage.completion_tokens)
+        
         if homepage_screenshot_b64:
             log("info", f"🎯 CONFIRMED: OpenAI processed image data for {key_name} analysis")
             if usage.prompt_tokens > 1000:
@@ -1365,6 +1762,9 @@ def call_openai_for_executive_summary(all_analyses):
         analyses_text = "\n\n".join([f"Key: {data['key']}\nScore: {data['analysis']['score']}\nAnalysis: {data['analysis']['analysis']}" for data in all_analyses])
         summary_prompt = f"You are a senior brand strategist delivering a final executive summary. Based on the following six key analyses, please provide:\n1. **Overall Summary:** A brief, high-level overview.\n2. **Key Strengths:** Identify the 2-3 strongest keys.\n3. **Primary Weaknesses:** Identify the 2-3 weakest keys.\n4. **Strategic Focus:** State the single most important key to focus on.\n---\n{analyses_text}\n---"
         response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": summary_prompt}], temperature=0.3)
+        # Track API usage
+        if hasattr(response, 'usage'):
+            track_api_usage("gpt-4o", response.usage.prompt_tokens, response.usage.completion_tokens)
         return response.choices[0].message.content
     except Exception as e:
         log("error", f"AI summary failed: {e}")
@@ -1439,7 +1839,14 @@ def summarize_results(all_results: list) -> dict:
     
     return summary
 
-def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
+def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan_id: str = None):
+    # Generate scan ID if not provided
+    if not scan_id:
+        scan_id = str(uuid.uuid4())
+    
+    # Track scan start
+    track_scan_metric(scan_id, "started", {"url": url})
+    
     # DEBUG: Message tracking
     def debug_yield(message_data):
         """Debug wrapper to log all yielded messages"""
@@ -1464,6 +1871,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
         is_valid, error_msg = _validate_url(initial_url)
         if not is_valid:
             log("error", f"URL validation failed: {error_msg}")
+            track_scan_metric(scan_id, "failed", {"reason": "invalid_url", "error": error_msg})
             yield {'type': 'error', 'message': f'Invalid URL: {error_msg}'}
             return
 
@@ -1475,9 +1883,32 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
         try:
             _, homepage_html = fetch_page_content_robustly(initial_url)
             if not homepage_html: raise Exception("Could not fetch initial URL content.")
+        except (httpx.TimeoutException, httpx.ConnectTimeout) as e:
+            log("error", f"Timeout fetching initial URL: {e}")
+            track_scan_metric(scan_id, "failed", {"reason": "timeout", "error": str(e)})
+            yield {'type': 'error', 'message': f'Request timed out. The website may be slow or unavailable: {e}'}
+            return
+        except (httpx.ConnectError, httpx.NetworkError) as e:
+            log("error", f"Network error fetching initial URL: {e}")
+            track_scan_metric(scan_id, "failed", {"reason": "network_error", "error": str(e)})
+            yield {'type': 'error', 'message': f'Unable to connect to the website. Please check the URL: {e}'}
+            return
+        except httpx.HTTPStatusError as e:
+            log("error", f"HTTP error fetching initial URL: {e.response.status_code} - {e}")
+            track_scan_metric(scan_id, "failed", {"reason": "http_error", "status_code": e.response.status_code, "error": str(e)})
+            if e.response.status_code == 403:
+                yield {'type': 'error', 'message': 'Access forbidden. The website may be blocking automated requests.'}
+            elif e.response.status_code == 404:
+                yield {'type': 'error', 'message': 'Page not found. Please check the URL is correct.'}
+            elif e.response.status_code >= 500:
+                yield {'type': 'error', 'message': 'The website is experiencing server issues. Please try again later.'}
+            else:
+                yield {'type': 'error', 'message': f'HTTP error {e.response.status_code}: Unable to access the website.'}
+            return
         except Exception as e:
-            log("error", f"Failed to fetch the initial URL: {e}")
-            yield {'type': 'error', 'message': f'Failed to fetch the initial URL: {e}'}
+            log("error", f"Unexpected error fetching initial URL: {e}")
+            track_scan_metric(scan_id, "failed", {"reason": "fetch_failed", "error": str(e)})
+            yield {'type': 'error', 'message': f'Unexpected error accessing the website: {e}'}
             return
 
         yield debug_yield({'type': 'activity', 'message': f'🔍 Analyzing HTML structure...', 'timestamp': time.time()})
@@ -1752,11 +2183,19 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en'):
         
         yield {'type': 'complete', 'message': f'✅ Analysis complete! Used {processing_mode} processing.', 'progress': 100}
         yield {'type': 'activity', 'message': '🎉 Scan completed successfully!', 'timestamp': time.time()}
+        
+        # Track successful completion
+        track_scan_metric(scan_id, "completed", {
+            "processing_mode": processing_mode,
+            "pages_analyzed": len(indexed_urls),
+            "average_score": quantitative_summary.get("average_score", 0)
+        })
 
     except Exception as e:
         log("error", f"The main stream failed: {e}")
         import traceback
         traceback.print_exc()
+        track_scan_metric(scan_id, "failed", {"reason": "critical_error", "error": str(e)})
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
 
 if __name__ == '__main__':
