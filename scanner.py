@@ -64,6 +64,29 @@ def safe_api_key(key: str) -> str:
         return "INVALID"
     return f"{key[:4]}...{key[-4:]}"
 
+def detect_image_format(image_b64: str) -> str:
+    """Detect image format from base64 data and return proper MIME type."""
+    try:
+        # Decode first few bytes to check image signature
+        header_bytes = base64.b64decode(image_b64[:100])
+        
+        # Check common image format signatures
+        if header_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            return "image/png"
+        elif header_bytes.startswith(b'\xff\xd8\xff'):
+            return "image/jpeg"
+        elif header_bytes.startswith(b'GIF87a') or header_bytes.startswith(b'GIF89a'):
+            return "image/gif"
+        elif header_bytes.startswith(b'RIFF') and b'WEBP' in header_bytes:
+            return "image/webp"
+        else:
+            # Default to JPEG since Scrapfly typically returns JPEG
+            log("warn", f"Unknown image format, defaulting to image/jpeg. Header: {header_bytes[:20]}")
+            return "image/jpeg"
+    except Exception as e:
+        log("warn", f"Failed to detect image format: {e}, defaulting to image/jpeg")
+        return "image/jpeg"
+
 def retry_with_backoff(func, max_retries=3, base_delay=1, exceptions=(Exception,)):
     """Retry function with exponential backoff."""
     import random
@@ -500,8 +523,31 @@ def _scrapfly_request_inner(url: str, api_key: str, take_screenshot: bool):
             log("info", f"📸 SCRAPFLY SCREENSHOT URL: {screenshot_url}")
             img_response = client.get(screenshot_url, params={"key": api_key}, timeout=TIMEOUTS["playwright_screenshot"])
             img_response.raise_for_status()
-            screenshot_b64 = base64.b64encode(img_response.content).decode('utf-8')
-            log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes")
+            
+            # Enhanced diagnostic logging for screenshot
+            image_bytes = img_response.content
+            screenshot_b64 = base64.b64encode(image_bytes).decode('utf-8')
+            
+            # Detect image format and dimensions from raw bytes
+            image_info = "unknown format"
+            try:
+                if image_bytes.startswith(b'\xff\xd8\xff'):
+                    image_info = "JPEG format"
+                elif image_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+                    image_info = "PNG format"
+                elif image_bytes.startswith(b'RIFF') and b'WEBP' in image_bytes[:20]:
+                    image_info = "WEBP format"
+            except:
+                pass
+                
+            log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(image_bytes)} bytes, {image_info}")
+            log("info", f"📊 SCRAPFLY SCREENSHOT ENCODING: {len(screenshot_b64)} base64 chars")
+            
+            # Log screenshot dimensions if available from Scrapfly response
+            if "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
+                screenshot_meta = data["result"]["screenshots"]["main"]
+                if "size" in screenshot_meta:
+                    log("info", f"📏 SCRAPFLY SCREENSHOT METADATA: {screenshot_meta.get('size', 'unknown')} bytes, format: {screenshot_meta.get('format', 'unknown')}, extension: {screenshot_meta.get('extension', 'unknown')}")
         elif take_screenshot:
             log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
         return screenshot_b64, html_content
@@ -1223,16 +1269,26 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
     try:
         content = [{"type": "text", "text": f"FULL WEBSITE & SOCIAL MEDIA TEXT CORPUS:\n---\n{text_corpus}\n---"}, {"type": "text", "text": f"BRAND SUMMARY (for context):\n---\n{brand_summary}\n---"}]
         if homepage_screenshot_b64:
-            # DIAGNOSTIC: Validate base64 format
+            # DIAGNOSTIC: Validate base64 format and detect image type
             try:
                 import base64
                 base64.b64decode(homepage_screenshot_b64[:100])  # Test decode first 100 chars
                 log("info", f"✅ BASE64 VALIDATION - {key_name}: Screenshot data is valid base64 format")
+                
+                # Detect proper image format
+                image_mime_type = detect_image_format(homepage_screenshot_b64)
+                log("info", f"🔍 IMAGE FORMAT - {key_name}: Detected {image_mime_type}")
+                
+                # Get image size info
+                full_decoded = base64.b64decode(homepage_screenshot_b64)
+                log("info", f"📏 IMAGE SIZE - {key_name}: {len(full_decoded)} bytes, {len(homepage_screenshot_b64)} base64 chars")
+                
             except Exception as e:
                 log("error", f"❌ BASE64 VALIDATION - {key_name}: Invalid base64 data: {e}")
+                image_mime_type = "image/jpeg"  # Fallback
             
-            content.insert(0, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{homepage_screenshot_b64}"}})
-            log("info", f"🖼️ OPENAI REQUEST - {key_name}: Including screenshot in OpenAI API call ({len(homepage_screenshot_b64)} bytes)")
+            content.insert(0, {"type": "image_url", "image_url": {"url": f"data:{image_mime_type};base64,{homepage_screenshot_b64}"}})
+            log("info", f"🖼️ OPENAI REQUEST - {key_name}: Including screenshot as {image_mime_type} ({len(homepage_screenshot_b64)} base64 chars)")
         else:
             log("warn", f"❌ OPENAI REQUEST - {key_name}: NO SCREENSHOT - sending text-only to OpenAI")
         
@@ -1256,10 +1312,17 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
         log("info", f"🚀 CALLING OPENAI API - {key_name}: Sending request with {len(content)} content items")
         response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], response_format={"type": "json_object"}, temperature=0.3)
         
-        # Log successful API response
+        # Log successful API response with token usage
+        usage = response.usage
         log("info", f"✅ OPENAI API SUCCESS - {key_name}: Received response from GPT-4V")
+        log("info", f"📊 TOKEN USAGE - {key_name}: {usage.total_tokens} total ({usage.prompt_tokens} prompt + {usage.completion_tokens} completion)")
+        
         if homepage_screenshot_b64:
             log("info", f"🎯 CONFIRMED: OpenAI processed image data for {key_name} analysis")
+            if usage.prompt_tokens > 1000:
+                log("info", f"🖼️ VISION TOKENS - {key_name}: High prompt token count ({usage.prompt_tokens}) confirms image processing")
+            else:
+                log("warn", f"⚠️ VISION TOKENS - {key_name}: Low prompt token count ({usage.prompt_tokens}) may indicate image processing issue")
         
         result_json = json.loads(response.choices[0].message.content)
         validate_ai_response(result_json, ["score", "analysis", "evidence", "confidence", "confidence_rationale", "recommendation"])
