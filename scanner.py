@@ -1536,6 +1536,89 @@ def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_
         log("info", "📍 No high-value subdomains found. Sticking to the main domain.")
         return None
 
+def find_true_corporate_site(discovered_links: List[Tuple[str, str]], initial_url: str) -> Optional[str]:
+    """Proactively search for a link to the true global/corporate site on a different TLD.
+    
+    This function implements the "Global Site Heuristic" - a tenacious discovery step
+    that looks for corporate headquarters sites when scanning regional domains.
+    
+    Args:
+        discovered_links: List of (url, text) tuples from initial link discovery
+        initial_url: The original URL being scanned
+    
+    Returns:
+        URL of the true corporate site if found, None otherwise
+    """
+    log("info", "🌍 Proactively searching for a global corporate site link...")
+    initial_tld = _get_sld(initial_url).split('.')[-1]
+    
+    # Enhanced corporate signal strength mapping
+    CORPORATE_SIGNALS = {
+        'global': 10, 'international': 8, 'corporate': 7, 'worldwide': 8,
+        'company site': 6, 'headquarters': 6, 'company': 5, 'main site': 5,
+        'english': 4, 'us site': 4, 'america': 3
+    }
+    
+    # Corporate TLD patterns - regional to global mappings
+    CORPORATE_TLD_PATTERNS = {
+        '.de': ['.com', '.global', '.org', '.net'],
+        '.fr': ['.com', '.global', '.org', '.net'], 
+        '.uk': ['.com', '.global', '.org', '.net'],
+        '.it': ['.com', '.global', '.org', '.net'],
+        '.es': ['.com', '.global', '.org', '.net'],
+        '.jp': ['.com', '.global', '.org', '.net'],
+        '.cn': ['.com', '.global', '.org', '.net']
+    }
+    
+    best_candidate = None
+    highest_signal_strength = 0
+    
+    for url, text in discovered_links:
+        try:
+            text_lower = text.lower().strip()
+            
+            # Calculate signal strength based on link text
+            signal_strength = 0
+            for signal, weight in CORPORATE_SIGNALS.items():
+                if signal in text_lower:
+                    signal_strength += weight
+                    log("debug", f"Corporate signal '{signal}' found in '{text}' (+{weight})")
+            
+            # Only proceed if we have a strong corporate signal
+            if signal_strength >= 5:  # Minimum threshold for corporate signals
+                try:
+                    link_tld = _get_sld(url).split('.')[-1]
+                    target_tlds = CORPORATE_TLD_PATTERNS.get(initial_tld, ['.com'])
+                    
+                    # Check if it's a different TLD but same root company
+                    if link_tld in target_tlds and link_tld != initial_tld:
+                        if _is_same_root_word_domain(initial_url, url):
+                            # Bonus for .com (most common global TLD)
+                            if link_tld == 'com':
+                                signal_strength += 3
+                            
+                            if signal_strength > highest_signal_strength:
+                                highest_signal_strength = signal_strength
+                                best_candidate = url
+                                log("info", f"🎯 Strong corporate site candidate: {url} (signal strength: {signal_strength})")
+                    
+                except Exception as e:
+                    log("debug", f"Error processing URL {url}: {e}")
+                    continue
+        except Exception as e:
+            log("debug", f"Error processing link text '{text}': {e}")
+            continue
+    
+    if best_candidate and highest_signal_strength >= 7:  # High confidence threshold
+        log("info", f"✅ Found high-confidence global corporate site: {best_candidate} (strength: {highest_signal_strength})")
+        return best_candidate
+    elif best_candidate:
+        log("info", f"🔍 Found potential corporate site: {best_candidate} (strength: {highest_signal_strength}) - but confidence too low")
+    else:
+        log("info", "📍 No global corporate site link found in discovered links")
+    
+    return None
+
 def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -> Optional[List[Tuple[str, str]]]:
     """Discover links from sitemap using preferred language as source of truth.
     
@@ -1842,7 +1925,50 @@ def summarize_results(all_results: list) -> dict:
     
     return summary
 
-def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan_id: str = None):
+def score_link_pool(links: List[Tuple[str, str]], lang: str) -> List[dict]:
+    """Helper function to score a list of links with a given language context.
+    
+    This function supports the "Language Fallback" mechanism by allowing
+    scoring with different language preferences.
+    
+    Args:
+        links: List of (url, text) tuples to score
+        lang: Language code to use for scoring ('en', 'de', etc.)
+    
+    Returns:
+        List of scored link dictionaries sorted by score (highest first)
+    """
+    log("info", f"🎯 Scoring {len(links)} links with language preference: '{lang}'")
+    
+    scored_links = []
+    unique_urls = set()
+    
+    for url, text in links:
+        try:
+            cleaned_url = _clean_url(url)
+            if cleaned_url not in unique_urls:
+                unique_urls.add(cleaned_url)
+                score, rationale = score_link(cleaned_url, text, lang)
+                if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:
+                    scored_links.append({
+                        "url": cleaned_url, 
+                        "text": text, 
+                        "score": score, 
+                        "rationale": rationale,
+                        "language": lang
+                    })
+        except Exception as e:
+            log("debug", f"Error scoring link {url}: {e}")
+            continue
+    
+    # Sort by score (highest first)
+    scored_links.sort(key=lambda x: x["score"], reverse=True)
+    
+    log("info", f"📊 Found {len(scored_links)} qualifying links (score > {SCORING_CONSTANTS['MIN_BUSINESS_SCORE']}) using language '{lang}'")
+    
+    return scored_links
+
+def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan_id: str = None, depth: int = 0):
     # Generate scan ID if not provided
     if not scan_id:
         scan_id = str(uuid.uuid4())
@@ -1918,6 +2044,33 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         all_discovered_links = discover_links_from_html(homepage_html, initial_url)
         yield debug_yield({'type': 'metric', 'key': 'html_links', 'value': len(all_discovered_links)})
         yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(all_discovered_links)} links in HTML', 'timestamp': time.time()})
+        
+        # --- NEW: Phase 1.5: Global Site Heuristic (Tenacious Discovery) ---
+        # Proactively search for the true corporate site BEFORE continuing with current site
+        yield debug_yield({'type': 'activity', 'message': f'🌍 Checking for global corporate site...', 'timestamp': time.time()})
+        true_corporate_url = find_true_corporate_site(all_discovered_links, initial_url)
+        
+        if true_corporate_url:
+            log("info", f"➡️ PIVOTING SCAN to high-confidence global corporate site: {true_corporate_url}")
+            yield {'type': 'status', 'message': f'Found global site - pivoting to {urlparse(true_corporate_url).netloc}', 'progress': 15}
+            yield debug_yield({'type': 'activity', 'message': f'🎯 Pivoting to global corporate site...', 'timestamp': time.time()})
+            
+            # RESTART discovery process from the new URL
+            initial_url = true_corporate_url
+            try:
+                _, homepage_html = fetch_page_content_robustly(initial_url)
+                if not homepage_html: 
+                    log("warn", f"Failed to fetch content from global site {initial_url}, reverting to original")
+                    # Revert to original URL and continue
+                    initial_url = _clean_url(url)
+                    _, homepage_html = fetch_page_content_robustly(initial_url)
+                else:
+                    # Successfully pivoted - rediscover links from the new site
+                    all_discovered_links = discover_links_from_html(homepage_html, initial_url)
+                    yield debug_yield({'type': 'activity', 'message': f'✅ Rediscovered {len(all_discovered_links)} links from global site', 'timestamp': time.time()})
+            except Exception as e:
+                log("warn", f"Failed to pivot to global site {true_corporate_url}: {e} - continuing with original site")
+                initial_url = _clean_url(url)
         
         yield debug_yield({'type': 'activity', 'message': f'📄 Searching for sitemap...', 'timestamp': time.time()})
         sitemap_links = discover_links_from_sitemap(initial_url, preferred_lang)
@@ -2004,31 +2157,28 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...', 'phase': 'scoring', 'progress': 30}
         yield {'type': 'activity', 'message': f'📊 Analyzing {len(all_discovered_links)} discovered links...', 'timestamp': time.time()}
         yield {'type': 'metric', 'key': 'total_links', 'value': len(all_discovered_links)}
-        scored_links = []
-        unique_urls_for_scoring = set()
-        processed_count = 0
-        total_unique = len(set(_clean_url(url) for url, _ in all_discovered_links))  # Estimate unique count
         
-        yield debug_yield({'type': 'activity', 'message': f'🔍 Removing {len(all_discovered_links) - total_unique} duplicate URLs...', 'timestamp': time.time()})
+        # Use the centralized scoring function with language fallback
+        scored_links = score_link_pool(all_discovered_links, preferred_lang)
         
-        for link_url, link_text in all_discovered_links:
-            cleaned_url = _clean_url(link_url)
-            if cleaned_url not in unique_urls_for_scoring:
-                unique_urls_for_scoring.add(cleaned_url)
-                processed_count += 1
-                
-                # Progress updates every 20% of links processed
-                if processed_count % max(1, total_unique // 5) == 0 or processed_count == total_unique:
-                    progress_pct = int((processed_count / total_unique) * 100) if total_unique > 0 else 100
-                    yield debug_yield({'type': 'activity', 'message': f'📊 Scoring links... {processed_count}/{total_unique} ({progress_pct}%)', 'timestamp': time.time()})
-                
-                score, rationale = score_link(cleaned_url, link_text, preferred_lang)
-                if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:  # Business-relevant content threshold
-                    scored_links.append({"url": cleaned_url, "text": link_text, "score": score, "rationale": rationale})
+        # Language fallback mechanism - if results are poor, try detected language
+        if len(scored_links) < 10 and detected_lang and detected_lang != preferred_lang:
+            yield {'type': 'activity', 'message': f'⚠️ Only {len(scored_links)} pages found with {preferred_lang.upper()}. Retrying with detected language {detected_lang.upper()}...', 'timestamp': time.time()}
+            log("warn", f"🔄 Language fallback triggered: {len(scored_links)} pages with {preferred_lang} < 10, trying {detected_lang}")
+            
+            fallback_scored_links = score_link_pool(all_discovered_links, detected_lang)
+            if len(fallback_scored_links) > len(scored_links):
+                log("info", f"✅ Language fallback successful: {len(fallback_scored_links)} pages with {detected_lang} > {len(scored_links)} with {preferred_lang}")
+                scored_links = fallback_scored_links
+                preferred_lang = detected_lang  # Update the language we're using
+                yield {'type': 'activity', 'message': f'✅ Language fallback successful - using {detected_lang.upper()} for better results', 'timestamp': time.time()}
+                yield {'type': 'status', 'message': f'Language switched to: {detected_lang.upper()}'}
+            else:
+                log("info", f"❌ Language fallback ineffective: {len(fallback_scored_links)} pages with {detected_lang} <= {len(scored_links)} with {preferred_lang}")
+                yield {'type': 'activity', 'message': f'Language fallback provided no improvement - continuing with {preferred_lang.upper()}', 'timestamp': time.time()}
         
-        scored_links.sort(key=lambda x: x["score"], reverse=True)
         yield {'type': 'metric', 'key': 'high_value_pages', 'value': len(scored_links)}
-        yield {'type': 'activity', 'message': f'✨ Identified {len(scored_links)} business-relevant pages', 'timestamp': time.time()}
+        yield {'type': 'activity', 'message': f'✨ Identified {len(scored_links)} business-relevant pages using {preferred_lang.upper()}', 'timestamp': time.time()}
         
         # Enhanced logging with rationale display
         top_10 = scored_links[:10]
@@ -2048,6 +2198,26 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
                 priority_pages.append(link["url"]); found_urls.add(link["url"])
         
         log("info", f"📋 Final priority pages selected for analysis ({len(priority_pages)} pages):", priority_pages)
+
+        # Global site pivot - look for better corporate site (only on initial scan)
+        if depth == 0:  # Only pivot on the first level to prevent infinite recursion
+            global_site_url = find_true_corporate_site(all_discovered_links, homepage_url)
+            if global_site_url and global_site_url != homepage_url:
+                log("info", f"🌐 GLOBAL SITE PIVOT DETECTED: Found better corporate site at {global_site_url}")
+                yield {'type': 'activity', 'message': f'🌐 Found global corporate site - pivoting to {global_site_url}', 'timestamp': time.time()}
+                yield {'type': 'status', 'message': f'Pivoting to global corporate site: {global_site_url}'}
+                
+                # Perform recursive scan with the global site as new starting point
+                yield {'type': 'activity', 'message': f'🔄 Starting enhanced scan from global site...', 'timestamp': time.time()}
+                
+                # Recursively scan the global site (this will return the final result)
+                for result in run_full_scan_stream(global_site_url, cache, preferred_lang=detected_lang or preferred_lang, scan_id=scan_id, depth=depth+1):
+                    yield result
+                return  # Early return - the recursive scan has handled everything
+            else:
+                log("info", f"✅ No global site pivot needed - continuing with current site {homepage_url}")
+        else:
+            log("info", f"⏭️ Skipping global site pivot check (depth={depth}) to prevent recursion")
 
         other_pages_to_screenshot = [p for p in priority_pages if p != homepage_url]
         if other_pages_to_screenshot:
