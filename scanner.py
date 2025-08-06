@@ -305,59 +305,55 @@ BUSINESS_TIER_SCORES = {
 
 # --- START: REGEX AND SCORING LOGIC ---
 NEGATIVE_REGEX = [
-    # Account Management
-    r"\b(log(in|out)?|sign(in|up)|register|account|my-account)\b", r"\b(anmelden|abmelden|registrieren|konto)\b", r"\b(iniciar-sesion|cerrar-sesion|crear-cuenta|cuenta)\b",
-    
-    # Legal & Compliance
-    r"\b(impressum|imprint|legal|disclaimer|compliance|datenschutz|data-protection|privacy|terms|cookies?|policy|governance|bylaws|tax[-_]strategy)\b", r"\b(agb|bedingungen|rechtliches|politica-de-privacidad|aviso-legal|terminos|condiciones)\b",
-    r"\b(terms[-_]of[-_]sales?|conditions[-_]of[-_]sales?|terms[-_]of[-_]service|general[-_]conditions[-_]of[-_]sales?|general[-_]conditions)\b",
-
-    # Website Tools & Overly Specific Content
+    # --- English ---
+    r"\b(log(in|out)?|sign(in|up)|register|account|my-account)\b",
+    r"\b(impressum|imprint|legal|disclaimer|compliance|privacy|terms|cookies?|policy|governance|bylaws|tax[-_]strategy)\b",
+    r"\b(terms[-_]of[-_]sale|conditions[-_]of[-_]sale|terms[-_]of[-_]service|general[-_]conditions)\b",
     r"\b(finder|selector|database|catalog|category|categories)\b",
-    
-    # Subscriptions & Marketing
-    r"\b(newsletter|subscribe|subscription|unsubscribe|boletin|suscripcion|darse-de-baja)\b",
-    
-    # Human Resources & Careers
-    r"\b(jobs?|career(s)?|vacancies|internships?|apply|karriere|stellenangebote|bewerbung|praktikum|empleo|trabajo|vacantes|postulaciones|reclutamiento)\b",
-    
-    # E-commerce & Shopping
-    r"\b(basket|cart|checkout|shop|store|ecommerce|wishlist|warenkorb|kaufen|bestellen|einkaufen|carrito|tienda|comprar|pago|pedido)\b",
-    
-    # Website Tools & Technical Pages
-    r"\b(calculator|tool|search|filter|compare|rechner|suche|vergleich|calculadora|buscar|comparar|filtro)\b",
-    r"\b(404|not-found|error|redirect|sitemap|robots|tracking|rss|weiterleitung|umleitung|redireccion|mapa-del_sitio|seguimiento)\b",
-    
-    # Customer Support & Help
+    r"\b(newsletter|subscribe|subscription|unsubscribe)\b",
+    r"\b(jobs?|career(s)?|vacancies|internships?|apply)\b",
+    r"\b(basket|cart|checkout|shop|store|ecommerce|wishlist)\b",
+    r"\b(calculator|tool|search|filter|compare)\b",
+    r"\b(404|not-found|error|redirect|sitemap|robots|tracking|rss)\b",
     r"\b(faq(s)?|help|support|contact|customer[-_]service|knowledge[-_]base)\b",
-    
-    # Developer & Partner Portals
     r"\b(api|developer(s)?|sdk|docs|documentation|partner(s)?|supplier(s)?|vendor(s)?|affiliate(s)?|portal)\b",
-    
-    # Location Finders
     r"\b(locations?|store[-_]finder|dealer[-_]locator|find[-_]a[-_]store)\b",
-
-    # Media & Asset Libraries
     r"\b(gallery|media[-_]kit|brand[-_]assets)\b",
-
-    # Accessibility
     r"\b(accessibility|wcag)\b",
-
-    # Press Releases & Content Marketing (often not core brand)
-    r"\b(press[-_]release(s)?)\b",
-    r"\b(news|events|blogs?|articles?|updates?|media|press|spotlight|stories)\b",
-    r"\b(whitepapers?|webinars?|case[-_]stud(y|ies)|customer[-_]stor(y|ies))\b",
+    r"\b(press[-_]release(s)?|news|blogs?|articles?|updates?|media|press|spotlight|stories)\b",
+    r"\b(whitepapers?|case[-_]stud(y|ies)|customer[-_]stor(y|ies))\b",
     r"\b(resources?|insights?|downloads?)\b",
-    
-    # Investor Relations & Financial Reporting
-    r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck|shareholder(s)?|stock|sec[-_]filing(s)?|financials?)\b"
+    r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck|shareholder(s)?|stock|sec[-_]filing(s)?|financials?)\b",
+
+    # --- German ---
+    r"\b(anmelden|abmelden|registrieren|konto)\b", # Login/Account
+    r"\b(datenschutz|agb|rechtliche[-_]hinweise|pflichtangaben)\b", # Legal
+    r"\b(karriere|stellenangebote|bewerbung|praktikum)\b", # Careers
+    r"\b(warenkorb|kasse|bestellen|einkaufen)\b", # E-commerce
+    r"\b(hilfe|kontakt)\b", # Help/Contact
+    r"\b(pressemitteilung|nachrichten)\b", # Press/News
+
+    # --- Spanish ---
+    r"\b(iniciar-sesion|cerrar-sesion|crear-cuenta|cuenta)\b", # Login/Account
+    r"\b(aviso-legal|politica-de-privacidad|terminos|condiciones)\b", # Legal
+    r"\b(empleo|trabajo|vacantes|postulaciones)\b", # Careers
+    r"\b(carrito|tienda|comprar|pago|pedido)\b", # E-commerce
+    r"\b(ayuda|contacto)\b", # Help/Contact
+    r"\b(noticias|prensa)\b" # Press/News
 ]
 
 # Temporal and Event-Based Content Detection
 TEMPORAL_EVENT_REGEX = [
-    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b",  # Months
-    r"\b(201[8-9]|202[0-9])\b",  # Years (e.g., 2018-2029)
-    r"\b(annual|conference|forum|webinar|event)\b"  # Event types
+    # English
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b",
+    r"\b(201[8-9]|202[0-9])\b",
+    r"\b(annual|conference|forum|webinar|event)\b",
+    # German
+    r"\b(jan|feb|mär|apr|mai|jun|jul|aug|sep|okt|nov|dez)\b",
+    r"\b(konferenz|veranstaltung)\b",
+    # Spanish
+    r"\b(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\b",
+    r"\b(conferencia|evento)\b"
 ]
 
 # Pre-compile regex patterns for performance
@@ -368,11 +364,11 @@ def _compile_patterns():
     global COMPILED_PATTERNS
     
     pattern_groups = {
-        "identity": [r"\b(brand|purpose|values|mission|vision)\b"],
-        "strategy": [r"\b(strategy|about|company|who[-_]we[-_]are)\b"],
-        "operations": [r"\b(products|services|solutions|operations|what[-_]we[-_]do)\b"],
-        "culture": [r"\b(story|culture|innovation|sustainability|responsibility|esg)\b"],
-        "people": [r"\b(leadership|team|management|history)\b"],
+        "identity": [r"\b(brand|marke|marca|purpose|zweck|propósito|values|werte|valores|mission|vision)\b"],
+        "strategy": [r"\b(strategy|strategie|estrategia|about|über[-_]uns|sobre[-_]nosotros|company|unternehmen|empresa|who[-_]we[-_]are|wer[-_]wir[-_]sind|quienes[-_]somos)\b"],
+        "operations": [r"\b(products|produkte|productos|services|leistungen|servicios|solutions|lösungen|soluciones|operations|geschäftsbereiche|operaciones|what[-_]we[-_]do)\b"],
+        "culture": [r"\b(story|geschichte|historia|culture|kultur|cultura|innovation|nachhaltigkeit|sostenibilidad|responsibility|verantwortung|responsabilidad|esg)\b"],
+        "people": [r"\b(leadership|führung|liderazgo|team|equipo|management|vorstand|dirección|history)\b"],
         "language": [r"/en/", r"lang=en"],
         "negative": NEGATIVE_REGEX,
         "temporal": TEMPORAL_EVENT_REGEX
@@ -381,7 +377,7 @@ def _compile_patterns():
     for group_name, patterns in pattern_groups.items():
         COMPILED_PATTERNS[group_name] = [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
 
-# Initialize compiled patterns
+# Initialize compiled patterns with multilingual support
 _compile_patterns()
 
 LINK_SCORE_MAP = {
