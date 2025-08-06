@@ -288,7 +288,7 @@ SCORING_CONSTANTS = {
     "PATH_DEPTH_THRESHOLD": 3,      # Path depth before penalties apply
     "PATH_DEPTH_PENALTY": 5,        # Penalty per extra path segment
     "FILE_EXTENSION_PENALTY": 100,  # Penalty for non-HTML file extensions
-    "HIGH_VALUE_PORTAL_THRESHOLD": 25,  # Minimum score for high-value portal detection
+    "HIGH_VALUE_PORTAL_THRESHOLD": 20,  # Minimum score for high-value portal detection (recalibrated)
     "CRITICAL_KEYWORD_PENALTY_REDUCTION": 2,  # Divisor for critical keyword path penalties
 }
 
@@ -352,6 +352,13 @@ NEGATIVE_REGEX = [
     r"\b(takeover|capital[-_]increase|webcast|publication|report|finances?|annual[-_]report|quarterly[-_]report|balance[-_]sheet|proxy|prospectus|statement|filings|investor[-_]deck|shareholder(s)?|stock|sec[-_]filing(s)?|financials?)\b"
 ]
 
+# Temporal and Event-Based Content Detection
+TEMPORAL_EVENT_REGEX = [
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b",  # Months
+    r"\b(201[8-9]|202[0-9])\b",  # Years (e.g., 2018-2029)
+    r"\b(annual|conference|forum|webinar|event)\b"  # Event types
+]
+
 # Pre-compile regex patterns for performance
 COMPILED_PATTERNS = {}
 
@@ -366,7 +373,8 @@ def _compile_patterns():
         "culture": [r"\b(story|culture|innovation|sustainability|responsibility|esg)\b"],
         "people": [r"\b(leadership|team|management|history)\b"],
         "language": [r"/en/", r"lang=en"],
-        "negative": NEGATIVE_REGEX
+        "negative": NEGATIVE_REGEX,
+        "temporal": TEMPORAL_EVENT_REGEX
     }
     
     for group_name, patterns in pattern_groups.items():
@@ -426,6 +434,19 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
             score += LINK_SCORE_MAP["negative"]["score"]
             rationale.append(f"Veto: {LINK_SCORE_MAP['negative']['score']}")
             break
+
+    # --- Temporal Penalty: Time-Sensitive Content Detection ---
+    for compiled_pattern in COMPILED_PATTERNS["temporal"]:
+        if compiled_pattern.search(combined_text):
+            score -= 20
+            rationale.append("Temporal: -20")
+            break  # Apply penalty only once
+
+    # --- Path Context Bonus: Well-Structured Corporate Paths ---
+    positive_paths = ['/about/', '/who-we-are/', '/company/', '/info/', '/mission/', '/vision/', '/values/', '/leadership/']
+    if any(path in link_url for path in positive_paths):
+        score += 5
+        rationale.append("Path Bonus: +5")
 
     # --- Bonuses and Penalties ---
     language_patterns = LINK_SCORE_MAP['language']['patterns']
@@ -1093,28 +1114,33 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
     return final_social_text
 
 def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
+    """Find a high-value corporate portal on a different subdomain (stricter definition).
+    
+    A portal MUST be on a different subdomain, not just a different path.
+    This prevents false positives from single event pages or deep paths.
+    """
     log("info", "Searching for a better corporate portal...")
     best_candidate = None
-    highest_score = 0
-    initial_root_word = _get_root_word(initial_url)
+    highest_score = -1
     initial_netloc = urlparse(initial_url).netloc
 
-    if not initial_root_word:
-        log("warn", "Could not determine initial root word, cannot pivot.")
-        return None
-
     for link_url, link_text in discovered_links:
-        if "http" in link_url and _get_root_word(link_url) == initial_root_word and urlparse(link_url).netloc != initial_netloc:
-            score, _ = score_link(link_url, link_text, preferred_lang)  # Unpack tuple, ignore rationale
-            if score > highest_score:
-                highest_score = score
-                best_candidate = link_url
+        try:
+            link_netloc = urlparse(link_url).netloc
+            # FIX: A portal MUST be on a different subdomain. It cannot be just a different path.
+            if link_netloc and link_netloc != initial_netloc and _is_same_root_word_domain(initial_url, link_url):
+                score, _ = score_link(link_url, link_text, preferred_lang)  # Rationale not needed here
+                if score > highest_score:
+                    highest_score = score
+                    best_candidate = link_url
+        except Exception:
+            continue  # Ignore malformed URLs
     
     if highest_score > SCORING_CONSTANTS["HIGH_VALUE_PORTAL_THRESHOLD"]:
-        log("info", f"High-quality portal found with score {highest_score}. Pivoting to: {best_candidate}")
+        log("info", f"🎯 Found high-value subdomain: {best_candidate} (Score: {highest_score}). Adding its links to our discovery pool.")
         return best_candidate
     else:
-        log("info", "No high-quality corporate portal found. Continuing with the initial URL.")
+        log("info", "📍 No high-value subdomains found. Sticking to the main domain.")
         return None
 
 def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -> Optional[List[Tuple[str, str]]]:
