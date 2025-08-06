@@ -847,9 +847,6 @@ def validate_configuration():
 validate_configuration()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Initialize data retention cleanup
-schedule_retention_cleanup()
-
 # Memory management configuration
 MAX_CACHE_SIZE = 100  # Maximum cached screenshots
 MAX_CORPUS_LENGTH = 50000  # Prevent excessive text processing
@@ -1198,6 +1195,12 @@ def schedule_retention_cleanup():
     log("info", f"Data retention cleanup scheduled (retention: {RETENTION_DAYS} days)")
 
 # --- END: DATA RETENTION ---
+
+# Initialize data retention cleanup after all functions are defined
+try:
+    schedule_retention_cleanup()
+except Exception as e:
+    log("error", f"Failed to initialize retention cleanup: {e}")
 
 # --- START: METRICS TRACKING ---
 METRICS_FILE = os.path.join(PERSISTENT_DATA_DIR, "scan_metrics.jsonl")
@@ -2187,7 +2190,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         # Track successful completion
         track_scan_metric(scan_id, "completed", {
             "processing_mode": processing_mode,
-            "pages_analyzed": len(indexed_urls),
+            "pages_analyzed": len(all_discovered_links) if 'all_discovered_links' in locals() else 0,
             "average_score": quantitative_summary.get("average_score", 0)
         })
 
