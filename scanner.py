@@ -260,28 +260,29 @@ def detect_primary_language(html_content: str) -> str:
 
 def _categorize_veto_term(term: str) -> str:
     """
-    Centralized category mapping for veto terms to eliminate redundancy.
+    Centralized semantic category mapping for veto terms to eliminate redundancy.
     
     Args:
         term: The subdomain or path segment to categorize
         
     Returns:
-        Category name for the veto term ('careers', 'commerce', etc.)
+        Semantic category name for the veto term ('careers', 'commerce', etc.)
     """
-    # Category mappings with multilingual support
+    term_clean = term.lower().strip('/')
+    
+    # Comprehensive multilingual category mappings
     category_mappings = {
-        'careers': {'careers', 'jobs', 'karriere', 'empleo', 'trabajo', 'stellenangebote', 'bewerbung', 'praktikum', 'vacantes', 'postulaciones'},
-        'commerce': {'shop', 'store', 'tienda', 'warenkorb', 'kasse', 'bestellen', 'einkaufen', 'carrito', 'comprar', 'pago', 'pedido'},
-        'legal': {'legal', 'rechtliche', 'recht', 'juridico', 'privacy', 'datenschutz', 'privacidad', 'impressum', 'pflichtangaben', 'aviso-legal', 'politica-de-privacidad', 'terminos', 'condiciones'},
+        'careers': {'careers', 'jobs', 'karriere', 'empleo', 'trabajo', 'stellenangebote', 'bewerbung', 'praktikum', 'vacantes', 'postulaciones', 'reclutamiento'},
+        'commerce': {'shop', 'store', 'tienda', 'warenkorb', 'kasse', 'bestellen', 'einkaufen', 'carrito', 'comprar', 'pago', 'pedido', 'cart', 'checkout', 'ecommerce', 'wishlist'},
+        'legal': {'legal', 'rechtliche', 'recht', 'juridico', 'privacy', 'datenschutz', 'privacidad', 'impressum', 'pflichtangaben', 'aviso-legal', 'politica-de-privacidad', 'terminos', 'condiciones', 'terms', 'disclaimer', 'compliance', 'policy'},
         'sustainability': {'sustainability', 'esg', 'nachhaltigkeit', 'sostenibilidad'},
-        'support': {'support', 'help', 'hilfe', 'ayuda', 'soporte', 'faq', 'customer-service', 'knowledge-base'},
-        'developers': {'developer', 'api', 'docs', 'entwickler', 'desarrollador', 'documentation', 'sdk'},
-        'media': {'press', 'media', 'presse', 'medien', 'prensa', 'pressemitteilung', 'nachrichten', 'noticias'}
+        'support': {'support', 'help', 'hilfe', 'ayuda', 'soporte', 'faq', 'customer-service', 'knowledge-base', 'contact'},
+        'developers': {'developer', 'api', 'docs', 'entwickler', 'desarrollador', 'documentation', 'sdk', 'portal'},
+        'media': {'press', 'media', 'presse', 'medien', 'prensa', 'pressemitteilung', 'nachrichten', 'noticias', 'news', 'articles', 'updates', 'spotlight', 'stories'}
     }
     
-    term_lower = term.lower().strip('/')
     for category, terms in category_mappings.items():
-        if term_lower in terms:
+        if term_clean in terms:
             return category
     
     return 'other'
@@ -323,7 +324,8 @@ def is_vetoed_url(url: str) -> Tuple[bool, Optional[str]]:
 def get_subdomain_category(url: str) -> str:
     """
     Categorizes a subdomain URL to determine appropriate link extraction limits.
-    Returns category name for SUBDOMAIN_LINK_LIMITS lookup.
+    Uses centralized multilingual categorization for consistency.
+    Returns category name for DISCOVERY_LINK_LIMITS lookup.
     """
     try:
         parsed = urlparse(url)
@@ -332,21 +334,25 @@ def get_subdomain_category(url: str) -> str:
             
         subdomain = parsed.hostname.split('.')[0].lower()
         
-        # Map subdomains to categories
-        if subdomain in ['investor', 'investors', 'ir']:
-            return 'investor'
-        elif subdomain in ['about', 'who-we-are', 'uber-uns', 'sobre-nosotros']:
-            return 'about'
-        elif subdomain in ['brand', 'our-brand', 'marke', 'marca']:
-            return 'brand'
-        elif subdomain in ['corporate', 'corp', 'group']:
-            return 'corporate'
-        elif subdomain in ['careers', 'jobs', 'karriere', 'empleo']:
-            return 'careers'
-        elif subdomain in ['news', 'press', 'media', 'presse', 'prensa']:
-            return 'news'
-        else:
-            return 'default'
+        # Use centralized categorization with comprehensive multilingual support
+        category = _categorize_veto_term(subdomain)
+        
+        # Map to discovery limits categories (some categories need mapping)
+        category_mapping = {
+            'careers': 'careers',
+            'news': 'news',
+            'investor': 'investor',
+            'about': 'about',
+            'brand': 'brand',
+            'corporate': 'corporate',
+            'commerce': 'default',  # Shopping sites get default treatment
+            'legal': 'default',     # Legal pages get default treatment
+            'support': 'default',   # Support pages get default treatment
+            'technical': 'default', # Technical pages get default treatment
+            'other': 'default'      # Catch-all gets default treatment
+        }
+        
+        return category_mapping.get(category, 'default')
             
     except Exception as e:
         log("debug", f"Error categorizing subdomain {url}: {e}")
@@ -371,7 +377,7 @@ def get_top_links_from_subdomain(subdomain_url: str, preferred_lang: str, num_li
         # Determine number of links to extract based on subdomain category
         if num_links is None:
             category = get_subdomain_category(subdomain_url)
-            num_links = SUBDOMAIN_LINK_LIMITS.get(category, SUBDOMAIN_LINK_LIMITS['default'])
+            num_links = DISCOVERY_LINK_LIMITS.get(category, DISCOVERY_LINK_LIMITS['default'])
             log("info", f"📊 Subdomain category: {category}, extracting top {num_links} links")
         
         # Fetch only the subdomain's homepage
@@ -505,15 +511,23 @@ VETO_EXCEPTIONS = [
     'corporate-governance'     # Governance as transparency
 ]
 
-# Subdomain category limits for surgical strikes
-SUBDOMAIN_LINK_LIMITS = {
-    'investor': 2,
-    'about': 2,
+# Discovery link limits for surgical strikes - comprehensive and granular
+DISCOVERY_LINK_LIMITS = {
+    'investor': 3,    # More links for investor relations
+    'investors': 3,   # Handle both singular/plural  
+    'ir': 3,
     'brand': 2,
+    'branding': 2,
+    'about': 2,
     'corporate': 2,
-    'careers': 1,    # Minimal extraction from careers sites
-    'news': 1,       # Just the main news page
-    'default': 2     # Fallback for unrecognized subdomains
+    'corp': 2,
+    'group': 2,
+    'news': 1,        # Limit news content
+    'press': 1,
+    'media': 1,
+    'careers': 1,     # Minimal extraction from careers sites
+    'default': 2,     # Fallback for unrecognized subdomains
+    'high_value_paths': 3  # Main domain high-value path extraction
 }
 # --- END: CONFIGURATION AND CONSTANTS ---
 
@@ -1098,14 +1112,14 @@ def validate_configuration():
             elif len(exception.strip()) == 0:
                 errors.append("Empty exception pattern found in VETO_EXCEPTIONS")
         
-        # Validate subdomain link limits
-        for category, limit in SUBDOMAIN_LINK_LIMITS.items():
+        # Validate discovery link limits
+        for category, limit in DISCOVERY_LINK_LIMITS.items():
             if not isinstance(limit, int):
-                errors.append(f"SUBDOMAIN_LINK_LIMITS['{category}'] must be integer, got: {limit}")
+                errors.append(f"DISCOVERY_LINK_LIMITS['{category}'] must be integer, got: {limit}")
             elif limit < 0:
-                errors.append(f"SUBDOMAIN_LINK_LIMITS['{category}'] must be non-negative, got: {limit}")
+                errors.append(f"DISCOVERY_LINK_LIMITS['{category}'] must be non-negative, got: {limit}")
             elif limit > 10:
-                errors.append(f"SUBDOMAIN_LINK_LIMITS['{category}'] unusually high ({limit}), recommend ≤ 10 for efficiency")
+                errors.append(f"DISCOVERY_LINK_LIMITS['{category}'] unusually high ({limit}), recommend ≤ 10 for efficiency")
                 
     except Exception as e:
         errors.append(f"Error validating veto configuration: {e}")
@@ -1779,6 +1793,89 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 log("warn", f"Failed to scrape {platform.capitalize()} from {best_url}: {e}")
                 
     return final_social_text
+
+def find_high_value_paths(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en', max_paths: int = None) -> List[Tuple[str, str]]:
+    """
+    Tier 3: High-Value Path Strike - Extract the most valuable paths from the main domain.
+    
+    This function implements targeted path discovery for brand-relevant content
+    from the main domain, filtering out noise and focusing on memorability factors.
+    
+    Args:
+        discovered_links: All discovered links from the domain
+        initial_url: The base URL being scanned
+        preferred_lang: Language preference for scoring
+        max_paths: Maximum number of paths to return (uses category-based defaults if None)
+    
+    Returns:
+        List of (url, text) tuples for the highest-value paths from main domain
+    """
+    log("info", f"🎯 Tier 3: High-Value Path Strike on main domain")
+    
+    try:
+        if max_paths is None:
+            max_paths = DISCOVERY_LINK_LIMITS.get('default', 15)
+            
+        initial_netloc = urlparse(initial_url).netloc.lower()
+        
+        # Filter to only same-domain paths (not subdomains)
+        same_domain_links = []
+        different_domain_count = 0
+        
+        for url, text in discovered_links:
+            try:
+                link_netloc = urlparse(url).netloc.lower()
+                if link_netloc == initial_netloc:
+                    same_domain_links.append((url, text))
+                else:
+                    different_domain_count += 1
+            except Exception as e:
+                log("debug", f"Error parsing URL {url}: {e}")
+                continue
+        
+        log("info", f"📊 Found {len(same_domain_links)} same-domain paths, filtered out {different_domain_count} cross-domain links")
+        
+        if not same_domain_links:
+            log("warn", f"No same-domain paths found for {initial_url}")
+            return []
+        
+        # Pre-filter vetoed paths before scoring for performance
+        filtered_paths = []
+        vetoed_count = 0
+        vetoed_by_category = {}
+        
+        for url, text in same_domain_links:
+            is_vetoed, veto_category = is_vetoed_url(url)
+            if not is_vetoed:
+                filtered_paths.append((url, text))
+            else:
+                vetoed_count += 1
+                if veto_category:
+                    vetoed_by_category[veto_category] = vetoed_by_category.get(veto_category, 0) + 1
+        
+        if vetoed_count > 0:
+            log("info", f"🛡️ Path-level veto: Filtered {vetoed_count} paths from main domain")
+            for category, count in vetoed_by_category.items():
+                log("debug", f"  - {category}: {count} paths vetoed")
+        
+        if not filtered_paths:
+            log("warn", f"All paths on main domain were vetoed - returning empty list")
+            return []
+        
+        # Score and select top paths
+        scored_paths = score_link_pool(filtered_paths, preferred_lang)
+        
+        # Return top N paths using optimized O(n) mapping
+        top_urls = {link['url'] for link in scored_paths[:max_paths]}
+        clean_url_to_original = {_clean_url(url): (url, text) for url, text in filtered_paths}
+        result = [clean_url_to_original[url] for url in top_urls if url in clean_url_to_original]
+        
+        log("info", f"✅ High-Value Path Strike: Selected {len(result)} top paths from {len(filtered_paths)} candidates")
+        return result
+        
+    except Exception as e:
+        log("warn", f"Failed high-value path extraction for {initial_url}: {e}")
+        return []
 
 def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
     """Find a high-value corporate subdomain worth analyzing with surgical precision.
