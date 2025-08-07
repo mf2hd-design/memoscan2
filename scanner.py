@@ -51,8 +51,8 @@ import httpx
 
 from urllib.parse import quote_plus
 
-# Use ProcessPoolExecutor for true isolation and reliability in parallel tasks
-from concurrent.futures import ProcessPoolExecutor
+# Use ThreadPoolExecutor for I/O-bound web scraping tasks (more efficient than ProcessPoolExecutor)
+from concurrent.futures import ThreadPoolExecutor
 
 from playwright.sync_api import sync_playwright
 from typing import Optional, Dict, List, Tuple
@@ -408,11 +408,9 @@ def get_top_links_from_subdomain(subdomain_url: str, preferred_lang: str, num_li
         # Score the filtered links
         scored_links = score_link_pool(filtered_links, preferred_lang)
         
-        # Return the original (url, text) tuples for the top N links
-        # Optimized: O(n) instead of O(n*m) by pre-computing URL mapping
-        top_urls = {link['url'] for link in scored_links[:num_links]}
-        clean_url_to_original = {_clean_url(url): (url, text) for url, text in filtered_links}
-        result = [clean_url_to_original[url] for url in top_urls if url in clean_url_to_original]
+        # Return the original (url, text) tuples for the top N links  
+        # OPTIMIZED: URLs already cleaned, direct slicing instead of complex mapping
+        result = [(link['url'], link['text']) for link in scored_links[:num_links]]
         
         log("info", f"✅ Extracted {len(result)} high-value links from subdomain")
         return result
@@ -2172,8 +2170,11 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
     return all_links
 
 def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
-    """Extracts links from raw HTML content."""
-    soup = BeautifulSoup(html, "html.parser")
+    """Extracts links from raw HTML content with optimized parsing."""
+    # PERFORMANCE OPTIMIZATION: Parse only <a> tags instead of full DOM
+    from bs4 import SoupStrainer
+    parse_only = SoupStrainer("a", href=True)
+    soup = BeautifulSoup(html, "html.parser", parse_only=parse_only)
     links = []
     all_links_found = 0
     
@@ -2190,7 +2191,9 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
             log("debug", f"Found link: {href_raw} -> {link_url}")
         
         if _is_same_root_word_domain(base_url, link_url):
-            links.append((link_url, a.get_text(strip=True)))
+            # PERFORMANCE OPTIMIZATION: Clean URLs once during discovery, not during scoring
+            cleaned_url = _clean_url(link_url)
+            links.append((cleaned_url, a.get_text(strip=True)))
     
     log("info", f"HTML link discovery: Found {all_links_found} total links, {len(links)} from same root domain")
     
@@ -2405,13 +2408,13 @@ def score_link_pool(links: List[Tuple[str, str]], lang: str) -> List[dict]:
     
     for url, text in links:
         try:
-            cleaned_url = _clean_url(url)
-            if cleaned_url not in unique_urls:
-                unique_urls.add(cleaned_url)
-                score, rationale = score_link(cleaned_url, text, lang)
+            # URLs are already cleaned during discovery phase
+            if url not in unique_urls:
+                unique_urls.add(url)
+                score, rationale = score_link(url, text, lang)
                 if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:
                     scored_links.append({
-                        "url": cleaned_url, 
+                        "url": url, 
                         "text": text, 
                         "score": score, 
                         "rationale": rationale,
@@ -2674,26 +2677,6 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         
         log("info", f"📋 Final priority pages selected for analysis ({len(priority_pages)} pages):", priority_pages)
 
-        # Global site pivot - look for better corporate site (only on initial scan)
-        if depth == 0:  # Only pivot on the first level to prevent infinite recursion
-            global_site_url = find_true_corporate_site(all_discovered_links, homepage_url)
-            if global_site_url and global_site_url != homepage_url:
-                log("info", f"🌐 GLOBAL SITE PIVOT DETECTED: Found better corporate site at {global_site_url}")
-                yield {'type': 'activity', 'message': f'🌐 Found global corporate site - pivoting to {global_site_url}', 'timestamp': time.time()}
-                yield {'type': 'status', 'message': f'Pivoting to global corporate site: {global_site_url}'}
-                
-                # Perform recursive scan with the global site as new starting point
-                yield {'type': 'activity', 'message': f'🔄 Starting enhanced scan from global site...', 'timestamp': time.time()}
-                
-                # Recursively scan the global site (this will return the final result)
-                for result in run_full_scan_stream(global_site_url, cache, preferred_lang=detected_lang or preferred_lang, scan_id=scan_id, depth=depth+1):
-                    yield result
-                return  # Early return - the recursive scan has handled everything
-            else:
-                log("info", f"✅ No global site pivot needed - continuing with current site {homepage_url}")
-        else:
-            log("info", f"⏭️ Skipping global site pivot check (depth={depth}) to prevent recursion")
-
         other_pages_to_screenshot = [p for p in priority_pages if p != homepage_url]
         if other_pages_to_screenshot:
             yield {'type': 'status', 'message': 'Capturing visual evidence from key pages...'}
@@ -2739,7 +2722,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
             log("info", f"⚡ Using parallel processing for {len(other_pages_to_fetch)} pages (Development mode)")
             yield debug_yield({'type': 'activity', 'message': f'⚡ Fetching {len(other_pages_to_fetch)} priority pages (parallel)...', 'timestamp': time.time()})
             
-            executor = ProcessPoolExecutor(max_workers=2)
+            executor = ThreadPoolExecutor(max_workers=2)
             try:
                 future_to_url = {executor.submit(fetch_page_content_robustly, url): url for url in other_pages_to_fetch}
                 completed_count = 0
