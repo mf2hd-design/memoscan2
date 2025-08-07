@@ -1675,22 +1675,33 @@ def prepare_page_for_capture(page, max_ms=45000):
             pass
     if not consent_clicked: log("info", "No common consent banner found to click.")
     
-    page.evaluate("""() => { 
-        const step = 800; 
-        let y = 0; 
-        const sleep = ms => new Promise(r => setTimeout(r, ms)); 
-        (async () => { 
-            const maxScrolls = 50; 
-            let scrollCount = 0; 
-            while (y < document.body.scrollHeight && scrollCount < maxScrolls) { 
-                window.scrollBy(0, step); 
-                y += step; 
-                scrollCount++; 
-                await sleep(120); 
-            } 
-            window.scrollTo(0, 0); 
-        })(); 
-    }""")
+    # FIX: More aggressive and reliable scrolling to trigger all lazy-loaded content
+    log("info", "🔄 Starting aggressive scroll to trigger lazy loading...")
+    page.evaluate("""
+        async () => {
+            const sleep = ms => new Promise(r => setTimeout(r, ms));
+            const maxScrolls = 75; // Increased scroll attempts for very long pages
+            let lastHeight = -1;
+            let scrolls = 0;
+
+            while (scrolls < maxScrolls) {
+                window.scrollBy(0, 800);
+                await sleep(150); // Increased wait time for content to load
+                let newHeight = document.body.scrollHeight;
+                if (newHeight === lastHeight) {
+                    break; // Stop if we're not getting any new content
+                }
+                lastHeight = newHeight;
+                scrolls++;
+            }
+            // Final scroll to the absolute bottom, then back to the top
+            window.scrollTo(0, document.body.scrollHeight);
+            await sleep(500);
+            window.scrollTo(0, 0);
+            await sleep(200);
+        }
+    """)
+    log("info", "✅ Aggressive scroll complete.")
     
     try:
         page.wait_for_function("() => { const imagesReady = Array.from(document.images).every(img => img.complete && img.naturalWidth > 0); const fontsReady = !('fonts' in document) || document.fonts.status === 'loaded'; const noSkeletons = !document.querySelector('[class*=skeleton],[data-skeleton],[aria-busy=\"true\"]'); return imagesReady && fontsReady && noSkeletons; }", timeout=15000)
@@ -1880,8 +1891,9 @@ def find_high_value_paths(discovered_links: List[Tuple[str, str]], initial_url: 
 def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
     """Find a high-value corporate subdomain worth analyzing with surgical precision.
     
-    This function identifies valuable subdomains (e.g., investor.company.com) but
-    pre-emptively vetoes noise subdomains (e.g., careers.company.com).
+    CRITICAL FIX: This function now strictly enforces that a portal MUST be on a different subdomain,
+    not just a different path on the same domain. This prevents the "silent failure" bug where
+    same-domain paths were incorrectly identified as "subdomains."
     
     Args:
         discovered_links: List of (url, text) tuples from initial discovery
@@ -1894,40 +1906,37 @@ def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_u
     log("info", "🔍 Searching for high-value subdomains...")
     best_candidate = None
     highest_score = -1
-    initial_netloc = urlparse(initial_url).netloc
-    vetoed_subdomains = []
+    
+    try:
+        initial_netloc = urlparse(initial_url).netloc
+    except Exception:
+        log("error", f"Cannot parse initial URL {initial_url}")
+        return None # Cannot proceed with an invalid initial URL
 
     for link_url, link_text in discovered_links:
-        # --- PRE-EMPTIVE VETO CHECK ---
-        is_vetoed, veto_category = is_vetoed_url(link_url)
-        if is_vetoed:
-            vetoed_subdomains.append((link_url, veto_category))
-            continue  # Skip this link entirely
-            
         try:
-            link_netloc = urlparse(link_url).netloc
-            # Must be on a different subdomain, not just a different path
+            parsed_link = urlparse(link_url)
+            link_netloc = parsed_link.netloc
+            
+            # --- CRITICAL FIX: A portal MUST be on a different subdomain. ---
             if link_netloc and link_netloc != initial_netloc and _is_same_root_word_domain(initial_url, link_url):
+                
+                is_vetoed, _ = is_vetoed_url(link_url)
+                if is_vetoed:
+                    continue
+                
                 score, _ = score_link(link_url, link_text, preferred_lang)
                 if score > highest_score:
                     highest_score = score
                     best_candidate = link_url
-        except Exception as e:
-            log("debug", f"Error processing subdomain link {link_url}: {e}")
+        except Exception:
             continue
-    
-    # Log vetoed subdomains for transparency
-    if vetoed_subdomains:
-        veto_summary = {}
-        for _, category in vetoed_subdomains:
-            veto_summary[category] = veto_summary.get(category, 0) + 1
-        log("info", f"🛡️ Vetoed {len(vetoed_subdomains)} subdomain links: {dict(veto_summary)}")
     
     if highest_score > SCORING_CONSTANTS["HIGH_VALUE_PORTAL_THRESHOLD"]:
         log("info", f"🎯 Found high-value subdomain: {best_candidate} (Score: {highest_score})")
         return best_candidate
     else:
-        log("info", "📍 No high-value subdomains found after veto filtering")
+        log("info", "📍 No high-value subdomains found.")
         return None
 
 def find_true_corporate_site(discovered_links: List[Tuple[str, str]], initial_url: str) -> Optional[str]:
