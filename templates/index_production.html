@@ -702,6 +702,16 @@
             // Remove potentially dangerous characters and limit length
             return this.escapeHtml(String(message).substring(0, 500));
         }
+
+        // NEW FUNCTION for long-form, trusted HTML from the AI
+        static sanitizeHtmlContent(htmlString) {
+            if (!htmlString) return '';
+            // marked.parse is already being used for the summary, 
+            // and it has its own built-in sanitization options.
+            // We will rely on its default safe behavior and avoid truncation.
+            // Explicit sanitize: true for production clarity and future-proofing
+            return marked.parse(htmlString, { sanitize: true });
+        }
     }
     
     class PerformanceUtils {
@@ -1366,9 +1376,9 @@
             const summaryContainer = document.getElementById('summary-container');
             if (!summaryContainer) return;
             
-            // Safely parse markdown
-            const sanitizedText = SecurityUtils.sanitizeMessage(text);
-            summaryContainer.innerHTML = `<h3>Executive Summary</h3>${marked.parse(sanitizedText)}`;
+            // FIX: Use the new function that does not truncate the summary
+            const sanitizedHtml = SecurityUtils.sanitizeHtmlContent(text);
+            summaryContainer.innerHTML = `<h3>Executive Summary</h3>${sanitizedHtml}`;
             summaryContainer.style.display = 'block';
             summaryContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
