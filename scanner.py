@@ -258,6 +258,163 @@ def detect_primary_language(html_content: str) -> str:
         log("warn", f"Language detection failed: {e}, defaulting to English")
         return 'en'
 
+def is_vetoed_url(url: str) -> Tuple[bool, Optional[str]]:
+    """
+    Checks if a URL should be pre-emptively vetoed based on its subdomain or path.
+    Returns (is_vetoed, category) for transparency in logging.
+    """
+    try:
+        # First check exceptions - these override any veto
+        url_lower = url.lower()
+        if any(exception in url_lower for exception in VETO_EXCEPTIONS):
+            return False, None
+            
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname
+        path = parsed_url.path.lower()
+        
+        # Check subdomain vetoes
+        if hostname:
+            subdomain = hostname.split('.')[0].lower()
+            if subdomain in VETO_SUBDOMAINS:
+                # Determine category for logging
+                if subdomain in ['careers', 'jobs', 'karriere', 'empleo', 'trabajo']:
+                    return True, 'careers'
+                elif subdomain in ['shop', 'store', 'tienda']:
+                    return True, 'commerce'
+                elif subdomain in ['legal', 'rechtliche', 'recht', 'juridico']:
+                    return True, 'legal'
+                elif subdomain in ['sustainability', 'esg', 'nachhaltigkeit', 'sostenibilidad']:
+                    return True, 'sustainability'
+                elif subdomain in ['support', 'help', 'hilfe', 'ayuda', 'soporte']:
+                    return True, 'support'
+                elif subdomain in ['developer', 'api', 'docs', 'entwickler', 'desarrollador']:
+                    return True, 'developers'
+                elif subdomain in ['press', 'media', 'presse', 'medien', 'prensa']:
+                    return True, 'media'
+                else:
+                    return True, 'other'
+        
+        # Check path segment vetoes
+        for segment in VETO_PATH_SEGMENTS:
+            if segment in path:
+                # Determine category based on path
+                if any(career in segment for career in ['/careers/', '/jobs/', '/karriere/', '/empleo/', '/trabajo/']):
+                    return True, 'careers'
+                elif any(shop in segment for shop in ['/shop/', '/store/', '/tienda/']):
+                    return True, 'commerce'
+                elif any(legal in segment for legal in ['/legal/', '/privacy/', '/rechtliche/', '/recht/', '/datenschutz/', '/juridico/', '/privacidad/', '/impressum/']):
+                    return True, 'legal'
+                elif any(sustain in segment for sustain in ['/sustainability/', '/esg/', '/nachhaltigkeit/', '/sostenibilidad/']):
+                    return True, 'sustainability'
+                elif any(support in segment for support in ['/support/', '/help/', '/faq/', '/hilfe/', '/ayuda/', '/soporte/']):
+                    return True, 'support'
+                elif any(dev in segment for dev in ['/api/', '/developer/', '/docs/', '/documentation/', '/entwickler/', '/desarrollador/']):
+                    return True, 'developers'
+                elif any(media in segment for media in ['/press/', '/media/', '/presse/', '/medien/', '/prensa/']):
+                    return True, 'media'
+                else:
+                    return True, 'other'
+                    
+    except Exception as e:
+        log("debug", f"Error in veto check for {url}: {e}")
+        return False, None  # Fail open for safety
+        
+    return False, None
+
+def get_subdomain_category(url: str) -> str:
+    """
+    Categorizes a subdomain URL to determine appropriate link extraction limits.
+    Returns category name for SUBDOMAIN_LINK_LIMITS lookup.
+    """
+    try:
+        parsed = urlparse(url)
+        if not parsed.hostname:
+            return 'default'
+            
+        subdomain = parsed.hostname.split('.')[0].lower()
+        
+        # Map subdomains to categories
+        if subdomain in ['investor', 'investors', 'ir']:
+            return 'investor'
+        elif subdomain in ['about', 'who-we-are', 'uber-uns', 'sobre-nosotros']:
+            return 'about'
+        elif subdomain in ['brand', 'our-brand', 'marke', 'marca']:
+            return 'brand'
+        elif subdomain in ['corporate', 'corp', 'group']:
+            return 'corporate'
+        elif subdomain in ['careers', 'jobs', 'karriere', 'empleo']:
+            return 'careers'
+        elif subdomain in ['news', 'press', 'media', 'presse', 'prensa']:
+            return 'news'
+        else:
+            return 'default'
+            
+    except Exception as e:
+        log("debug", f"Error categorizing subdomain {url}: {e}")
+        return 'default'
+
+def get_top_links_from_subdomain(subdomain_url: str, preferred_lang: str, num_links: int = None) -> List[Tuple[str, str]]:
+    """
+    Performs a "surgical strike" on a subdomain to find only its top N most relevant links.
+    Does NOT crawl the subdomain's sitemap to prevent noise.
+    
+    Args:
+        subdomain_url: The subdomain URL to analyze
+        preferred_lang: Language preference for scoring
+        num_links: Number of links to extract (if None, uses category-based limit)
+    
+    Returns:
+        List of (url, text) tuples for the top N links
+    """
+    log("info", f"🎯 Surgically striking subdomain {subdomain_url}")
+    
+    try:
+        # Determine number of links to extract based on subdomain category
+        if num_links is None:
+            category = get_subdomain_category(subdomain_url)
+            num_links = SUBDOMAIN_LINK_LIMITS.get(category, SUBDOMAIN_LINK_LIMITS['default'])
+            log("info", f"📊 Subdomain category: {category}, extracting top {num_links} links")
+        
+        # Fetch only the subdomain's homepage
+        _, html = fetch_page_content_robustly(subdomain_url)
+        if not html:
+            log("warn", f"Failed to fetch content from subdomain {subdomain_url}")
+            return []
+        
+        # Discover links from the homepage only
+        links = discover_links_from_html(html, subdomain_url)
+        if not links:
+            log("info", f"No links found on subdomain homepage {subdomain_url}")
+            return []
+        
+        # Pre-filter vetoed links before scoring
+        filtered_links = []
+        vetoed_count = 0
+        for url, text in links:
+            is_vetoed, _ = is_vetoed_url(url)
+            if not is_vetoed:
+                filtered_links.append((url, text))
+            else:
+                vetoed_count += 1
+                
+        if vetoed_count > 0:
+            log("info", f"🛡️ Pre-vetoed {vetoed_count} links from subdomain")
+            
+        # Score the filtered links
+        scored_links = score_link_pool(filtered_links, preferred_lang)
+        
+        # Return the original (url, text) tuples for the top N links
+        top_urls = {link['url'] for link in scored_links[:num_links]}
+        result = [(url, text) for url, text in filtered_links if _clean_url(url) in top_urls]
+        
+        log("info", f"✅ Extracted {len(result)} high-value links from subdomain")
+        return result
+        
+    except Exception as e:
+        log("warn", f"Failed surgical strike on subdomain {subdomain_url}: {e}")
+        return []
+
 # --- END: HELPER FUNCTIONS ---
 
 # --- START: CONFIGURATION AND CONSTANTS ---
@@ -300,6 +457,52 @@ BUSINESS_TIER_SCORES = {
     "operations": 20,  # Medium priority: products, services
     "culture": 10,     # Lower priority: culture, sustainability
     "people": 5,       # Lowest priority: leadership, team
+}
+
+# Pre-emptive Veto Configuration - Multilingual
+VETO_SUBDOMAINS = [
+    # English
+    'careers', 'jobs', 'shop', 'store', 'legal', 'sustainability', 'esg', 
+    'support', 'help', 'developer', 'api', 'docs', 'press', 'media',
+    # German
+    'karriere', 'rechtliche', 'recht', 'nachhaltigkeit', 'hilfe', 'entwickler',
+    'presse', 'medien', 'datenschutz',
+    # Spanish  
+    'empleo', 'trabajo', 'tienda', 'legal', 'juridico', 'sostenibilidad',
+    'ayuda', 'soporte', 'desarrollador', 'prensa'
+]
+
+VETO_PATH_SEGMENTS = [
+    # English
+    '/careers/', '/jobs/', '/shop/', '/store/', '/legal/', '/privacy/', 
+    '/sustainability/', '/esg/', '/support/', '/help/', '/faq/', '/api/',
+    '/developer/', '/docs/', '/documentation/', '/press/', '/media/',
+    # German
+    '/karriere/', '/rechtliche/', '/recht/', '/datenschutz/', '/nachhaltigkeit/',
+    '/hilfe/', '/entwickler/', '/presse/', '/medien/', '/impressum/',
+    # Spanish
+    '/empleo/', '/trabajo/', '/tienda/', '/legal/', '/juridico/', '/privacidad/',
+    '/sostenibilidad/', '/ayuda/', '/soporte/', '/desarrollador/', '/prensa/'
+]
+
+# Veto exceptions - patterns that should NOT be vetoed despite matching veto keywords
+VETO_EXCEPTIONS = [
+    'about-sustainability',  # Company's sustainability strategy might be brand-relevant
+    'legal-structure',       # Corporate governance info
+    'investor-esg',         # ESG information for investors
+    'brand-story',          # Even if in /media/ or /press/
+    'our-approach-to'       # Often followed by sustainability, legal, etc.
+]
+
+# Subdomain category limits for surgical strikes
+SUBDOMAIN_LINK_LIMITS = {
+    'investor': 2,
+    'about': 2,
+    'brand': 2,
+    'corporate': 2,
+    'careers': 1,    # Minimal extraction from careers sites
+    'news': 1,       # Just the main news page
+    'default': 2     # Fallback for unrecognized subdomains
 }
 # --- END: CONFIGURATION AND CONSTANTS ---
 
@@ -1517,34 +1720,57 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
                 
     return final_social_text
 
-def find_best_corporate_portal(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
-    """Find a high-value corporate portal on a different subdomain (stricter definition).
+def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
+    """Find a high-value corporate subdomain worth analyzing with surgical precision.
     
-    A portal MUST be on a different subdomain, not just a different path.
-    This prevents false positives from single event pages or deep paths.
+    This function identifies valuable subdomains (e.g., investor.company.com) but
+    pre-emptively vetoes noise subdomains (e.g., careers.company.com).
+    
+    Args:
+        discovered_links: List of (url, text) tuples from initial discovery
+        initial_url: The main site URL
+        preferred_lang: Language preference for scoring
+        
+    Returns:
+        URL of high-value subdomain if found, None otherwise
     """
-    log("info", "Searching for a better corporate portal...")
+    log("info", "🔍 Searching for high-value subdomains...")
     best_candidate = None
     highest_score = -1
     initial_netloc = urlparse(initial_url).netloc
+    vetoed_subdomains = []
 
     for link_url, link_text in discovered_links:
+        # --- PRE-EMPTIVE VETO CHECK ---
+        is_vetoed, veto_category = is_vetoed_url(link_url)
+        if is_vetoed:
+            vetoed_subdomains.append((link_url, veto_category))
+            continue  # Skip this link entirely
+            
         try:
             link_netloc = urlparse(link_url).netloc
-            # FIX: A portal MUST be on a different subdomain. It cannot be just a different path.
+            # Must be on a different subdomain, not just a different path
             if link_netloc and link_netloc != initial_netloc and _is_same_root_word_domain(initial_url, link_url):
-                score, _ = score_link(link_url, link_text, preferred_lang)  # Rationale not needed here
+                score, _ = score_link(link_url, link_text, preferred_lang)
                 if score > highest_score:
                     highest_score = score
                     best_candidate = link_url
-        except Exception:
-            continue  # Ignore malformed URLs
+        except Exception as e:
+            log("debug", f"Error processing subdomain link {link_url}: {e}")
+            continue
+    
+    # Log vetoed subdomains for transparency
+    if vetoed_subdomains:
+        veto_summary = {}
+        for _, category in vetoed_subdomains:
+            veto_summary[category] = veto_summary.get(category, 0) + 1
+        log("info", f"🛡️ Vetoed {len(vetoed_subdomains)} subdomain links: {dict(veto_summary)}")
     
     if highest_score > SCORING_CONSTANTS["HIGH_VALUE_PORTAL_THRESHOLD"]:
-        log("info", f"🎯 Found high-value subdomain: {best_candidate} (Score: {highest_score}). Adding its links to our discovery pool.")
+        log("info", f"🎯 Found high-value subdomain: {best_candidate} (Score: {highest_score})")
         return best_candidate
     else:
-        log("info", "📍 No high-value subdomains found. Sticking to the main domain.")
+        log("info", "📍 No high-value subdomains found after veto filtering")
         return None
 
 def find_true_corporate_site(discovered_links: List[Tuple[str, str]], initial_url: str) -> Optional[str]:
@@ -1706,10 +1932,28 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
 
             urls = [elem.text for elem in root.findall('sm:url/sm:loc', namespace)]
             if urls:
-                sitemap_links = [(url, url.split('/')[-1].replace('-', ' ')) for url in urls]
-                all_links.extend(sitemap_links)
+                # Pre-filter vetoed URLs from sitemap
+                vetoed_count = 0
+                vetoed_by_category = {}
+                filtered_links = []
+                
+                for url in urls:
+                    is_vetoed, veto_category = is_vetoed_url(url)
+                    if not is_vetoed:
+                        filtered_links.append((url, url.split('/')[-1].replace('-', ' ')))
+                    else:
+                        vetoed_count += 1
+                        if veto_category:
+                            vetoed_by_category[veto_category] = vetoed_by_category.get(veto_category, 0) + 1
+                
+                all_links.extend(filtered_links)
                 processed_sitemaps.append(sitemap_url)
-                log("info", f"Found {len(sitemap_links)} links in sitemap: {sitemap_url}")
+                
+                # Log results with veto transparency
+                if vetoed_count > 0:
+                    log("info", f"🛡️ Sitemap {sitemap_url}: Found {len(urls)} links, vetoed {vetoed_count} ({dict(vetoed_by_category)}), kept {len(filtered_links)}")
+                else:
+                    log("info", f"Found {len(filtered_links)} links in sitemap: {sitemap_url}")
         
         except Exception as e:
             log("warn", f"Failed to process sitemap {sitemap_url}: {e}")
@@ -2101,32 +2345,23 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         # --- Phase 2: High-Value Subdomain Discovery ---
         # FIXED: True Two-Pocket Strategy - find additional sources without pivoting
         yield debug_yield({'type': 'activity', 'message': f'🔎 Searching for corporate portals...', 'timestamp': time.time()})
-        subdomain_portal_url = find_best_corporate_portal(all_discovered_links, initial_url, preferred_lang)
-        if subdomain_portal_url:
-            log("info", f"🎯 Found high-value subdomain: {subdomain_portal_url}. Adding its links to our discovery pool.")
-            yield debug_yield({'type': 'activity', 'message': f'🎯 Found corporate portal - expanding discovery...', 'timestamp': time.time()})
-            try:
-                yield debug_yield({'type': 'activity', 'message': f'📥 Fetching portal content...', 'timestamp': time.time()})
-                _, subdomain_html = fetch_page_content_robustly(subdomain_portal_url)
-                if subdomain_html:
-                    yield debug_yield({'type': 'activity', 'message': f'🔗 Discovering portal links...', 'timestamp': time.time()})
-                    subdomain_links = discover_links_from_html(subdomain_html, subdomain_portal_url)
-                    # Additional sitemap discovery from the subdomain
-                    yield debug_yield({'type': 'activity', 'message': f'📄 Checking portal sitemap...', 'timestamp': time.time()})
-                    subdomain_sitemap_links = discover_links_from_sitemap(subdomain_portal_url, preferred_lang)
-                    if subdomain_sitemap_links:
-                        subdomain_links.extend(subdomain_sitemap_links)
-                        log("info", f"✅ Added {len(subdomain_sitemap_links)} links from subdomain sitemap")
-                        yield debug_yield({'type': 'activity', 'message': f'✅ Added {len(subdomain_sitemap_links)} portal sitemap links', 'timestamp': time.time()})
-                    all_discovered_links.extend(subdomain_links)
-                    log("info", f"✅ Two-Pocket Strategy: Added {len(subdomain_links)} links from high-value subdomain")
-                    yield debug_yield({'type': 'activity', 'message': f'🎯 Added {len(subdomain_links)} links from corporate portal', 'timestamp': time.time()})
-                    yield debug_yield({'type': 'metric', 'key': 'subdomain_links', 'value': len(subdomain_links)})
-            except Exception as e:
-                log("warn", f"Could not fetch high-value subdomain {subdomain_portal_url}: {e}")
-                yield debug_yield({'type': 'activity', 'message': f'⚠️ Portal fetch failed - continuing with main site', 'timestamp': time.time()})
+        high_value_subdomain = find_high_value_subdomain(all_discovered_links, initial_url, preferred_lang)
+        if high_value_subdomain:
+            log("info", f"🎯 Found high-value subdomain: {high_value_subdomain}. Performing surgical strike.")
+            yield debug_yield({'type': 'activity', 'message': f'🎯 Performing surgical strike on subdomain...', 'timestamp': time.time()})
+            
+            # Use surgical strike instead of full discovery
+            top_subdomain_links = get_top_links_from_subdomain(high_value_subdomain, preferred_lang)
+            if top_subdomain_links:
+                all_discovered_links.extend(top_subdomain_links)
+                log("info", f"✅ Surgical Strike: Added {len(top_subdomain_links)} top links from high-value subdomain")
+                yield debug_yield({'type': 'activity', 'message': f'🎯 Added {len(top_subdomain_links)} precision links from subdomain', 'timestamp': time.time()})
+                yield debug_yield({'type': 'metric', 'key': 'subdomain_links', 'value': len(top_subdomain_links)})
+            else:
+                log("info", "🎯 Surgical strike yielded no qualifying links from subdomain")
+                yield debug_yield({'type': 'activity', 'message': f'⚠️ Subdomain surgical strike found no qualifying links', 'timestamp': time.time()})
         else:
-            yield debug_yield({'type': 'activity', 'message': f'📍 No additional portals found - using main site', 'timestamp': time.time()})
+            yield debug_yield({'type': 'activity', 'message': f'📍 No high-value subdomains found - focusing on main site', 'timestamp': time.time()})
 
         # --- Phase 3: Scoring and Analysis ---
         # CRITICAL: Never pivot - always use initial URL as homepage
@@ -2164,6 +2399,30 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         yield {'type': 'status', 'message': 'Social media text captured.' if social_corpus else 'No social media links found.'}
 
         yield {'type': 'status', 'message': f'Using preferred language: {preferred_lang.upper()}'}
+
+        # --- NEW: Pre-emptive Veto Filtering ---
+        initial_link_count = len(all_discovered_links)
+        vetoed_by_category = {}
+        filtered_links = []
+        
+        for url, text in all_discovered_links:
+            is_vetoed, veto_category = is_vetoed_url(url)
+            if not is_vetoed:
+                filtered_links.append((url, text))
+            else:
+                if veto_category:
+                    vetoed_by_category[veto_category] = vetoed_by_category.get(veto_category, 0) + 1
+        
+        all_discovered_links = filtered_links
+        vetoed_count = initial_link_count - len(all_discovered_links)
+        
+        if vetoed_count > 0:
+            log("info", f"🛡️ Pre-emptive veto: Filtered out {vetoed_count} links from {initial_link_count} total")
+            for category, count in vetoed_by_category.items():
+                log("info", f"  - {category}: {count} links")
+            yield {'type': 'activity', 'message': f'🛡️ Vetoed {vetoed_count} irrelevant links, analyzing {len(all_discovered_links)} remaining', 'timestamp': time.time()}
+        else:
+            yield {'type': 'activity', 'message': f'✅ All {len(all_discovered_links)} links passed veto screening', 'timestamp': time.time()}
 
         yield {'type': 'status', 'message': 'Scoring and ranking all discovered links...', 'phase': 'scoring', 'progress': 30}
         yield {'type': 'activity', 'message': f'📊 Analyzing {len(all_discovered_links)} discovered links...', 'timestamp': time.time()}
