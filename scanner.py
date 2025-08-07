@@ -1889,51 +1889,73 @@ def find_high_value_paths(discovered_links: List[Tuple[str, str]], initial_url: 
         return []
 
 def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
-    """Find a high-value corporate subdomain worth analyzing with surgical precision.
-    
-    CRITICAL FIX: This function now strictly enforces that a portal MUST be on a different subdomain,
-    not just a different path on the same domain. This prevents the "silent failure" bug where
-    same-domain paths were incorrectly identified as "subdomains."
-    
-    Args:
-        discovered_links: List of (url, text) tuples from initial discovery
-        initial_url: The main site URL
-        preferred_lang: Language preference for scoring
-        
-    Returns:
-        URL of high-value subdomain if found, None otherwise
     """
-    log("info", "🔍 Searching for high-value subdomains...")
-    best_candidate = None
-    highest_score = -1
+    DEFINITIVE FIX: Finds a high-value corporate portal on a DIFFERENT SUBDOMAIN ONLY.
+    This is a strict check to prevent false positives from paths on the same domain.
     
+    Enhanced with diagnostic logging to understand any future comparison failures.
+    """
     try:
         initial_netloc = urlparse(initial_url).netloc
+        log("info", f"🔍 Searching for subdomains different from: {initial_netloc}")
     except Exception:
         log("error", f"Cannot parse initial URL {initial_url}")
         return None # Cannot proceed with an invalid initial URL
 
+    best_candidate = None
+    highest_score = -1
+    vetoed_links = defaultdict(int)
+    same_domain_count = 0
+    different_domain_count = 0
+
     for link_url, link_text in discovered_links:
         try:
-            parsed_link = urlparse(link_url)
-            link_netloc = parsed_link.netloc
+            link_netloc = urlparse(link_url).netloc
+            
+            # DIAGNOSTIC: Track all domain comparisons for transparency
+            if link_netloc == initial_netloc:
+                same_domain_count += 1
+                # DIAGNOSTIC: Log first few same-domain rejections for debugging
+                if same_domain_count <= 3:
+                    log("debug", f"SAME DOMAIN REJECTED: {link_url} -> netloc '{link_netloc}' == '{initial_netloc}'")
+                continue
             
             # --- CRITICAL FIX: A portal MUST be on a different subdomain. ---
+            # It cannot be just a different path on the same netloc.
             if link_netloc and link_netloc != initial_netloc and _is_same_root_word_domain(initial_url, link_url):
+                different_domain_count += 1
+                log("debug", f"DIFFERENT SUBDOMAIN FOUND: {link_url} -> netloc '{link_netloc}' != '{initial_netloc}'")
                 
-                is_vetoed, _ = is_vetoed_url(link_url)
+                # Now that we know it's a true subdomain, check if it's vetoed.
+                is_vetoed, category = is_vetoed_url(link_url)
                 if is_vetoed:
+                    vetoed_links[category] += 1
+                    log("debug", f"SUBDOMAIN VETOED: {link_url} -> category '{category}'")
                     continue
                 
                 score, _ = score_link(link_url, link_text, preferred_lang)
+                log("debug", f"SUBDOMAIN SCORED: {link_url} -> score {score}")
                 if score > highest_score:
                     highest_score = score
                     best_candidate = link_url
-        except Exception:
+        except Exception as e:
+            log("debug", f"Error processing subdomain link {link_url}: {e}")
             continue
     
+    # DIAGNOSTIC SUMMARY
+    log("info", f"📊 Subdomain Analysis: {same_domain_count} same-domain paths rejected, {different_domain_count} different subdomains found")
+    
+    if vetoed_links:
+        log("info", f"🛡️ Vetoed {sum(vetoed_links.values())} subdomain links: {dict(vetoed_links)}")
+
     if highest_score > SCORING_CONSTANTS["HIGH_VALUE_PORTAL_THRESHOLD"]:
         log("info", f"🎯 Found high-value subdomain: {best_candidate} (Score: {highest_score})")
+        # FINAL VALIDATION: Double-check that result is actually different domain
+        if best_candidate:
+            result_netloc = urlparse(best_candidate).netloc
+            if result_netloc == initial_netloc:
+                log("error", f"🚨 CRITICAL BUG: Selected URL has same netloc! '{result_netloc}' == '{initial_netloc}'")
+                return None
         return best_candidate
     else:
         log("info", "📍 No high-value subdomains found.")
