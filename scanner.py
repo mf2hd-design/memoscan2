@@ -258,6 +258,34 @@ def detect_primary_language(html_content: str) -> str:
         log("warn", f"Language detection failed: {e}, defaulting to English")
         return 'en'
 
+def _categorize_veto_term(term: str) -> str:
+    """
+    Centralized category mapping for veto terms to eliminate redundancy.
+    
+    Args:
+        term: The subdomain or path segment to categorize
+        
+    Returns:
+        Category name for the veto term ('careers', 'commerce', etc.)
+    """
+    # Category mappings with multilingual support
+    category_mappings = {
+        'careers': {'careers', 'jobs', 'karriere', 'empleo', 'trabajo', 'stellenangebote', 'bewerbung', 'praktikum', 'vacantes', 'postulaciones'},
+        'commerce': {'shop', 'store', 'tienda', 'warenkorb', 'kasse', 'bestellen', 'einkaufen', 'carrito', 'comprar', 'pago', 'pedido'},
+        'legal': {'legal', 'rechtliche', 'recht', 'juridico', 'privacy', 'datenschutz', 'privacidad', 'impressum', 'pflichtangaben', 'aviso-legal', 'politica-de-privacidad', 'terminos', 'condiciones'},
+        'sustainability': {'sustainability', 'esg', 'nachhaltigkeit', 'sostenibilidad'},
+        'support': {'support', 'help', 'hilfe', 'ayuda', 'soporte', 'faq', 'customer-service', 'knowledge-base'},
+        'developers': {'developer', 'api', 'docs', 'entwickler', 'desarrollador', 'documentation', 'sdk'},
+        'media': {'press', 'media', 'presse', 'medien', 'prensa', 'pressemitteilung', 'nachrichten', 'noticias'}
+    }
+    
+    term_lower = term.lower().strip('/')
+    for category, terms in category_mappings.items():
+        if term_lower in terms:
+            return category
+    
+    return 'other'
+
 def is_vetoed_url(url: str) -> Tuple[bool, Optional[str]]:
     """
     Checks if a URL should be pre-emptively vetoed based on its subdomain or path.
@@ -277,44 +305,14 @@ def is_vetoed_url(url: str) -> Tuple[bool, Optional[str]]:
         if hostname:
             subdomain = hostname.split('.')[0].lower()
             if subdomain in VETO_SUBDOMAINS:
-                # Determine category for logging
-                if subdomain in ['careers', 'jobs', 'karriere', 'empleo', 'trabajo']:
-                    return True, 'careers'
-                elif subdomain in ['shop', 'store', 'tienda']:
-                    return True, 'commerce'
-                elif subdomain in ['legal', 'rechtliche', 'recht', 'juridico']:
-                    return True, 'legal'
-                elif subdomain in ['sustainability', 'esg', 'nachhaltigkeit', 'sostenibilidad']:
-                    return True, 'sustainability'
-                elif subdomain in ['support', 'help', 'hilfe', 'ayuda', 'soporte']:
-                    return True, 'support'
-                elif subdomain in ['developer', 'api', 'docs', 'entwickler', 'desarrollador']:
-                    return True, 'developers'
-                elif subdomain in ['press', 'media', 'presse', 'medien', 'prensa']:
-                    return True, 'media'
-                else:
-                    return True, 'other'
+                category = _categorize_veto_term(subdomain)
+                return True, category
         
         # Check path segment vetoes
         for segment in VETO_PATH_SEGMENTS:
             if segment in path:
-                # Determine category based on path
-                if any(career in segment for career in ['/careers/', '/jobs/', '/karriere/', '/empleo/', '/trabajo/']):
-                    return True, 'careers'
-                elif any(shop in segment for shop in ['/shop/', '/store/', '/tienda/']):
-                    return True, 'commerce'
-                elif any(legal in segment for legal in ['/legal/', '/privacy/', '/rechtliche/', '/recht/', '/datenschutz/', '/juridico/', '/privacidad/', '/impressum/']):
-                    return True, 'legal'
-                elif any(sustain in segment for sustain in ['/sustainability/', '/esg/', '/nachhaltigkeit/', '/sostenibilidad/']):
-                    return True, 'sustainability'
-                elif any(support in segment for support in ['/support/', '/help/', '/faq/', '/hilfe/', '/ayuda/', '/soporte/']):
-                    return True, 'support'
-                elif any(dev in segment for dev in ['/api/', '/developer/', '/docs/', '/documentation/', '/entwickler/', '/desarrollador/']):
-                    return True, 'developers'
-                elif any(media in segment for media in ['/press/', '/media/', '/presse/', '/medien/', '/prensa/']):
-                    return True, 'media'
-                else:
-                    return True, 'other'
+                category = _categorize_veto_term(segment)
+                return True, category
                     
     except Exception as e:
         log("debug", f"Error in veto check for {url}: {e}")
@@ -405,8 +403,10 @@ def get_top_links_from_subdomain(subdomain_url: str, preferred_lang: str, num_li
         scored_links = score_link_pool(filtered_links, preferred_lang)
         
         # Return the original (url, text) tuples for the top N links
+        # Optimized: O(n) instead of O(n*m) by pre-computing URL mapping
         top_urls = {link['url'] for link in scored_links[:num_links]}
-        result = [(url, text) for url, text in filtered_links if _clean_url(url) in top_urls]
+        clean_url_to_original = {_clean_url(url): (url, text) for url, text in filtered_links}
+        result = [clean_url_to_original[url] for url in top_urls if url in clean_url_to_original]
         
         log("info", f"✅ Extracted {len(result)} high-value links from subdomain")
         return result
@@ -468,7 +468,7 @@ VETO_SUBDOMAINS = [
     'karriere', 'rechtliche', 'recht', 'nachhaltigkeit', 'hilfe', 'entwickler',
     'presse', 'medien', 'datenschutz',
     # Spanish  
-    'empleo', 'trabajo', 'tienda', 'legal', 'juridico', 'sostenibilidad',
+    'empleo', 'trabajo', 'tienda', 'juridico', 'sostenibilidad',
     'ayuda', 'soporte', 'desarrollador', 'prensa'
 ]
 
@@ -481,17 +481,28 @@ VETO_PATH_SEGMENTS = [
     '/karriere/', '/rechtliche/', '/recht/', '/datenschutz/', '/nachhaltigkeit/',
     '/hilfe/', '/entwickler/', '/presse/', '/medien/', '/impressum/',
     # Spanish
-    '/empleo/', '/trabajo/', '/tienda/', '/legal/', '/juridico/', '/privacidad/',
+    '/empleo/', '/trabajo/', '/tienda/', '/juridico/', '/privacidad/',
     '/sostenibilidad/', '/ayuda/', '/soporte/', '/desarrollador/', '/prensa/'
 ]
 
 # Veto exceptions - patterns that should NOT be vetoed despite matching veto keywords
 VETO_EXCEPTIONS = [
-    'about-sustainability',  # Company's sustainability strategy might be brand-relevant
-    'legal-structure',       # Corporate governance info
-    'investor-esg',         # ESG information for investors
-    'brand-story',          # Even if in /media/ or /press/
-    'our-approach-to'       # Often followed by sustainability, legal, etc.
+    'about-sustainability',     # Company's sustainability strategy might be brand-relevant
+    'legal-structure',          # Corporate governance info
+    'investor-esg',            # ESG information for investors
+    'brand-story',             # Even if in /media/ or /press/
+    'our-approach-to',         # Often followed by sustainability, legal, etc.
+    'brand-values',            # Core brand values content
+    'company-culture',         # Corporate culture information
+    'corporate-responsibility', # CSR strategy content
+    'our-story',              # Brand narrative
+    'sustainability-commitment', # Environmental/social commitments
+    'legal-framework',         # Legal structure as business info
+    'governance-structure',    # Corporate governance
+    'brand-mission',          # Mission statements
+    'company-values',         # Value propositions
+    'our-purpose',            # Purpose-driven content
+    'corporate-governance'     # Governance as transparency
 ]
 
 # Subdomain category limits for surgical strikes
@@ -1049,6 +1060,55 @@ def validate_configuration():
     for ext in CONFIG["ignored_extensions"]:
         if not ext.startswith('.'):
             errors.append(f"File extension '{ext}' should start with a dot")
+    
+    # Validate veto configuration
+    try:
+        # Check for duplicates in veto subdomains
+        if len(VETO_SUBDOMAINS) != len(set(VETO_SUBDOMAINS)):
+            duplicates = [x for x in VETO_SUBDOMAINS if VETO_SUBDOMAINS.count(x) > 1]
+            errors.append(f"VETO_SUBDOMAINS contains duplicates: {list(set(duplicates))}")
+        
+        # Check for duplicates in veto path segments
+        if len(VETO_PATH_SEGMENTS) != len(set(VETO_PATH_SEGMENTS)):
+            duplicates = [x for x in VETO_PATH_SEGMENTS if VETO_PATH_SEGMENTS.count(x) > 1]
+            errors.append(f"VETO_PATH_SEGMENTS contains duplicates: {list(set(duplicates))}")
+        
+        # Validate path segment format
+        for segment in VETO_PATH_SEGMENTS:
+            if not isinstance(segment, str):
+                errors.append(f"Path segment must be string, got: {type(segment)} - {segment}")
+            elif not segment.startswith('/') or not segment.endswith('/'):
+                errors.append(f"Path segment '{segment}' should be wrapped in slashes (e.g., '/careers/')")
+            elif len(segment) < 3:  # At least '/x/'
+                errors.append(f"Path segment '{segment}' is too short (minimum: '/x/')")
+        
+        # Validate subdomain entries
+        for subdomain in VETO_SUBDOMAINS:
+            if not isinstance(subdomain, str):
+                errors.append(f"Subdomain must be string, got: {type(subdomain)} - {subdomain}")
+            elif '.' in subdomain:
+                errors.append(f"Subdomain '{subdomain}' should not contain dots (just the subdomain part)")
+            elif len(subdomain.strip()) == 0:
+                errors.append("Empty subdomain found in VETO_SUBDOMAINS")
+        
+        # Validate exception patterns
+        for exception in VETO_EXCEPTIONS:
+            if not isinstance(exception, str):
+                errors.append(f"Exception pattern must be string, got: {type(exception)} - {exception}")
+            elif len(exception.strip()) == 0:
+                errors.append("Empty exception pattern found in VETO_EXCEPTIONS")
+        
+        # Validate subdomain link limits
+        for category, limit in SUBDOMAIN_LINK_LIMITS.items():
+            if not isinstance(limit, int):
+                errors.append(f"SUBDOMAIN_LINK_LIMITS['{category}'] must be integer, got: {limit}")
+            elif limit < 0:
+                errors.append(f"SUBDOMAIN_LINK_LIMITS['{category}'] must be non-negative, got: {limit}")
+            elif limit > 10:
+                errors.append(f"SUBDOMAIN_LINK_LIMITS['{category}'] unusually high ({limit}), recommend ≤ 10 for efficiency")
+                
+    except Exception as e:
+        errors.append(f"Error validating veto configuration: {e}")
     
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
