@@ -1888,10 +1888,26 @@ def find_high_value_paths(discovered_links: List[Tuple[str, str]], initial_url: 
         log("warn", f"Failed high-value path extraction for {initial_url}: {e}")
         return []
 
+def normalize_netloc(netloc: str) -> str:
+    """
+    Normalize domain for comparison by removing www. prefix.
+    This treats www.example.com and example.com as the same domain.
+    
+    Examples:
+        www.basf.com -> basf.com
+        basf.com -> basf.com
+        investor.basf.com -> investor.basf.com (unchanged)
+    """
+    if netloc and netloc.startswith('www.'):
+        return netloc[4:]
+    return netloc
+
 def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en') -> Optional[str]:
     """
     Finds a high-value corporate portal on a DIFFERENT SUBDOMAIN.
     This is a strict check to prevent false positives from paths on the same domain.
+    
+    CRITICAL FIX: Now normalizes www. prefix to treat www.example.com and example.com as the same domain.
     """
     log("info", "🔍 Searching for high-value subdomains...")
     best_candidate = None
@@ -1899,7 +1915,8 @@ def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_u
     
     try:
         initial_netloc = urlparse(initial_url).netloc
-        log("info", f"🔍 Searching for subdomains different from: {initial_netloc}")
+        initial_netloc_normalized = normalize_netloc(initial_netloc)
+        log("info", f"🔍 Searching for subdomains different from: {initial_netloc} (normalized: {initial_netloc_normalized})")
     except Exception:
         return None # Cannot proceed with an invalid initial URL
 
@@ -1910,10 +1927,20 @@ def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_u
     for link_url, link_text in discovered_links:
         try:
             link_netloc = urlparse(link_url).netloc
+            link_netloc_normalized = normalize_netloc(link_netloc)
             
-            # --- CRITICAL FIX: A portal MUST be on a different subdomain. ---
-            if link_netloc and link_netloc != initial_netloc and _is_same_root_word_domain(initial_url, link_url):
+            # --- CRITICAL FIX: Compare NORMALIZED domains to handle www. prefix ---
+            if link_netloc_normalized == initial_netloc_normalized:
+                same_domain_paths += 1
+                # Log first few for debugging
+                if same_domain_paths <= 3:
+                    log("debug", f"SAME DOMAIN (normalized): {link_url} -> '{link_netloc}' normalized to '{link_netloc_normalized}' == '{initial_netloc_normalized}'")
+                continue
+            
+            # Check if it's a true subdomain (different normalized netloc but same root domain)
+            if link_netloc and link_netloc_normalized != initial_netloc_normalized and _is_same_root_word_domain(initial_url, link_url):
                 different_subdomains += 1
+                log("debug", f"DIFFERENT SUBDOMAIN: {link_url} -> '{link_netloc}' normalized to '{link_netloc_normalized}' != '{initial_netloc_normalized}'")
                 
                 # Now that we know it's a true subdomain, check if it's vetoed.
                 is_vetoed, category = is_vetoed_url(link_url)
@@ -1925,8 +1952,6 @@ def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_u
                 if score > highest_score:
                     highest_score = score
                     best_candidate = link_url
-            elif link_netloc == initial_netloc:
-                same_domain_paths += 1
         except Exception:
             continue
     
@@ -1939,11 +1964,12 @@ def find_high_value_subdomain(discovered_links: List[Tuple[str, str]], initial_u
         # NUCLEAR SAFETY VALVE: Final validation before returning
         if best_candidate:
             result_netloc = urlparse(best_candidate).netloc
-            if result_netloc == initial_netloc:
+            result_netloc_normalized = normalize_netloc(result_netloc)
+            if result_netloc_normalized == initial_netloc_normalized:
                 log("error", f"🚨 CRITICAL BUG DETECTED: About to return same-domain URL as 'subdomain'!")
                 log("error", f"🚨 URL: {best_candidate}")
-                log("error", f"🚨 Initial netloc: {initial_netloc}")
-                log("error", f"🚨 Result netloc: {result_netloc}")
+                log("error", f"🚨 Initial netloc: {initial_netloc} (normalized: {initial_netloc_normalized})")
+                log("error", f"🚨 Result netloc: {result_netloc} (normalized: {result_netloc_normalized})")
                 return None  # Refuse to return false positive
         
         log("info", f"🎯 Found high-value subdomain: {best_candidate} (Score: {highest_score})")
