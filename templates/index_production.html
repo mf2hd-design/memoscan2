@@ -706,11 +706,27 @@
         // NEW FUNCTION for long-form, trusted HTML from the AI
         static sanitizeHtmlContent(htmlString) {
             if (!htmlString) return '';
-            // marked.parse is already being used for the summary, 
-            // and it has its own built-in sanitization options.
-            // We will rely on its default safe behavior and avoid truncation.
-            // Explicit sanitize: true for production clarity and future-proofing
-            return marked.parse(htmlString, { sanitize: true });
+            // Parse markdown to HTML first
+            const htmlContent = marked.parse(htmlString);
+            // Create temporary DOM element for manual sanitization
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = htmlContent;
+            // Remove any potentially dangerous elements and attributes
+            tempDiv.querySelectorAll('script, object, embed, iframe').forEach(el => el.remove());
+            tempDiv.querySelectorAll('*').forEach(el => {
+                // Remove dangerous event attributes
+                ['onclick', 'onload', 'onerror', 'onmouseover', 'onfocus', 'onblur', 'onchange', 'onsubmit'].forEach(attr => {
+                    el.removeAttribute(attr);
+                });
+                // Remove javascript: and data: URLs from href and src
+                ['href', 'src'].forEach(attr => {
+                    const value = el.getAttribute(attr);
+                    if (value && (value.startsWith('javascript:') || value.startsWith('data:'))) {
+                        el.removeAttribute(attr);
+                    }
+                });
+            });
+            return tempDiv.innerHTML;
         }
     }
     
@@ -1252,10 +1268,10 @@
         }
         
         renderResultBlockContent(key, analysis) {
-            const sanitizedAnalysis = SecurityUtils.sanitizeMessage(analysis.analysis || "No analysis provided.");
-            const sanitizedEvidence = SecurityUtils.sanitizeMessage(analysis.evidence || "None cited.");
-            const sanitizedRecommendation = SecurityUtils.sanitizeMessage(analysis.recommendation || "No recommendation provided.");
-            const sanitizedConfidenceRationale = SecurityUtils.sanitizeMessage(analysis.confidence_rationale || "No rationale.");
+            const sanitizedAnalysis = SecurityUtils.sanitizeHtmlContent(analysis.analysis || "No analysis provided.");
+            const sanitizedEvidence = SecurityUtils.sanitizeHtmlContent(analysis.evidence || "None cited.");
+            const sanitizedRecommendation = SecurityUtils.sanitizeHtmlContent(analysis.recommendation || "No recommendation provided.");
+            const sanitizedConfidenceRationale = SecurityUtils.sanitizeHtmlContent(analysis.confidence_rationale || "No rationale.");
             
             return `
                 <h3>${SecurityUtils.sanitizeMessage(key)} – <span class="score">${analysis.score}/5</span></h3>
