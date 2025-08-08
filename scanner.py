@@ -1,4 +1,3 @@
-print(">>> RUNNING FIXED SCANNER VERSION <<<")
 import os
 import re
 import json
@@ -57,6 +56,66 @@ from concurrent.futures import ThreadPoolExecutor
 from playwright.sync_api import sync_playwright
 from typing import Optional, Dict, List, Tuple
 
+# --- SHARED HTTP CLIENT ---
+# Create a shared httpx client with connection pooling for better performance
+SHARED_HTTP_CLIENT = None
+
+def get_shared_http_client():
+    """Get or create a shared HTTP client with connection pooling."""
+    global SHARED_HTTP_CLIENT
+    if SHARED_HTTP_CLIENT is None:
+        from random import choice
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+        ]
+        SHARED_HTTP_CLIENT = httpx.Client(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
+            follow_redirects=True,
+            headers={"User-Agent": choice(user_agents)}
+        )
+    return SHARED_HTTP_CLIENT
+
+def close_shared_http_client():
+    """Close the shared HTTP client to free resources."""
+    global SHARED_HTTP_CLIENT
+    if SHARED_HTTP_CLIENT is not None:
+        SHARED_HTTP_CLIENT.close()
+        SHARED_HTTP_CLIENT = None
+
+# --- SHARED PLAYWRIGHT BROWSER ---
+# Reuse Playwright browser instance for better performance
+SHARED_PLAYWRIGHT = None
+SHARED_BROWSER = None
+
+def get_shared_playwright_browser():
+    """Get or create a shared Playwright browser instance."""
+    global SHARED_PLAYWRIGHT, SHARED_BROWSER
+    if SHARED_PLAYWRIGHT is None or SHARED_BROWSER is None:
+        SHARED_PLAYWRIGHT = sync_playwright().start()
+        SHARED_BROWSER = SHARED_PLAYWRIGHT.chromium.launch(
+            headless=True,
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ]
+        )
+    return SHARED_BROWSER
+
+def close_shared_playwright_browser():
+    """Close the shared Playwright browser to free resources."""
+    global SHARED_PLAYWRIGHT, SHARED_BROWSER
+    if SHARED_BROWSER is not None:
+        SHARED_BROWSER.close()
+        SHARED_BROWSER = None
+    if SHARED_PLAYWRIGHT is not None:
+        SHARED_PLAYWRIGHT.stop()
+        SHARED_PLAYWRIGHT = None
+
 # --- START: HELPER FUNCTIONS ---
 
 def safe_api_key(key: str) -> str:
@@ -110,7 +169,8 @@ def find_sitemap_from_robots_txt(base_url: str) -> Optional[List[str]]:
     robots_url = urljoin(base_url, "/robots.txt")
     try:
         log("info", f"Checking for sitemap in {robots_url}")
-        response = httpx.get(robots_url, headers={"User-Agent": get_random_user_agent()}, timeout=10)
+        client = get_shared_http_client()
+        response = client.get(robots_url, timeout=10)
         if response.status_code == 200:
             parser = RobotFileParser()
             parser.parse(response.text.splitlines())
@@ -584,6 +644,9 @@ TEMPORAL_EVENT_REGEX = [
 
 # Pre-compile regex patterns for performance
 COMPILED_PATTERNS = {}
+# Additional precompiled patterns
+LANGUAGE_PATH_PATTERN = re.compile(r'/[a-z]{2}/', re.IGNORECASE)
+SOCIAL_FOOTER_PATTERN = re.compile(r'(social|footer|header|contact|follow|icons|menu)', re.IGNORECASE)
 
 def _compile_patterns():
     """Pre-compile all regex patterns to improve performance."""
@@ -752,8 +815,11 @@ def _fetch_page_data_scrapfly(url: str, take_screenshot: bool = True):
             base_delay=1,
             exceptions=(httpx.TimeoutException, httpx.ConnectError, httpx.RequestError)
         )
-    except (httpx.HTTPStatusError, Exception) as e:
-        # Don't retry client errors (4xx) or other non-transient issues
+    except httpx.HTTPStatusError as e:
+        # Don't retry client errors (4xx)
+        return _handle_scrapfly_error(url, e)
+    except Exception as e:
+        # Other non-transient issues
         return _handle_scrapfly_error(url, e)
 
 def _scrapfly_request_inner(url: str, api_key: str, take_screenshot: bool):
@@ -842,33 +908,46 @@ def _handle_scrapfly_error(url: str, e: Exception) -> Tuple[None, None]:
 
 def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     log("info", f"Activating Playwright fallback for URL: {url} (Screenshot: {take_screenshot})")
-    with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent=get_random_user_agent())
-            page = context.new_page()
-            page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
-            prepare_page_for_capture(page)
-            
-            html_content = page.content()
-            screenshot_b64 = None
-            
-            if take_screenshot:
-                try:
-                    screenshot_bytes = page.screenshot(full_page=True, type='png')
-                    screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                    log("info", f"✅ PLAYWRIGHT SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes for {url}")
-                except Exception as e:
-                    log("error", f"❌ PLAYWRIGHT SCREENSHOT FAILED for {url}: {e}")
-            
-            browser.close()
-            return screenshot_b64, html_content
-        except Exception as e:
-            log("error", f"Playwright failed for {url}: {e}")
-            if "browser has crashed" in str(e).lower() and not retried:
-                log("warn", "Restarting Playwright browser...")
-                return fetch_html_with_playwright(url, retried=True, take_screenshot=take_screenshot)
-            return None, None
+    try:
+        browser = get_shared_playwright_browser()
+        context = browser.new_context(
+            user_agent=get_random_user_agent(),
+            viewport={'width': 1920, 'height': 1080},
+            ignore_https_errors=True
+        )
+        page = context.new_page()
+        
+        # Block unnecessary resources for faster loading
+        page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot}", lambda route: route.abort())
+        page.route("**/analytics/**", lambda route: route.abort())
+        page.route("**/googletagmanager/**", lambda route: route.abort())
+        
+        page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
+        prepare_page_for_capture(page)
+        
+        html_content = page.content()
+        screenshot_b64 = None
+        
+        if take_screenshot:
+            try:
+                # Re-enable images for screenshot
+                page.route("**/*", lambda route: route.continue_())
+                page.reload(wait_until="networkidle")
+                screenshot_bytes = page.screenshot(full_page=True, type='png')
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                log("info", f"✅ PLAYWRIGHT SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes for {url}")
+            except Exception as e:
+                log("error", f"❌ PLAYWRIGHT SCREENSHOT FAILED for {url}: {e}")
+        
+        context.close()
+        return screenshot_b64, html_content
+    except Exception as e:
+        log("error", f"Playwright failed for {url}: {e}")
+        if "browser has crashed" in str(e).lower() and not retried:
+            log("warn", "Restarting Playwright browser...")
+            close_shared_playwright_browser()
+            return fetch_html_with_playwright(url, retried=True, take_screenshot=take_screenshot)
+        return None, None
 
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     MAX_HTML_SIZE = 10 * 1024 * 1024  # 10MB limit
@@ -1732,7 +1811,7 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
             
             for container_tag in soup.find_all(
                 ['footer', 'header', 'nav', 'div', 'ul', 'p'],
-                class_=re.compile(r'(social|footer|header|contact|follow|icons|menu)', re.IGNORECASE)
+                class_=SOCIAL_FOOTER_PATTERN
             ):
                 for a_tag in container_tag.find_all('a', href=True):
                     candidate_tags.append(a_tag)
@@ -2073,7 +2152,8 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
     sitemap_urls = [urljoin(homepage_url, "/sitemap.xml")]
     
     try:
-        response = httpx.get(sitemap_urls[0], headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+        client = get_shared_http_client()
+        response = client.get(sitemap_urls[0], timeout=20)
         response.raise_for_status()
     except (httpx.HTTPStatusError, httpx.RequestError):
         log("warn", f"/sitemap.xml not found or failed. Checking robots.txt as a fallback.")
@@ -2090,7 +2170,8 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
     for sitemap_url in sitemap_urls:
         try:
             log("info", f"Processing sitemap: {sitemap_url}")
-            response = httpx.get(sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+            client = get_shared_http_client()
+            response = client.get(sitemap_url, timeout=20)
             response.raise_for_status()
             
             content = response.content
@@ -2112,7 +2193,7 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
                     if f"/{preferred_lang}" in sm_url: score += 25
                     
                     # Penalize non-preferred language sitemaps
-                    if re.search(r'/[a-z]{2}/', sm_url) and not f"/{preferred_lang}" in sm_url: score -= 50
+                    if LANGUAGE_PATH_PATTERN.search(sm_url) and not f"/{preferred_lang}" in sm_url: score -= 50
                     
                     # Additional preferences for brand-relevant content
                     if any(keyword in sm_url for keyword in ['page', 'post', 'company', 'about', 'article']): score += 25
@@ -2126,7 +2207,8 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
                 
                 if best_sitemap_url:
                     log("info", f"Fetching prioritized sub-sitemap: {best_sitemap_url} (Score: {scored_sitemaps[0][1]})")
-                    response = httpx.get(best_sitemap_url, headers={"User-Agent": get_random_user_agent()}, follow_redirects=True, timeout=20)
+                    client = get_shared_http_client()
+                    response = client.get(best_sitemap_url, timeout=20)
                     response.raise_for_status()
                     root = ET.fromstring(response.content)
                 else:
@@ -2322,29 +2404,35 @@ def call_openai_for_executive_summary(all_analyses):
 def capture_screenshots_playwright(urls):
     results = []
     log("info", f"Starting screenshot capture for {len(urls)} URLs.")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=get_random_user_agent())
-        page = context.new_page()
-        for url in urls[:4]:
-            try:
-                if any(urlparse(url).path.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]):
-                    log("info", f"Ignoring non-HTML link for screenshot: {url}")
-                    continue
-                log("info", f"Navigating to {url}")
-                page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
-                prepare_page_for_capture(page)
-                img_bytes = page.screenshot(full_page=True, type="jpeg", quality=70)
-                b64 = base64.b64encode(img_bytes).decode("utf-8")
-                # Clean up cache before adding new screenshot
-                cleanup_cache()
-                uid = str(uuid.uuid4())
-                SHARED_CACHE[uid] = b64
-                results.append({"id": uid, "url": url})
-                log("info", f"Successfully captured {url}")
-            except Exception as e:
-                log("error", f"Failed to capture screenshot for {url}: {e}")
-        browser.close()
+    
+    browser = get_shared_playwright_browser()
+    context = browser.new_context(
+        user_agent=get_random_user_agent(),
+        viewport={'width': 1920, 'height': 1080},
+        ignore_https_errors=True
+    )
+    page = context.new_page()
+    
+    for url in urls[:4]:
+        try:
+            if any(urlparse(url).path.lower().endswith(ext) for ext in CONFIG["ignored_extensions"]):
+                log("info", f"Ignoring non-HTML link for screenshot: {url}")
+                continue
+            log("info", f"Navigating to {url}")
+            page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
+            prepare_page_for_capture(page)
+            img_bytes = page.screenshot(full_page=True, type="jpeg", quality=70)
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            # Clean up cache before adding new screenshot
+            cleanup_cache()
+            uid = str(uuid.uuid4())
+            SHARED_CACHE[uid] = b64
+            results.append({"id": uid, "url": url})
+            log("info", f"Successfully captured {url}")
+        except Exception as e:
+            log("error", f"Failed to capture screenshot for {url}: {e}")
+    
+    context.close()
     return results
 
 def validate_ai_response(response, required_keys):
@@ -2828,6 +2916,10 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         traceback.print_exc()
         track_scan_metric(scan_id, "failed", {"reason": "critical_error", "error": str(e)})
         yield {'type': 'error', 'message': f'A critical error occurred: {e}'}
+    finally:
+        # Clean up resources
+        close_shared_http_client()
+        close_shared_playwright_browser()
 
 if __name__ == '__main__':
     target_url = "https://www.gsk.com"
