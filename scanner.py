@@ -6,6 +6,12 @@ import uuid
 import time
 import signal
 import gc
+import threading
+import httpx
+import ipaddress
+import traceback
+import random
+import warnings
 from collections import defaultdict
 try:
     from defusedxml import ElementTree as ET
@@ -128,7 +134,13 @@ def detect_image_format(image_b64: str) -> str:
     """Detect image format from base64 data and return proper MIME type."""
     try:
         # Decode first few bytes to check image signature
-        header_bytes = base64.b64decode(image_b64[:100])
+        # Use a multiple of 4 for valid base64 padding
+        header_b64 = image_b64[:100]
+        # Ensure valid base64 padding
+        padding_needed = 4 - (len(header_b64) % 4)
+        if padding_needed < 4:
+            header_b64 += '=' * padding_needed
+        header_bytes = base64.b64decode(header_b64)
         
         # Check common image format signatures
         if header_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
@@ -184,7 +196,7 @@ def find_sitemap_from_robots_txt(base_url: str) -> Optional[List[str]]:
 def cleanup_process_pool(executor):
     """Clean up process pool to prevent zombie processes."""
     try:
-        executor.shutdown(wait=True, timeout=30)
+        executor.shutdown(wait=True)
         log("info", "✅ Process pool cleanly shutdown")
     except Exception as e:
         log("error", f"❌ Failed to cleanly shutdown process pool: {e}")
@@ -702,14 +714,14 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
 
     # Language selection penalty
     language_names = ['english', 'español', 'deutsch', 'français', 'português', 'en', 'es', 'de', 'fr', 'pt']
-    if lower_text in language_names:
+    if any(lang_name in lower_text for lang_name in language_names):
         score -= SCORING_CONSTANTS["LANGUAGE_PENALTY"]
 
     # --- Language Penalty (User-Aligned) ---
     # Penalize URLs that contain a language code that is NOT the preferred one.
     lang_codes = ['/de/', '/es/', '/fr/', '/it/', '/pt/', '/ja/', '/ko/', '/zh/', '/ru/', '/nl/']
     for code in lang_codes:
-        if code in link_url and code.strip('/') != preferred_lang:
+        if code in link_url.lower() and code.strip('/') != preferred_lang:
             score -= 15
             rationale.append(f"Lang Penalty: -15 (non-{preferred_lang})")
             break  # Apply penalty only once
@@ -745,7 +757,7 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
 
     # --- Path Context Bonus: Well-Structured Corporate Paths ---
     positive_paths = ['/about/', '/who-we-are/', '/company/', '/info/', '/mission/', '/vision/', '/values/', '/leadership/']
-    if any(path in link_url for path in positive_paths):
+    if any(path in link_url.lower() for path in positive_paths):
         score += 5
         rationale.append("Path Bonus: +5")
 
@@ -908,6 +920,7 @@ def _handle_scrapfly_error(url: str, e: Exception) -> Tuple[None, None]:
 
 def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     log("info", f"Activating Playwright fallback for URL: {url} (Screenshot: {take_screenshot})")
+    context = None
     try:
         browser = get_shared_playwright_browser()
         context = browser.new_context(
@@ -924,7 +937,9 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
         
         if not take_screenshot:
             image_abort_handler = lambda route: route.abort()
-            page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot}", image_abort_handler)
+            # Playwright doesn't support brace expansion, so use individual patterns
+            for ext in ["png", "jpg", "jpeg", "gif", "svg", "ico", "woff", "woff2", "ttf", "eot"]:
+                page.route(f"**/*.{ext}", image_abort_handler)
             
         analytics_abort_handler = lambda route: route.abort()
         gtm_abort_handler = lambda route: route.abort()
@@ -951,7 +966,6 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
             except Exception as e:
                 log("error", f"❌ PLAYWRIGHT SCREENSHOT FAILED for {url}: {e}")
         
-        context.close()
         return screenshot_b64, html_content
     except Exception as e:
         log("error", f"Playwright failed for {url}: {e}")
@@ -960,6 +974,12 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
             close_shared_playwright_browser()
             return fetch_html_with_playwright(url, retried=True, take_screenshot=take_screenshot)
         return None, None
+    finally:
+        if context:
+            try:
+                context.close()
+            except Exception as e:
+                log("error", f"Failed to close Playwright context: {e}")
 
 def fetch_page_content_robustly(url: str, take_screenshot: bool = False) -> Tuple[Optional[str], Optional[str]]:
     MAX_HTML_SIZE = 10 * 1024 * 1024  # 10MB limit
@@ -1032,18 +1052,10 @@ class LimitedCache:
         self.max_size_bytes = max_size_mb * 1024 * 1024
         self.max_items = max_items
         self.total_size = 0
-        self._lock = None
-        try:
-            import threading
-            self._lock = threading.Lock()
-        except:
-            pass
+        self._lock = threading.Lock()
     
     def __setitem__(self, key, value):
-        if self._lock:
-            with self._lock:
-                self._set_item(key, value)
-        else:
+        with self._lock:
             self._set_item(key, value)
     
     def _set_item(self, key, value):
@@ -1066,10 +1078,7 @@ class LimitedCache:
         self.total_size += size
     
     def __getitem__(self, key):
-        if self._lock:
-            with self._lock:
-                return self._get_item(key)
-        else:
+        with self._lock:
             return self._get_item(key)
     
     def _get_item(self, key):
@@ -1085,16 +1094,15 @@ class LimitedCache:
             return default
     
     def __contains__(self, key):
-        return key in self._cache
+        with self._lock:
+            return key in self._cache
     
     def __len__(self):
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
     
     def __delitem__(self, key):
-        if self._lock:
-            with self._lock:
-                self._del_item(key)
-        else:
+        with self._lock:
             self._del_item(key)
     
     def _del_item(self, key):
@@ -1114,16 +1122,18 @@ class LimitedCache:
         log("debug", f"Cache evicted LRU item: {lru_key}")
     
     def items(self):
-        return self._cache.items()
+        with self._lock:
+            return list(self._cache.items())
     
     def get_stats(self):
         """Get cache statistics."""
-        return {
-            "items": len(self._cache),
-            "size_mb": self.total_size / (1024 * 1024),
-            "max_size_mb": self.max_size_bytes / (1024 * 1024),
-            "max_items": self.max_items
-        }
+        with self._lock:
+            return {
+                "items": len(self._cache),
+                "size_mb": self.total_size / (1024 * 1024),
+                "max_size_mb": self.max_size_bytes / (1024 * 1024),
+                "max_items": self.max_items
+            }
 
 # Configure cache limits via environment variables
 CACHE_MAX_SIZE_MB = int(os.getenv("CACHE_MAX_SIZE_MB", "100"))
@@ -1136,7 +1146,7 @@ def validate_configuration(runtime_check=False):
     """Validate critical configuration.
     
     Args:
-        runtime_check: If True, only log warnings. If False, can raise errors.
+        runtime_check: If True, raise errors on validation failures. If False, only log warnings.
     """
     errors = []
     warnings = []
@@ -1584,7 +1594,6 @@ def run_retention_cleanup():
                 log("info", f"Retention cleanup for {log_type}: kept {kept}, removed {removed} entries")
 
 # Schedule cleanup on startup
-import threading
 def schedule_retention_cleanup():
     """Schedule periodic retention cleanup."""
     def cleanup_task():
@@ -2488,7 +2497,11 @@ def capture_screenshots_playwright(urls):
             # Clean up cache before adding new screenshot
             cleanup_cache()
             uid = str(uuid.uuid4())
-            SHARED_CACHE[uid] = b64
+            # Store with proper format information
+            SHARED_CACHE[uid] = {
+                'data': b64,
+                'format': 'image/jpeg'
+            }
             results.append({"id": uid, "url": url})
             log("info", f"Successfully captured {url}")
         except Exception as e:
@@ -2581,7 +2594,7 @@ def score_link_pool(links: List[Tuple[str, str]], lang: str) -> List[dict]:
     
     return scored_links
 
-def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan_id: str = None, depth: int = 0):
+def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan_id: str = None):
     # Generate scan ID if not provided
     if not scan_id:
         scan_id = str(uuid.uuid4())
@@ -2739,7 +2752,12 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
                 # Homepage screenshot is used for BOTH AI analysis AND frontend display
                 cleanup_cache()
                 image_id = str(uuid.uuid4())
-                cache[image_id] = homepage_screenshot_b64
+                # Store both image data and format information
+                image_format = detect_image_format(homepage_screenshot_b64)
+                cache[image_id] = {
+                    'data': homepage_screenshot_b64,
+                    'format': image_format
+                }
                 yield debug_yield({'type': 'screenshot_ready', 'id': image_id, 'url': homepage_url})
                 log("info", f"🎯 HOMEPAGE SCREENSHOT EMITTED: id={image_id}, url={homepage_url}")
                 yield debug_yield({'type': 'activity', 'message': f'📸 Homepage screenshot captured for AI and display', 'timestamp': time.time()})
