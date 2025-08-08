@@ -390,11 +390,24 @@ def user_history():
 
 @app.route("/screenshot/<screenshot_id>")
 def get_screenshot(screenshot_id):
-    img_base64 = SHARED_CACHE.get(screenshot_id)
-    if not img_base64:
+    cached_screenshot = SHARED_CACHE.get(screenshot_id)
+    if not cached_screenshot:
         return jsonify({"error": "Screenshot not found"}), 404
+    
+    # Handle both old format (plain base64) and new format (dict with data and format)
+    if isinstance(cached_screenshot, dict):
+        img_base64 = cached_screenshot.get('data')
+        mimetype = cached_screenshot.get('format', 'image/png')
+    else:
+        # Legacy format - assume PNG for backward compatibility
+        img_base64 = cached_screenshot
+        mimetype = 'image/png'
+    
+    if not img_base64:
+        return jsonify({"error": "Screenshot data not found"}), 404
+    
     img_data = base64.b64decode(img_base64)
-    return send_file(BytesIO(img_data), mimetype='image/png')
+    return send_file(BytesIO(img_data), mimetype=mimetype)
 
 def get_system_resources():
     """Get system resource usage."""
