@@ -484,10 +484,10 @@ def get_top_links_from_subdomain(subdomain_url: str, preferred_lang: str, num_li
 # --- START: CONFIGURATION AND CONSTANTS ---
 # Environment-configurable timeouts and limits
 TIMEOUTS = {
-    "scrapfly_request": int(os.getenv('SCRAPFLY_TIMEOUT', '180')),
-    "playwright_page_load": int(os.getenv('PLAYWRIGHT_TIMEOUT', '90000')),  # in milliseconds
-    "playwright_screenshot": int(os.getenv('SCREENSHOT_TIMEOUT', '60')),
-    "openai_request": int(os.getenv('OPENAI_TIMEOUT', '120')),
+    "scrapfly_request": int(os.getenv('SCRAPFLY_TIMEOUT', '180')),  # seconds
+    "playwright_page_load": int(os.getenv('PLAYWRIGHT_TIMEOUT', '90')),  # seconds (converted to ms when used)
+    "playwright_screenshot": int(os.getenv('SCREENSHOT_TIMEOUT', '60')),  # seconds
+    "openai_request": int(os.getenv('OPENAI_TIMEOUT', '120')),  # seconds
 }
 
 CONFIG = {
@@ -917,12 +917,21 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
         )
         page = context.new_page()
         
-        # Block unnecessary resources for faster loading
-        page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot}", lambda route: route.abort())
-        page.route("**/analytics/**", lambda route: route.abort())
-        page.route("**/googletagmanager/**", lambda route: route.abort())
+        # Block unnecessary resources for faster loading (but only if not taking screenshot)
+        image_abort_handler = None
+        analytics_abort_handler = None
+        gtm_abort_handler = None
         
-        page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
+        if not take_screenshot:
+            image_abort_handler = lambda route: route.abort()
+            page.route("**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot}", image_abort_handler)
+            
+        analytics_abort_handler = lambda route: route.abort()
+        gtm_abort_handler = lambda route: route.abort()
+        page.route("**/analytics/**", analytics_abort_handler)
+        page.route("**/googletagmanager/**", gtm_abort_handler)
+        
+        page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"] * 1000)
         prepare_page_for_capture(page)
         
         html_content = page.content()
@@ -930,9 +939,12 @@ def fetch_html_with_playwright(url: str, retried: bool = False, take_screenshot:
         
         if take_screenshot:
             try:
-                # Re-enable images for screenshot
-                page.route("**/*", lambda route: route.continue_())
-                page.reload(wait_until="networkidle")
+                # Unroute analytics/tracking but keep images enabled
+                page.unroute("**/analytics/**", analytics_abort_handler)
+                page.unroute("**/googletagmanager/**", gtm_abort_handler)
+                
+                # Give page time to load images
+                page.wait_for_load_state("networkidle", timeout=30000)
                 screenshot_bytes = page.screenshot(full_page=True, type='png')
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
                 log("info", f"✅ PLAYWRIGHT SCREENSHOT SUCCESS: {len(screenshot_b64)} bytes for {url}")
@@ -1120,14 +1132,23 @@ CACHE_MAX_ITEMS = int(os.getenv("CACHE_MAX_ITEMS", "1000"))
 SHARED_CACHE = LimitedCache(max_size_mb=CACHE_MAX_SIZE_MB, max_items=CACHE_MAX_ITEMS)
 load_dotenv()
 
-def validate_configuration():
-    """Validate critical configuration at startup to fail fast if misconfigured."""
+def validate_configuration(runtime_check=False):
+    """Validate critical configuration.
+    
+    Args:
+        runtime_check: If True, only log warnings. If False, can raise errors.
+    """
     errors = []
+    warnings = []
     
     # Check required API keys
     openai_key = os.getenv("OPENAI_API_KEY")
     if not openai_key or len(openai_key.strip()) < 10:
-        errors.append("OPENAI_API_KEY environment variable is missing or invalid")
+        msg = "OPENAI_API_KEY environment variable is missing or invalid"
+        if runtime_check:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
     
     # Validate numeric constants
     try:
@@ -1201,16 +1222,33 @@ def validate_configuration():
     except Exception as e:
         errors.append(f"Error validating veto configuration: {e}")
     
+    # Handle warnings
+    if warnings:
+        for warning in warnings:
+            log("warn", f"Configuration warning: {warning}")
+    
+    # Handle errors
     if errors:
         error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {error}" for error in errors)
-        log("error", error_msg)
-        raise ValueError(error_msg)
+        if runtime_check:
+            log("error", error_msg)
+            raise ValueError(error_msg)
+        else:
+            log("warn", error_msg)
+            return False
     else:
         log("info", "✅ Configuration validation passed")
+        return True
 
-# Validate configuration on import
-validate_configuration()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Validate configuration on import (non-fatal)
+validate_configuration(runtime_check=False)
+
+# Initialize OpenAI client (will be checked at runtime)
+try:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+except Exception as e:
+    log("warn", f"OpenAI client initialization deferred: {e}")
+    client = None
 
 # Memory management configuration
 MAX_CACHE_SIZE = 100  # Maximum cached screenshots
@@ -1297,12 +1335,16 @@ def record_feedback(analysis_id: str, key_name: str, feedback_type: str,
         raise
     finally:
         # Cleanup temporary files
-        for temp in [temp_file, final_temp]:
+        cleanup_files = [temp_file]
+        if 'final_temp' in locals():
+            cleanup_files.append(final_temp)
+        
+        for temp in cleanup_files:
             try:
-                if 'final_temp' in locals() and os.path.exists(temp):
+                if os.path.exists(temp):
                     os.unlink(temp)
-            except:
-                pass
+            except Exception as e:
+                log("debug", f"Failed to cleanup temp file {temp}: {e}")
 # --- START: FEEDBACK ANALYTICS FOR AI LEARNING ---
 
 def analyze_feedback_patterns():
@@ -2311,6 +2353,14 @@ def call_openai_for_synthesis(corpus):
 def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_screenshot_b64, brand_summary):
     log("info", f"Analyzing key: {key_name}")
     
+    # Runtime validation of OpenAI client
+    global client
+    if client is None:
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            raise ValueError("OPENAI_API_KEY environment variable is required for AI analysis")
+        client = OpenAI(api_key=openai_key)
+    
     # DIAGNOSTIC: Check screenshot parameter
     has_screenshot = homepage_screenshot_b64 is not None
     screenshot_size = len(homepage_screenshot_b64) if has_screenshot else 0
@@ -2368,7 +2418,9 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
         log("info", f"📊 TOKEN USAGE - {key_name}: {usage.total_tokens} total ({usage.prompt_tokens} prompt + {usage.completion_tokens} completion)")
         
         # Track API usage for cost monitoring
-        api_type = "gpt-4o-vision" if any(isinstance(item, dict) and item.get("type") == "image_url" for item in content if isinstance(item, list) for item in content) else "gpt-4o"
+        # Check if any content item contains an image_url
+        has_image = any(isinstance(item, dict) and item.get("type") == "image_url" for item in content)
+        api_type = "gpt-4o-vision" if has_image else "gpt-4o"
         track_api_usage(api_type, usage.prompt_tokens, usage.completion_tokens)
         
         if homepage_screenshot_b64:
@@ -2419,7 +2471,7 @@ def capture_screenshots_playwright(urls):
                 log("info", f"Ignoring non-HTML link for screenshot: {url}")
                 continue
             log("info", f"Navigating to {url}")
-            page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"])
+            page.goto(url, wait_until="load", timeout=TIMEOUTS["playwright_page_load"] * 1000)
             prepare_page_for_capture(page)
             img_bytes = page.screenshot(full_page=True, type="jpeg", quality=70)
             b64 = base64.b64encode(img_bytes).decode("utf-8")
@@ -2885,7 +2937,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
             except Exception as e:
                 circuit_breaker.record_failure()
                 log("error", f"Analysis of key '{key}' failed. Circuit breaker status: {circuit_breaker.failures} failures. Error: {e}")
-                yield {'type': 'result_error', 'key': key_name, 'message': f"Analysis failed: {e}"}
+                yield {'type': 'result_error', 'key': key, 'message': f"Analysis failed: {e}"}
                 continue
             
             result_obj = {'type': 'result', 'key': key_name, 'analysis': result_json}

@@ -1166,9 +1166,24 @@
             this.metricsDashboard = new MetricsDashboard();
             this.notificationManager = new NotificationManager();
             this.scanStartTime = null;
+            this.csrfToken = null;
             
             this.initializeSocketHandlers();
             this.initializeEventHandlers();
+            this.fetchCSRFToken();
+        }
+        
+        async fetchCSRFToken() {
+            try {
+                const response = await fetch('/csrf-token');
+                if (response.ok) {
+                    const data = await response.json();
+                    this.csrfToken = data.csrf_token;
+                    console.log('CSRF token fetched successfully');
+                }
+            } catch (error) {
+                console.error('Failed to fetch CSRF token:', error);
+            }
         }
         
         initializeSocketHandlers() {
@@ -1325,9 +1340,14 @@
         
         async sendEnhancedFeedback(analysisId, keyName, feedbackType, comment = null, aiScore = null, userScore = null, confidence = null) {
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (this.csrfToken) {
+                    headers['X-CSRF-Token'] = this.csrfToken;
+                }
+                
                 const response = await fetch('/feedback', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     body: JSON.stringify({ 
                         analysis_id: analysisId, 
                         key_name: keyName, 
