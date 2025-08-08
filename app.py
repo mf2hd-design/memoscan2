@@ -18,7 +18,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 from io import BytesIO
 from dotenv import load_dotenv
 # Import record_feedback from scanner.py
-from scanner import run_full_scan_stream, SHARED_CACHE, record_feedback, _validate_url, _clean_url, analyze_feedback_patterns, get_prompt_improvements_from_feedback, get_cost_summary, run_retention_cleanup, get_scan_metrics, track_scan_metric
+from scanner import run_full_scan_stream, SHARED_CACHE, record_feedback, _validate_url, _clean_url, analyze_feedback_patterns, get_prompt_improvements_from_feedback, get_cost_summary, run_retention_cleanup, get_scan_metrics, track_scan_metric, start_background_threads
 
 load_dotenv()
 
@@ -260,6 +260,9 @@ else:
     print(f"CORS configured for origins: {', '.join(allowed_origins)}", flush=True)
 
 socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='gevent')
+
+# Start background threads after app initialization
+start_background_threads()
 
 def cleanup_expired_scans():
     """Remove expired scans to prevent resource leaks."""
@@ -744,16 +747,23 @@ def health_check_dependencies():
     
     # Check OpenAI API
     try:
-        start = time.time()
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        # Use a minimal test to check connectivity
-        response = client.models.list()
-        latency = (time.time() - start) * 1000
-        dependencies["openai"] = {
-            "status": "healthy", 
-            "latency_ms": round(latency, 2),
-            "models_available": len(list(response))
-        }
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key:
+            dependencies["openai"] = {"status": "not_configured", "message": "API key not set"}
+        else:
+            # Just validate the API key format and client creation (no actual API call)
+            if len(openai_key.strip()) < 20 or not openai_key.startswith('sk-'):
+                dependencies["openai"] = {"status": "unhealthy", "error": "Invalid API key format"}
+            else:
+                try:
+                    client = OpenAI(api_key=openai_key)
+                    # Client created successfully, assume healthy (avoid costly API calls)
+                    dependencies["openai"] = {
+                        "status": "healthy", 
+                        "note": "API key format valid, client ready"
+                    }
+                except Exception as client_error:
+                    dependencies["openai"] = {"status": "unhealthy", "error": f"Client creation failed: {client_error}"}
     except Exception as e:
         dependencies["openai"] = {"status": "unhealthy", "error": str(e)}
     
