@@ -1189,10 +1189,58 @@
         initializeSocketHandlers() {
             this.socket.on('connect', () => {
                 this.notificationManager.showToast('Connected to server', 'success');
+                this.reconnectAttempts = 0;
             });
             
-            this.socket.on('disconnect', () => {
-                this.notificationManager.showToast('Connection lost. Please refresh the page.', 'error');
+            this.socket.on('disconnect', (reason) => {
+                console.log('Socket disconnected:', reason);
+                if (reason === 'io server disconnect') {
+                    // Server initiated disconnect, try to reconnect
+                    this.socket.connect();
+                }
+                this.notificationManager.showToast('Connection lost. Attempting to reconnect...', 'error');
+            });
+            
+            this.socket.on('connect_error', (error) => {
+                console.error('Socket connection error:', error);
+                this.reconnectAttempts = (this.reconnectAttempts || 0) + 1;
+                
+                if (this.reconnectAttempts <= 5) {
+                    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+                    this.notificationManager.showToast(
+                        `Connection failed (attempt ${this.reconnectAttempts}/5). Retrying in ${delay/1000}s...`, 
+                        'error'
+                    );
+                    setTimeout(() => this.socket.connect(), delay);
+                } else {
+                    this.notificationManager.showToast(
+                        'Unable to connect to server. Please refresh the page.', 
+                        'error'
+                    );
+                }
+            });
+            
+            this.socket.on('reconnect', (attemptNumber) => {
+                this.notificationManager.showToast(
+                    `Reconnected to server (attempt ${attemptNumber})`, 
+                    'success'
+                );
+                this.reconnectAttempts = 0;
+            });
+            
+            this.socket.on('reconnect_attempt', (attemptNumber) => {
+                console.log('Reconnection attempt:', attemptNumber);
+                this.notificationManager.showToast(
+                    `Reconnecting... (attempt ${attemptNumber})`, 
+                    'info'
+                );
+            });
+            
+            this.socket.on('reconnect_failed', () => {
+                this.notificationManager.showToast(
+                    'Failed to reconnect. Please refresh the page.', 
+                    'error'
+                );
             });
             
             this.socket.on('scan_update', (msg) => {

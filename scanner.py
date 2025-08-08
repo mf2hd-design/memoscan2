@@ -828,57 +828,57 @@ def _scrapfly_request_inner(url: str, api_key: str, take_screenshot: bool):
     if take_screenshot:
         params["screenshots[main]"] = "fullpage"
         params["screenshot_flags"] = "load_images,block_banners"
-    with httpx.Client(proxies=None) as client:
-        response = client.get("https://api.scrapfly.io/scrape", params=params, timeout=TIMEOUTS["scrapfly_request"])
-        response.raise_for_status()
-        data = response.json()
+    client = get_shared_http_client()
+    response = client.get("https://api.scrapfly.io/scrape", params=params, timeout=TIMEOUTS["scrapfly_request"])
+    response.raise_for_status()
+    data = response.json()
+    
+    # Track API usage for cost monitoring
+    track_api_usage("scrapfly", pages=1)
+    
+    # Get raw HTML content from Scrapfly response
+    html_content = data["result"]["content"]
+    
+    # DIAGNOSTIC: Log what Scrapfly actually returned
+    if html_content:
+        log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
+    else:
+        log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
         
-        # Track API usage for cost monitoring
-        track_api_usage("scrapfly", pages=1)
+    screenshot_b64 = None
+    if take_screenshot and "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
+        screenshot_url = data["result"]["screenshots"]["main"]["url"]
+        log("info", f"📸 SCRAPFLY SCREENSHOT URL: {screenshot_url}")
+        img_response = client.get(screenshot_url, params={"key": api_key}, timeout=TIMEOUTS["playwright_screenshot"])
+        img_response.raise_for_status()
         
-        # Get raw HTML content from Scrapfly response
-        html_content = data["result"]["content"]
+        # Enhanced diagnostic logging for screenshot
+        image_bytes = img_response.content
+        screenshot_b64 = base64.b64encode(image_bytes).decode('utf-8')
         
-        # DIAGNOSTIC: Log what Scrapfly actually returned
-        if html_content:
-            log("info", f"🔍 SCRAPFLY RESPONSE: {len(html_content)} chars, starts: {repr(html_content[:100])}")
-        else:
-            log("warn", f"🔍 SCRAPFLY RESPONSE: Empty content returned")
+        # Detect image format and dimensions from raw bytes
+        image_info = "unknown format"
+        try:
+            if image_bytes.startswith(b'\xff\xd8\xff'):
+                image_info = "JPEG format"
+            elif image_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+                image_info = "PNG format"
+            elif image_bytes.startswith(b'RIFF') and b'WEBP' in image_bytes[:20]:
+                image_info = "WEBP format"
+        except:
+            pass
             
-        screenshot_b64 = None
-        if take_screenshot and "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
-            screenshot_url = data["result"]["screenshots"]["main"]["url"]
-            log("info", f"📸 SCRAPFLY SCREENSHOT URL: {screenshot_url}")
-            img_response = client.get(screenshot_url, params={"key": api_key}, timeout=TIMEOUTS["playwright_screenshot"])
-            img_response.raise_for_status()
-            
-            # Enhanced diagnostic logging for screenshot
-            image_bytes = img_response.content
-            screenshot_b64 = base64.b64encode(image_bytes).decode('utf-8')
-            
-            # Detect image format and dimensions from raw bytes
-            image_info = "unknown format"
-            try:
-                if image_bytes.startswith(b'\xff\xd8\xff'):
-                    image_info = "JPEG format"
-                elif image_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
-                    image_info = "PNG format"
-                elif image_bytes.startswith(b'RIFF') and b'WEBP' in image_bytes[:20]:
-                    image_info = "WEBP format"
-            except:
-                pass
-                
-            log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(image_bytes)} bytes, {image_info}")
-            log("info", f"📊 SCRAPFLY SCREENSHOT ENCODING: {len(screenshot_b64)} base64 chars")
-            
-            # Log screenshot dimensions if available from Scrapfly response
-            if "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
-                screenshot_meta = data["result"]["screenshots"]["main"]
-                if "size" in screenshot_meta:
-                    log("info", f"📏 SCRAPFLY SCREENSHOT METADATA: {screenshot_meta.get('size', 'unknown')} bytes, format: {screenshot_meta.get('format', 'unknown')}, extension: {screenshot_meta.get('extension', 'unknown')}")
-        elif take_screenshot:
-            log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
-        return screenshot_b64, html_content
+        log("info", f"✅ SCRAPFLY SCREENSHOT SUCCESS: {len(image_bytes)} bytes, {image_info}")
+        log("info", f"📊 SCRAPFLY SCREENSHOT ENCODING: {len(screenshot_b64)} base64 chars")
+        
+        # Log screenshot dimensions if available from Scrapfly response
+        if "screenshots" in data["result"] and "main" in data["result"]["screenshots"]:
+            screenshot_meta = data["result"]["screenshots"]["main"]
+            if "size" in screenshot_meta:
+                log("info", f"📏 SCRAPFLY SCREENSHOT METADATA: {screenshot_meta.get('size', 'unknown')} bytes, format: {screenshot_meta.get('format', 'unknown')}, extension: {screenshot_meta.get('extension', 'unknown')}")
+    elif take_screenshot:
+        log("error", f"❌ SCRAPFLY SCREENSHOT MISSING: screenshots={data['result'].get('screenshots', 'NOT_FOUND')}")
+    return screenshot_b64, html_content
 
 def _handle_scrapfly_error(url: str, e: Exception) -> Tuple[None, None]:
     """Handle different types of Scrapfly errors with appropriate logging."""
@@ -1603,11 +1603,21 @@ def schedule_retention_cleanup():
 
 # --- END: DATA RETENTION ---
 
-# Initialize data retention cleanup after all functions are defined
-try:
-    schedule_retention_cleanup()
-except Exception as e:
-    log("error", f"Failed to initialize retention cleanup: {e}")
+# Background thread management
+_cleanup_thread_started = False
+
+def start_background_threads():
+    """Start background threads for data retention cleanup. Should be called from app entry point."""
+    global _cleanup_thread_started
+    if not _cleanup_thread_started:
+        try:
+            schedule_retention_cleanup()
+            _cleanup_thread_started = True
+            log("info", "Background threads started")
+        except Exception as e:
+            log("error", f"Failed to start background threads: {e}")
+    else:
+        log("debug", "Background threads already started")
 
 # --- START: METRICS TRACKING ---
 METRICS_FILE = os.path.join(PERSISTENT_DATA_DIR, "scan_metrics.jsonl")
@@ -1844,84 +1854,84 @@ def get_social_media_text(soup: BeautifulSoup, base_url: str) -> str:
         'youtube': {'regex': r'youtube\.com', 'patterns': [r'youtube', r'yt', r'fa-youtube', r'icon-youtube']}
     }
 
-    with httpx.Client(follow_redirects=True, headers={"User-Agent": get_random_user_agent()}) as social_client:
-        for platform, info in social_domains_map.items():
-            domain_regex = re.compile(info['regex'], re.IGNORECASE)
-            id_patterns = [re.compile(p, re.IGNORECASE) for p in info['patterns']]
+    social_client = get_shared_http_client()
+    for platform, info in social_domains_map.items():
+        domain_regex = re.compile(info['regex'], re.IGNORECASE)
+        id_patterns = [re.compile(p, re.IGNORECASE) for p in info['patterns']]
+        
+        candidate_tags = []
+        
+        for container_tag in soup.find_all(
+            ['footer', 'header', 'nav', 'div', 'ul', 'p'],
+            class_=SOCIAL_FOOTER_PATTERN
+        ):
+            for a_tag in container_tag.find_all('a', href=True):
+                candidate_tags.append(a_tag)
+
+        if not candidate_tags:
+             for a_tag in soup.find_all('a', href=True):
+                candidate_tags.append(a_tag)
+
+        unique_good_links = set()
+
+        for a_tag in candidate_tags:
+            href = a_tag.get('href', '')
+            aria_label = a_tag.get('aria-label', '').lower()
+            title = a_tag.get('title', '').lower()
+            text = a_tag.get_text(" ", strip=True).lower()
+
+            is_relevant_link = False
+
+            if domain_regex.search(href):
+                is_relevant_link = True
             
-            candidate_tags = []
-            
-            for container_tag in soup.find_all(
-                ['footer', 'header', 'nav', 'div', 'ul', 'p'],
-                class_=SOCIAL_FOOTER_PATTERN
-            ):
-                for a_tag in container_tag.find_all('a', href=True):
-                    candidate_tags.append(a_tag)
+            elif any(p.search(aria_label) for p in id_patterns) or \
+                 any(p.search(title) for p in id_patterns) or \
+                 any(p.search(text) for p in id_patterns):
+                is_relevant_link = True
 
-            if not candidate_tags:
-                 for a_tag in soup.find_all('a', href=True):
-                    candidate_tags.append(a_tag)
+            link_classes = ' '.join(a_tag.get('class', [])).lower()
+            if any(p.search(link_classes) for p in id_patterns):
+                is_relevant_link = True
 
-            unique_good_links = set()
-
-            for a_tag in candidate_tags:
-                href = a_tag.get('href', '')
-                aria_label = a_tag.get('aria-label', '').lower()
-                title = a_tag.get('title', '').lower()
-                text = a_tag.get_text(" ", strip=True).lower()
-
-                is_relevant_link = False
-
-                if domain_regex.search(href):
+            child_icon = a_tag.find(['i', 'img', 'svg'])
+            if child_icon:
+                child_classes = ' '.join(child_icon.get('class', [])).lower()
+                child_alt = child_icon.get('alt', '').lower()
+                if any(p.search(child_classes) for p in id_patterns) or \
+                   any(p.search(child_alt) for p in id_patterns):
                     is_relevant_link = True
-                
-                elif any(p.search(aria_label) for p in id_patterns) or \
-                     any(p.search(title) for p in id_patterns) or \
-                     any(p.search(text) for p in id_patterns):
-                    is_relevant_link = True
 
-                link_classes = ' '.join(a_tag.get('class', [])).lower()
-                if any(p.search(link_classes) for p in id_patterns):
-                    is_relevant_link = True
+            if is_relevant_link:
+                full_url = urljoin(base_url, href)
+                if domain_regex.search(full_url) and \
+                   'intent' not in href and 'share' not in href and \
+                   (platform != 'instagram' or '/p/' not in href):
+                    unique_good_links.add(full_url)
+        
+        good_links_list = sorted(list(unique_good_links), key=len)
 
-                child_icon = a_tag.find(['i', 'img', 'svg'])
-                if child_icon:
-                    child_classes = ' '.join(child_icon.get('class', [])).lower()
-                    child_alt = child_icon.get('alt', '').lower()
-                    if any(p.search(child_classes) for p in id_patterns) or \
-                       any(p.search(child_alt) for p in id_patterns):
-                        is_relevant_link = True
+        if not good_links_list:
+            log("warn", f"Found {platform.capitalize()} candidate links, but none were relevant or resolved to the correct domain.")
+            continue
 
-                if is_relevant_link:
-                    full_url = urljoin(base_url, href)
-                    if domain_regex.search(full_url) and \
-                       'intent' not in href and 'share' not in href and \
-                       (platform != 'instagram' or '/p/' not in href):
-                        unique_good_links.add(full_url)
+        best_url = good_links_list[0]
+        
+        log("info", f"Found and scraping best {platform.capitalize()} link: {best_url}")
+        
+        try:
+            res = social_client.get(best_url, timeout=20)
+            if res.is_success:
+                social_soup = BeautifulSoup(res.text, "html.parser")
+                for tag in social_soup(["script", "style", "nav", "footer", "header", "aside"]): 
+                    tag.decompose()
+                final_social_text += f"\n\n--- Social Media Content ({platform.capitalize()}) ---\n" + social_soup.get_text(" ", strip=True)[:2000]
+                log("info", f"Successfully scraped content from {platform.capitalize()} link: {best_url}")
+            else:
+                log("warn", f"Request to {best_url} failed with status: {res.status_code}")
+        except Exception as e:
+            log("warn", f"Failed to scrape {platform.capitalize()} from {best_url}: {e}")
             
-            good_links_list = sorted(list(unique_good_links), key=len)
-
-            if not good_links_list:
-                log("warn", f"Found {platform.capitalize()} candidate links, but none were relevant or resolved to the correct domain.")
-                continue
-
-            best_url = good_links_list[0]
-            
-            log("info", f"Found and scraping best {platform.capitalize()} link: {best_url}")
-            
-            try:
-                res = social_client.get(best_url, timeout=20)
-                if res.is_success:
-                    social_soup = BeautifulSoup(res.text, "html.parser")
-                    for tag in social_soup(["script", "style", "nav", "footer", "header", "aside"]): 
-                        tag.decompose()
-                    final_social_text += f"\n\n--- Social Media Content ({platform.capitalize()}) ---\n" + social_soup.get_text(" ", strip=True)[:2000]
-                    log("info", f"Successfully scraped content from {platform.capitalize()} link: {best_url}")
-                else:
-                    log("warn", f"Request to {best_url} failed with status: {res.status_code}")
-            except Exception as e:
-                log("warn", f"Failed to scrape {platform.capitalize()} from {best_url}: {e}")
-                
     return final_social_text
 
 def find_high_value_paths(discovered_links: List[Tuple[str, str]], initial_url: str, preferred_lang: str = 'en', max_paths: int = None) -> List[Tuple[str, str]]:
