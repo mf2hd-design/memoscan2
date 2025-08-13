@@ -102,38 +102,17 @@ def safe_responses_call(client, timeout_seconds: int = 60, max_retries: int = 0,
 
 # === Feature Flag System ===
 class FeatureFlags:
-    """Centralized feature flag management for Discovery Mode."""
+    """Simplified flags. Discovery is always available; UI toggle controls mode."""
     
     @staticmethod
     def is_discovery_enabled(user_id: Optional[str] = None) -> bool:
-        """Check if Discovery Mode is enabled for the given user."""
-        
-        # Global feature flag
-        if os.getenv('DISCOVERY_MODE_ENABLED', 'false').lower() != 'true':
-            return False
-        
-        # Check rollout percentage
-        rollout_percentage = int(os.getenv('DISCOVERY_ROLLOUT_PERCENTAGE', '0'))
-        if rollout_percentage < 100:
-            # Use consistent hashing for gradual rollout
-            if user_id:
-                user_hash = int(hashlib.md5(user_id.encode()).hexdigest()[:8], 16)
-                if (user_hash % 100) >= rollout_percentage:
-                    return False
-        
-        # Check user whitelist
-        whitelist = os.getenv('DISCOVERY_MODE_WHITELIST', '').split(',')
-        if whitelist and whitelist[0]:  # If whitelist exists and is not empty
-            if not user_id or user_id not in whitelist:
-                return False
-        
+        # Always enabled; rely on UI toggle to select mode
         return True
     
     @staticmethod
     def get_enabled_features() -> Dict[str, bool]:
-        """Get all feature flag states."""
         return {
-            "discovery_mode": FeatureFlags.is_discovery_enabled(),
+            "discovery_mode": True,
             "visual_analysis": os.getenv('DISCOVERY_VISUAL_ANALYSIS', 'false').lower() == 'true',
             "export_features": os.getenv('DISCOVERY_EXPORT_ENABLED', 'false').lower() == 'true',
             "advanced_feedback": os.getenv('DISCOVERY_ADVANCED_FEEDBACK', 'false').lower() == 'true'

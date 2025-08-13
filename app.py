@@ -340,7 +340,8 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
         if mode == "discovery" and DISCOVERY_MODE_AVAILABLE:
             scan_stream = run_discovery_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id, mode=mode)
         else:
-            scan_stream = run_diagnosis_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id, mode=mode)
+            # Diagnosis stream does not accept a 'mode' argument
+            scan_stream = run_diagnosis_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id)
         
         for update in scan_stream:
             # Check if scan has been cancelled or expired
