@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Brand Sonar - Saffron</title>
+    <style>
+        :root {
+            --saffron-orange: #FF5900;
+            --saffron-charcoal: #222222;
+            --background-light: #F8F7F5;
+            --text-dark: #333333;
+            --text-light: #777777;
+            --border-color: #EAE8E4;
+            --highlight-bg: #FFF7F2;
+            --score-strong: #28a745;
+            --score-moderate: #ffc107;
+            --score-weak: #dc3545;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: var(--background-light); color: var(--text-dark); margin: 0; padding: 2rem; line-height: 1.6; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--saffron-orange); padding-bottom: 1rem; margin-bottom: 2rem; }
+        header h1 { color: var(--saffron-charcoal); font-size: 2.5rem; margin: 0; }
+        header h1 span { color: var(--saffron-orange); }
+        .card { background-color: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 2.5rem; }
+        h2 { margin-top: 0; color: var(--saffron-charcoal); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; }
+        button { font-family: inherit; font-size: 1rem; border-radius: 6px; border: none; cursor: pointer; transition: all 0.2s; }
+        button.primary { background-color: var(--saffron-orange); color: white; padding: 0.8rem 1.5rem; font-weight: 600; }
+        button.primary:hover { background-color: #E55000; }
+        input, textarea { width: 95%; padding: 0.7rem; font-family: inherit; font-size: 1rem; border: 1px solid var(--border-color); border-radius: 6px; }
+        .form-group { margin-bottom: 1.5rem; }
+        
+        /* Screen Management */
+        .screen { display: none; }
+        .screen.active { display: block; }
+
+        /* Setup Screen */
+        .setup-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 2rem; }
+        .hypothesis-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .hypothesis-item label { font-weight: 600; display: block; margin-bottom: 0.5rem; }
+        .hypothesis-item .traffic-lights { display: flex; justify-content: space-around; background: #f0f0f0; border-radius: 20px; padding: 5px;}
+        .hypothesis-item input { display: none; }
+        .hypothesis-item .light { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; background-color: #ccc; transition: all 0.2s; border: 2px solid transparent; }
+        .hypothesis-item input:checked + .light { transform: scale(1.1); box-shadow: 0 0 10px rgba(0,0,0,0.2); border-color: white;}
+        .hypothesis-item input[value="Weak"]:checked + .light { background-color: var(--score-weak); }
+        .hypothesis-item input[value="Moderate"]:checked + .light { background-color: var(--score-moderate); }
+        .hypothesis-item input[value="Strong"]:checked + .light { background-color: var(--score-strong); }
+
+        /* Scanning Screen */
+        #scan-log { background-color: var(--saffron-charcoal); color: #e0e0e0; font-family: monospace; padding: 1.5rem; border-radius: 8px; height: 200px; overflow-y: auto; margin-bottom: 1rem; }
+        .progress-bar { width: 100%; background-color: var(--border-color); border-radius: 8px; height: 30px; overflow: hidden; }
+        #progress-fill { width: 0%; height: 100%; background-color: var(--saffron-orange); transition: width 0.5s ease-in-out; }
+        #scan-status-text { margin-top: 1rem; font-style: italic; color: var(--text-light); text-align: center;}
+        
+        /* Dashboard Screen */
+        .dashboard-grid { display: grid; grid-template-columns: 3fr 1fr; gap: 2rem; }
+        .competitor-card { background: #fff; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 1rem; cursor: pointer; border: 2px solid transparent; }
+        .competitor-card:hover, .competitor-card.active { border-color: var(--saffron-orange); }
+        .competitor-card h4 { margin: 0 0 0.5rem 0; }
+        .competitor-scores { display: flex; gap: 5px; }
+        .competitor-score-dot { width: 15px; height: 15px; border-radius: 50%; }
+
+        .score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 2rem; }
+        .score-card { background-color: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-top: 5px solid; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; }
+        .score-card:hover { transform: translateY(-5px); }
+        .score-card.strong { border-color: var(--score-strong); } .score-card.moderate { border-color: var(--score-moderate); } .score-card.weak { border-color: var(--score-weak); }
+        .score-card h3 { margin: 0; display: flex; justify-content: space-between; align-items: center; }
+        .score-tag { padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 600; color: white; }
+        .score-tag.strong { background-color: var(--score-strong); } .score-tag.moderate { background-color: var(--score-moderate); color: var(--text-dark); } .score-tag.weak { background-color: var(--score-weak); }
+        .hypothesis { font-size: 0.8rem; color: var(--text-light); font-style: italic; margin-top: 0.5rem; }
+        
+        /* Common for Modals & Evidence */
+        .deep-dive { display: none; margin-top: 2.5rem; }
+        .evidence-view { display: grid; grid-template-columns: 1fr 2fr; gap: 2rem; }
+        .analysis-panel, .evidence-panel { background-color: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .analysis-panel h3, .evidence-panel h3 { margin-top: 0; color: var(--saffron-charcoal); }
+        .evidence-card { background-color: #fff; border: 1px solid var(--border-color); padding: 1rem; border-radius: 6px; margin-bottom: 1rem; position: relative; }
+        .evidence-card blockquote { margin: 0; font-style: italic; }
+        .evidence-card .doc-preview, .evidence-card .video-preview { display: flex; align-items: center; gap: 1rem; }
+        .evidence-card .doc-icon, .evidence-card .video-icon { font-size: 2.5rem; }
+        .evidence-card .doc-info strong, .evidence-card .video-info strong { display: block; }
+        .evidence-card .doc-info span, .evidence-card .video-info span { font-size: 0.9rem; color: var(--text-light); }
+        .evidence-card img { max-width: 100%; border-radius: 4px; }
+        .evidence-source { font-size: 0.8rem; font-weight: 600; color: var(--text-light); text-align: right; margin-top: 0.5rem; }
+        .feedback-actions { position: absolute; top: 0.5rem; right: 0.5rem; display: flex; gap: 0.5rem; opacity: 0.2; transition: opacity 0.2s; }
+        .evidence-card:hover .feedback-actions { opacity: 1; }
+        .feedback-actions button { background-color: white; border: 1px solid var(--border-color); border-radius: 50%; width: 32px; height: 32px; cursor: pointer; font-size: 1.2rem; transition: all 0.2s; }
+        .feedback-actions button:hover { background-color: var(--highlight-bg); border-color: var(--saffron-orange); transform: scale(1.1); }
+        .evidence-card.kept { border-left: 5px solid var(--score-strong); background-color: #F0FFF0; }
+        .evidence-card.dismissed { opacity: 0.4; border-left: 5px solid var(--score-weak); }
+        .curated-badge { position: absolute; top: -10px; left: -10px; background-color: var(--saffron-orange); color: white; padding: 0.2rem 0.5rem; font-size: 0.7rem; font-weight: bold; border-radius: 4px; z-index: 1; }
+        .narrative-lab { margin-top: 2.5rem; text-align: center; }
+        .narrative-lab button { background-color: var(--saffron-orange); color: white; border: none; padding: 1rem 2.5rem; font-size: 1.1rem; font-weight: 600; border-radius: 8px; cursor: pointer; transition: all 0.2s; opacity: 0; transform: scale(0.9); pointer-events: none; }
+        .narrative-lab button.visible { opacity: 1; transform: scale(1); pointer-events: all; }
+        .narrative-output { display: none; margin-top: 2rem; text-align: left; background-color: white; padding: 2rem; border-radius: 8px; border-left: 5px solid var(--saffron-charcoal); }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); display: none; justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background-color: white; padding: 2rem; border-radius: 8px; max-width: 600px; width: 90%; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+        .modal-content h3 { margin-top: 0; }
+        .modal-content textarea { width: 95%; height: 80px; padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; margin-top: 0.5rem; }
+        .modal-content .form-group { margin-bottom: 1.5rem; }
+        .modal-content .key-checkboxes { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 0.5rem;}
+        .modal-content .key-checkboxes label { display: flex; align-items: center; cursor: pointer; padding: 5px 10px; border-radius: 15px; background: #eee; }
+        .modal-content .key-checkboxes input:checked + span { font-weight: bold; }
+        .modal-content .key-checkboxes input { display:none; }
+        .modal-content .modal-actions { text-align: right; }
+        .export-tray-btn { position: fixed; bottom: 2rem; right: 2rem; background-color: var(--saffron-charcoal); color: white; border: none; border-radius: 50%; width: 60px; height: 60px; font-size: 1.5rem; cursor: pointer; box-shadow: 0 5px 15px rgba(0,0,0,0.3); display: none; z-index: 999; transform: scale(0); transition: transform 0.3s ease; }
+        .export-tray-btn.visible { display: flex; justify-content: center; align-items: center; transform: scale(1); }
+        .export-tray-btn .count { position: absolute; top: -5px; right: -5px; background-color: var(--saffron-orange); border-radius: 50%; width: 24px; height: 24px; font-size: 0.8rem; line-height: 24px; text-align: center; }
+        .export-tray-modal .tray-item { border-bottom: 1px solid var(--border-color); padding: 1rem 0; }
+        .export-tray-modal .item-note { font-style: italic; background-color: var(--highlight-bg); padding: 0.5rem; margin-top: 0.5rem; border-radius: 4px;}
+        .export-tray-modal .item-keys { font-size: 0.8rem; margin-top: 0.5rem; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1 id="main-title">Brand Sonar<span>.</span></h1>
+    <div id="header-context">For Saffron Internal Use</div>
+</header>
+
+<div class="container">
+    <div id="setup-screen" class="screen active">
+        <div class="card">
+            <h2>Start a New Brand Audit</h2>
+            <div class="setup-grid">
+                <div>
+                    <div class="form-group"><label for="brandName">Brand / Client Name</label><input type="text" id="brandName" value="Tesla"></div>
+                    <div class="form-group"><label for="brandUrl">Website URL</label><input type="text" id="brandUrl" value="https://www.tesla.com"></div>
+                    <div class="form-group"><label>Key Social Channels (auto-filled)</label><input type="text" id="socialX" placeholder="X / Twitter" value="https://twitter.com/tesla"><input type="text" id="socialLI" placeholder="LinkedIn" value="https://www.linkedin.com/company/tesla-motors"></div>
+                     <div class="form-group"><label for="brandDocs">Upload Documents (e.g., brand guidelines, reports)</label><input type="file" id="brandDocs" multiple></div>
+                </div>
+                <div>
+                    <h4>Initial Hypothesis</h4><p style="font-size:0.9rem; color:var(--text-light);">Based on your current understanding, provide a gut-feel assessment.</p>
+                    <div id="hypothesis-form" class="hypothesis-grid"></div>
+                </div>
+            </div>
+             <div style="text-align:right; margin-top: 2rem;"><button class="primary" id="start-scan-btn">Start Sonar Ping</button></div>
+        </div>
+    </div>
+
+    <div id="scanning-screen" class="screen">
+         <div class="card">
+            <h2>Sonar Ping in Progress...</h2><div id="scan-log"></div><div class="progress-bar"><div id="progress-fill"></div></div><p id="scan-status-text">Gathering intelligence...</p>
+        </div>
+    </div>
+
+    <div id="dashboard-screen" class="screen">
+        <div class="dashboard-grid">
+            <div>
+                 <div class="overview card"><h2>Executive Summary</h2><p id="executive-summary"></p></div>
+                <div class="score-grid" id="score-grid"></div>
+                <div class="deep-dive" id="deep-dive"><div class="evidence-view"><div class="analysis-panel"><h3 id="analysis-key-title"></h3><p id="analysis-rationale"></p></div><div class="evidence-panel"><h3>Key Evidence</h3><div id="evidence-stream"></div></div></div></div>
+            </div>
+            <div id="competitor-panel"><div class="card"><h2>Competitors</h2><div id="competitor-list"></div></div></div>
+        </div>
+        <div class="narrative-lab"><button id="narrative-btn">Suggest Narrative Flow</button><div id="narrative-output" class="narrative-output"></div></div>
+    </div>
+</div>
+
+<button class="export-tray-btn" id="export-tray-btn" title="Open Export Tray"><span>🛒</span><div class="count" id="export-count">0</div></button>
+
+<div class="modal-overlay" id="curation-modal">
+    <div class="modal-content">
+        <h3>Curate Evidence</h3><div id="curation-preview"></div><div class="form-group"><label>Strategist's Note:</label><textarea id="curation-note" placeholder="e.g., 'Powerful quote that shows the promise vs. reality gap.'"></textarea></div>
+        <div class="form-group"><label>Impact on Keys:</label><div id="curation-keys" class="key-checkboxes"></div></div>
+        <div class="modal-actions"><button id="curation-cancel">Cancel</button><button id="curation-save" class="primary">Save Curation</button></div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="export-tray-modal">
+    <div class="modal-content">
+        <h3>Export Tray</h3><div id="export-tray-content" style="max-height: 400px; overflow-y: auto;"></div>
+        <div class="modal-actions"><button id="export-close">Close</button><button id="export-now" class="primary">Export as .txt</button></div>
+    </div>
+</div>
+
+<script>
+    const brandData = {
+      "client": {
+        "brand_name": "Tesla", "executive_summary": "Tesla's brand memorability is a study in contrasts. It scores exceptionally high in Story and Attention, driven by a powerful, almost mythic founder narrative and a constant stream of media coverage. However, this is significantly undermined by a growing weakness in Consistency and a polarizing Emotion score, where the brand's promise of a sustainable future clashes with customer experiences of service issues and quality control.",
+        "keys": {
+          "Emotion": { "score": 55, "rating": "Moderate", "rationale": "Evokes powerful, but polarized, emotions. Strong fan loyalty is offset by customer frustration regarding service and quality.", "evidence": [ { "id": "e1", "type": "Trustpilot Review", "content": "'Best car I've ever owned. I feel like I'm driving the future. Five stars isn't enough!'", "source": "Trustpilot" }, { "id": "e2", "type": "Trustpilot Review", "content": "'An absolute nightmare. Two months in the service center for a simple panel gap issue. They just don't care after they have your money.'", "source": "Trustpilot" }, { "id": "e3", "type": "Glassdoor Review", "content": "'Working here is like being on a mission. We are fundamentally changing the world, and that energy is electric.'", "source": "Glassdoor" } ] },
+          "Attention": { "score": 95, "rating": "Strong", "rationale": "Unmatched in generating global media attention through product announcements, a high-profile CEO, and unconventional marketing.", "evidence": [ { "id": "a1", "type": "News Headline", "content": "'Tesla Cybertruck launch event generates over 10 billion media impressions.'", "source": "Google News" }, { "id": "a2", "type": "Video", "content": "Cybertruck 'Armor Glass' demo", "snippet": "On-stage demonstration becomes a viral moment.", "source": "YouTube" } ] },
+          "Story": { "score": 92, "rating": "Strong", "rationale": "Possesses a compelling founder-led narrative of visionary ambition, technological disruption, and a mission-driven purpose.", "evidence": [ { "id": "s1", "type": "Document", "content": "2024 Annual Impact Report", "snippet": "Our primary goal remains to accelerate the advent of sustainable transport...", "source": "Uploaded Document" }, { "id": "s2", "type": "Media Analysis", "content": "Consistently framed in media as a revolutionary force, not just a car company.", "source": "News Analysis" } ] },
+          "Involvement": { "score": 75, "rating": "Strong", "rationale": "Owners feel part of a movement. Referral programs and active online communities create a strong sense of belonging.", "evidence": [ { "id": "i1", "type": "Community Forum", "content": "'Just took delivery of my Model Y! So excited to join the family.'", "source": "Reddit r/TeslaMotors" }, { "id": "i2", "type": "Link", "content": "Tesla Owners Club Directory", "url": "https://www.tesla.com/findus/clubs", "source": "Tesla.com"} ] },
+          "Repetition": { "score": 85, "rating": "Strong", "rationale": "Core brand elements (logo, vehicle silhouettes, 'sustainability' focus) are repeated consistently across all touchpoints.", "evidence": [ { "id": "r1", "type": "Image", "content": "images/tesla-logo.svg", "caption": "The 'T' logo", "source": "Brand Asset" }, { "id": "r2", "type": "Image", "content": "images/tesla-supercharger.jpg", "caption": "Supercharger station design language", "source": "Physical Experience"} ] },
+          "Consistency": { "score": 40, "rating": "Weak", "rationale": "The brand's greatest weakness. The promise of a premium experience is frequently broken by inconsistent build quality and frustrating customer service.", "evidence": [ { "id": "c1", "type": "Key Tension", "content": "The brand promises a seamless, high-tech future, but the reality of customer service is often described as 'frustrating' and 'slow'.", "source": "Synthesis Engine" }, { "id": "c2", "type": "News Headline", "content": "'Tesla faces class-action lawsuit over inconsistent build quality and panel gaps.'", "source": "Google News" } ] }
+        }
+      },
+      "competitors": [
+        { "brand_name": "Volkswagen", "executive_summary": "VW's memorability is 'Steady but Muted.' High Consistency from a long history is offset by weaker scores in Emotion and Story, which are still recovering from past scandals and struggling to define a clear EV narrative.", "keys": { "Emotion": {"score": 50, "rating": "Moderate", "rationale": "Attempts to connect emotionally with a family-centric message, but customer feedback often centers on technical frustrations with new software.", "evidence": [ { "id": "vwe1", "type": "Review", "content": "'My new GTI is a blast to drive, but the infotainment screen is so frustrating.'", "source": "Car Magazine"} ]}, "Attention": {"score": 60, "rating": "Moderate", "rationale": "The ID. Buzz generated significant initial attention, but the broader EV lineup struggles to stand out in a crowded market.", "evidence": [ { "id": "vwa1", "type": "Image", "content": "images/vw-id-buzz.jpg", "caption": "ID. Buzz electric van", "source": "Marketing Material"} ]}, "Story": {"score": 45, "rating": "Weak", "rationale": "The 'Way to Zero' sustainability narrative is strategically sound but has not yet fully replaced older perceptions or created a compelling new identity.", "evidence": [ { "id": "vws1", "type": "Document", "content": "VW 'Way to Zero' Strategy PDF", "snippet": "A holistic approach to decarbonization...", "source": "VW Website"}]}, "Involvement": {"score": 55, "rating": "Moderate", "rationale": "A traditional dealership network provides a physical point of contact, but there's a lack of a strong, unified brand community equivalent to Tesla's."}, "Repetition": {"score": 80, "rating": "Strong", "rationale": "The iconic VW logo and core model names like 'Golf' and 'Passat' are deeply ingrained in the market, ensuring high recall."}, "Consistency": {"score": 85, "rating": "Strong", "rationale": "Known for solid build quality and a predictable, reliable user experience. The brand feels familiar and dependable across its model range.", "evidence": [ { "id": "vwc1", "type": "Review", "content": "'The new Golf feels like a Golf. Solid, reliable, and predictable in the best way possible.'", "source": "Top Gear"} ]} } },
+        { "brand_name": "Toyota", "executive_summary": "Toyota's memorability is rooted in 'Impeccable Consistency.' It is a byword for reliability, leading to a strong, habit-driven customer base. However, it scores very low on Attention and Story, often perceived as functional and unexciting.", "keys": { "Emotion": {"score": 65, "rating": "Moderate", "rationale": "Generates strong feelings of safety, trust, and peace of mind. However, it rarely evokes excitement or passion.", "evidence": [ { "id": "tye1", "type": "Review", "content": "'I don't love my Camry, but I have complete peace of mind knowing it will never break down. It's one less thing to worry about.'", "source": "Customer Forum"} ] }, "Attention": {"score": 30, "rating": "Weak", "rationale": "The brand's conservative approach means it rarely makes headlines or stands out visually, especially in the EV conversation.", "evidence": [ { "id": "tya1", "type": "Media Analysis", "content": "Toyota's share-of-voice in EV-related media is less than 1/10th of Tesla's.", "source": "Brandwatch"} ] }, "Story": {"score": 35, "rating": "Weak", "rationale": "The brand's narrative is heavily focused on process ('The Toyota Way') and quality, but lacks a compelling, forward-looking story."}, "Involvement": {"score": 40, "rating": "Weak", "rationale": "The ownership experience is largely transactional, with few mechanisms for building a strong brand community."}, "Repetition": {"score": 90, "rating": "Strong", "rationale": "The Toyota logo is ubiquitous and globally recognized, reinforced by a massive marketing spend and vehicle presence.", "evidence": [ { "id": "tyr1", "type": "Image", "content": "images/toyota-logo.svg", "caption": "Toyota logo", "source": "Brand Asset" } ] }, "Consistency": {"score": 95, "rating": "Strong", "rationale": "The brand's greatest strength. A Toyota is expected to be reliable, efficient, and practical, and it almost always delivers on this promise."} } },
+        { "brand_name": "BYD", "executive_summary": "BYD is a rapidly rising challenger with growing 'Attention.' Its memorability is tied to its aggressive expansion and innovation in the EV space. Its Story and Emotion scores are still developing and are not yet established in Western markets.", "keys": { "Emotion": {"score": 45, "rating": "Weak", "rationale": "The brand is primarily perceived on functional terms like price and features, and has not yet built a strong emotional connection with Western consumers."}, "Attention": {"score": 80, "rating": "Strong", "rationale": "Generates significant attention as the 'Tesla killer,' regularly featured in news for its rapid growth and competitive pricing.", "evidence": [ { "id": "byda1", "type": "News Headline", "content": "'BYD Surpasses Tesla to Become World's Top EV Maker'", "source": "Reuters"} ]}, "Story": {"score": 50, "rating": "Moderate", "rationale": "The story is currently one of industrial might and rapid growth, which is compelling to investors but less so to consumers."}, "Involvement": {"score": 30, "rating": "Weak", "rationale": "As a new entrant in many markets, there is very little brand community or sense of owner involvement yet."}, "Repetition": {"score": 60, "rating": "Moderate", "rationale": "The BYD brand is becoming more visible, but it lacks the decades of reinforcement of its legacy competitors."}, "Consistency": {"score": 70, "rating": "Moderate", "rationale": "Early reviews suggest good product quality, but the overall brand experience and service network are still unproven in many markets."} } }
+      ]
+    };
+
+    document.addEventListener('DOMContentLoaded', function() {
+        let userHypothesis = {};
+        let exportTray = {};
+        let currentCurationId = null;
+        let activeBrandData = brandData.client;
+
+        const allScreens = document.querySelectorAll('.screen');
+        const setupScreen = document.getElementById('setup-screen');
+        const scanningScreen = document.getElementById('scanning-screen');
+        const dashboardScreen = document.getElementById('dashboard-screen');
+        const startScanBtn = document.getElementById('start-scan-btn');
+        const brandNameInput = document.getElementById('brandName');
+        const hypothesisForm = document.getElementById('hypothesis-form');
+
+        setupInitialState();
+        
+        function setupInitialState() {
+            Object.keys(brandData.client.keys).forEach(key => {
+                hypothesisForm.innerHTML += `<div class="hypothesis-item"><label>${key}</label><div class="traffic-lights" id="hypo-${key}"><input type="radio" id="${key}-Weak" name="${key}" value="Weak"><label for="${key}-Weak" class="light" title="Weak"></label><input type="radio" id="${key}-Moderate" name="${key}" value="Moderate" checked><label for="${key}-Moderate" class="light" title="Moderate"></label><input type="radio" id="${key}-Strong" name="${key}" value="Strong"><label for="${key}-Strong" class="light" title="Strong"></label></div></div>`;
+            });
+            brandNameInput.addEventListener('input', () => {
+                const name = brandNameInput.value.toLowerCase().replace(/[\s\.]+/g, '');
+                if (name) {
+                    document.getElementById('brandUrl').value = `https://www.${name}.com`;
+                    document.getElementById('socialX').value = `https://twitter.com/${name}`;
+                    document.getElementById('socialLI').value = `https://www.linkedin.com/company/${name}`;
+                }
+            });
+
+            startScanBtn.addEventListener('click', runScanSimulation);
+            document.getElementById('curation-cancel').addEventListener('click', () => document.getElementById('curation-modal').style.display = 'none');
+            document.getElementById('curation-save').addEventListener('click', saveCuration);
+            document.getElementById('export-tray-btn').addEventListener('click', showExportTray);
+            document.getElementById('export-close').addEventListener('click', () => document.getElementById('export-tray-modal').style.display = 'none');
+            document.getElementById('export-now').addEventListener('click', exportData);
+            document.getElementById('curation-modal').addEventListener('click', (e) => { if(e.target === e.currentTarget) e.target.style.display = 'none'; });
+            document.getElementById('export-tray-modal').addEventListener('click', (e) => { if(e.target === e.currentTarget) e.target.style.display = 'none'; });
+        }
+        
+        function captureHypothesis() {
+             userHypothesis = {};
+             Object.keys(brandData.client.keys).forEach(key => {
+                 const selected = hypothesisForm.querySelector(`input[name="${key}"]:checked`);
+                 userHypothesis[key] = selected ? selected.value : 'Moderate';
+             });
+        }
+
+        function runScanSimulation() {
+            captureHypothesis();
+            allScreens.forEach(s => s.classList.remove('active'));
+            scanningScreen.classList.add('active');
+            const logMessages = [ "[Sonar] Scanning brand website (https://tesla.com)...", "[Sonar] Analyzing page structure for key content...", "[Sonar] Scanning social media channels (LinkedIn, X)...", "[Sonar] Analyzing public sentiment from news headlines...", "[Sonar] Analyzing employee reviews (Glassdoor)...", "[Sonar] Analyzing customer feedback (Trustpilot)...", "[Sonar] Reading uploaded documents (Impact_Report.pdf)...", "[Sonar] Analyzing brand visual language from key assets...", "[Sonar] Synthesizing findings for 'Emotion' key...", "[Sonar] Synthesizing findings for 'Attention' key...", "[Sonar] Synthesizing findings for 'Story' key...", "[Sonar] Synthesizing findings for 'Involvement' key...", "[Sonar] Synthesizing findings for 'Repetition' key...", "[Sonar] Synthesizing findings for 'Consistency' key...", "[Sonar] Generating Executive Summary..." ];
+            const scanLog = document.getElementById('scan-log');
+            const progressFill = document.getElementById('progress-fill');
+            const statusText = document.getElementById('scan-status-text');
+            let messageIndex = 0;
+            scanLog.innerHTML = '';
+            const interval = setInterval(() => {
+                if (messageIndex < logMessages.length) {
+                    scanLog.innerHTML += `<div>${logMessages[messageIndex]}</div>`;
+                    scanLog.scrollTop = scanLog.scrollHeight;
+                    messageIndex++;
+                    progressFill.style.width = `${(messageIndex / logMessages.length) * 100}%`;
+                    statusText.textContent = logMessages[messageIndex-1];
+                } else {
+                    clearInterval(interval);
+                    statusText.textContent = "Scan complete. Building dashboard...";
+                    setTimeout(() => {
+                        allScreens.forEach(s => s.classList.remove('active'));
+                        dashboardScreen.classList.add('active');
+                        populateDashboard(brandData);
+                    }, 1500);
+                }
+            }, 350);
+        }
+
+        function populateDashboard(data) {
+            document.getElementById('header-context').textContent = `Client: ${data.client.brand_name}`;
+            const competitorList = document.getElementById('competitor-list');
+            competitorList.innerHTML = '';
+
+            const allBrands = [data.client, ...data.competitors];
+            allBrands.forEach((brand, index) => {
+                const card = document.createElement('div');
+                card.className = index === 0 ? 'competitor-card active' : 'competitor-card';
+                card.innerHTML = `<h4>${brand.brand_name} ${index === 0 ? '(Active)' : ''}</h4><div class="competitor-scores">${Object.keys(brand.keys).map(k => `<div class="competitor-score-dot ${brand.keys[k].rating.toLowerCase()}" title="${k}: ${brand.keys[k].rating}"></div>`).join('')}</div>`;
+                card.addEventListener('click', () => switchActiveBrand(brand.brand_name));
+                competitorList.appendChild(card);
+            });
+            populateActiveBrandData(data.client);
+        }
+
+        function switchActiveBrand(brandName) {
+            const allBrands = [brandData.client, ...brandData.competitors];
+            activeBrandData = allBrands.find(b => b.brand_name === brandName);
+
+            document.querySelectorAll('.competitor-card').forEach(c => c.classList.remove('active'));
+            const activeCard = Array.from(document.querySelectorAll('.competitor-card')).find(c => c.querySelector('h4').textContent.includes(brandName));
+            if (activeCard) activeCard.classList.add('active');
+            
+            document.getElementById('header-context').textContent = `Viewing: ${activeBrandData.brand_name}`;
+            populateActiveBrandData(activeBrandData);
+            document.getElementById('deep-dive').style.display = 'none';
+        }
+
+        function populateActiveBrandData(data) {
+             document.getElementById('executive-summary').textContent = data.executive_summary;
+            const scoreGrid = document.getElementById('score-grid');
+            scoreGrid.innerHTML = ''; 
+            for (const key in data.keys) {
+                const info = data.keys[key];
+                const hypothesis = data.brand_name === brandData.client.brand_name ? userHypothesis[key] : 'N/A';
+                const card = document.createElement('div');
+                card.className = `score-card ${info.rating.toLowerCase()}`;
+                card.dataset.key = key;
+                card.innerHTML = `<h3>${key}<span class="score-tag ${info.rating.toLowerCase()}">${info.rating}</span></h3><p class="hypothesis">Your Hypothesis: ${hypothesis}</p>`;
+                card.addEventListener('click', () => showDeepDive(key, data));
+                scoreGrid.appendChild(card);
+            }
+        }
+        
+        function getEvidenceById(id) {
+            for (const brand of [brandData.client, ...brandData.competitors]) {
+                 for (const key in brand.keys) {
+                    if (brand.keys[key].evidence) {
+                        const evidence = brand.keys[key].evidence.find(e => e.id === id);
+                        if (evidence) return evidence;
+                    }
+                }
+            }
+            return null;
+        }
+
+        function showDeepDive(key, data) {
+            const info = data.keys[key];
+            document.getElementById('analysis-key-title').textContent = key;
+            document.getElementById('analysis-rationale').textContent = info.rationale;
+            const evidenceStream = document.getElementById('evidence-stream');
+            evidenceStream.innerHTML = ''; 
+
+            if (!info.evidence || info.evidence.length === 0) {
+                 evidenceStream.innerHTML = '<p style="padding: 1rem; text-align: center; color: var(--text-light);">No specific evidence was pulled for this key.</p>';
+            } else {
+                 info.evidence.forEach(ev => {
+                    const card = document.createElement('div');
+                    card.className = 'evidence-card';
+                    card.dataset.id = ev.id;
+                    const isCurated = exportTray[ev.id]?.curationNote || exportTray[ev.id]?.assignedKeys?.length > 0;
+                    let contentHtml = '';
+
+                    switch (ev.type) {
+                        case 'Image': contentHtml = `<img src="${ev.content}" alt="${ev.caption || 'Brand Asset'}" title="${ev.caption}">`; break;
+                        case 'Document': contentHtml = `<div class="doc-preview"><span class="doc-icon">📄</span><div class="doc-info"><strong>${ev.content}</strong><span>${ev.snippet}</span></div></div>`; break;
+                        case 'Video': contentHtml = `<div class="video-preview"><span class="video-icon">▶️</span><div class="video-info"><strong>${ev.content}</strong><span>${ev.snippet}</span></div></div>`; break;
+                        case 'Link': contentHtml = `<a href="${ev.url}" target="_blank" rel="noopener noreferrer">${ev.content}</a>`; break;
+                        default: contentHtml = `<blockquote>${ev.content}</blockquote>`;
+                    }
+                    card.innerHTML = `${isCurated ? '<div class="curated-badge">✍️ Curated</div>' : ''}<div class="feedback-actions"><button class="keep-btn" title="Keep">👍</button><button class="dismiss-btn" title="Dismiss">👎</button><button class="curate-btn" title="Curate">✍️</button></div>${contentHtml}<p class="evidence-source">${ev.type} // ${ev.source}</p>`;
+                    evidenceStream.appendChild(card);
+                    if (exportTray[ev.id]) card.classList.add('kept');
+                });
+            }
+            
+            evidenceStream.addEventListener('click', handleEvidenceClick);
+            document.getElementById('deep-dive').style.display = 'block';
+            window.scrollTo({ top: document.getElementById('deep-dive').offsetTop - 30, behavior: 'smooth' });
+        }
+
+        function handleEvidenceClick(e) {
+            const button = e.target.closest('button');
+            if (!button) return;
+            const card = e.target.closest('.evidence-card');
+            if (!card) return;
+            const id = card.dataset.id;
+            
+            if (button.classList.contains('keep-btn')) { card.classList.toggle('kept'); card.classList.remove('dismissed'); updateTray(id, card.classList.contains('kept')); }
+            else if (button.classList.contains('dismiss-btn')) { card.classList.toggle('dismissed'); card.classList.remove('kept'); updateTray(id, false); }
+            else if (button.classList.contains('curate-btn')) { openCurationModal(id); }
+        }
+        
+        function updateTray(id, shouldAdd) {
+            const evidence = getEvidenceById(id);
+            if (shouldAdd && evidence) { if (!exportTray[id]) exportTray[id] = { ...evidence }; }
+            else { delete exportTray[id]; }
+            
+            const count = Object.keys(exportTray).length;
+            document.getElementById('export-count').textContent = count;
+            document.getElementById('export-tray-btn').classList.toggle('visible', count > 0);
+            document.getElementById('narrative-btn').classList.toggle('visible', count > 0);
+        }
+        
+        function openCurationModal(id) {
+            currentCurationId = id;
+            const evidence = getEvidenceById(id);
+            const existingData = exportTray[id] || {};
+            
+            let previewHtml = '';
+            if(evidence.type === 'Image') previewHtml = `<img src="${evidence.content}" style="max-height: 100px; margin-bottom: 1rem; border-radius: 4px;">`;
+            else previewHtml = `<blockquote>${evidence.content || evidence.snippet}</blockquote>`;
+            document.getElementById('curation-preview').innerHTML = previewHtml;
+            document.getElementById('curation-note').value = existingData.curationNote || '';
+            
+            const keysContainer = document.getElementById('curation-keys');
+            keysContainer.innerHTML = '';
+            Object.keys(brandData.client.keys).forEach(key => {
+                const isChecked = existingData.assignedKeys?.includes(key) ? 'checked' : '';
+                keysContainer.innerHTML += `<label><input type="checkbox" name="key" value="${key}" ${isChecked}><span>${key}</span></label>`;
+            });
+            document.getElementById('curation-modal').style.display = 'flex';
+        }
+        
+        function saveCuration() {
+            const id = currentCurationId;
+            const note = document.getElementById('curation-note').value;
+            const assignedKeys = Array.from(document.querySelectorAll('#curation-keys input:checked')).map(el => el.value);
+
+            if (!exportTray[id]) exportTray[id] = { ...getEvidenceById(id) };
+            exportTray[id].curationNote = note;
+            exportTray[id].assignedKeys = assignedKeys;
+
+            const card = document.querySelector(`.evidence-card[data-id='${id}']`);
+            if (card) {
+                if (!card.querySelector('.curated-badge')) { card.insertAdjacentHTML('afterbegin', '<div class="curated-badge">✍️ Curated</div>'); }
+                card.classList.add('kept'); card.classList.remove('dismissed');
+            }
+            updateTray(id, true);
+            document.getElementById('curation-modal').style.display = 'none';
+        }
+        
+        function showExportTray() {
+            const contentDiv = document.getElementById('export-tray-content');
+            contentDiv.innerHTML = '';
+            if (Object.keys(exportTray).length === 0) contentDiv.innerHTML = '<p>Your tray is empty.</p>';
+            else {
+                for (const id in exportTray) {
+                    const item = exportTray[id];
+                    const noteHtml = item.curationNote ? `<div class="item-note"><strong>Note:</strong> ${item.curationNote}</div>` : '';
+                    const keysHtml = item.assignedKeys?.length > 0 ? `<div class="item-keys"><strong>Impacts:</strong> ${item.assignedKeys.join(', ')}</div>` : '';
+                    let contentHtml = item.type === 'Image' ? `<img src="${item.content}" style="max-height:50px; border-radius:3px;">` : `<blockquote>${item.content || item.snippet}</blockquote>`;
+                    contentDiv.innerHTML += `<div class="tray-item">${contentHtml}${noteHtml}${keysHtml}</div>`;
+                }
+            }
+            document.getElementById('export-tray-modal').style.display = 'flex';
+        }
+        
+        function exportData() {
+            let textContent = `Brand Sonar Export\nBrand: ${activeBrandData.brand_name}\n${new Date().toLocaleDateString()}\n\n`;
+            textContent += "--- CURATED INSIGHTS & EVIDENCE ---\n\n";
+
+            for (const id in exportTray) {
+                const item = exportTray[id];
+                textContent += `[Evidence Piece: ${item.type} from ${item.source}]\n`;
+                textContent += `"${item.content}"\n`;
+                if (item.curationNote) { textContent += `> STRATEGIST'S NOTE: ${item.curationNote}\n`; }
+                if (item.assignedKeys?.length > 0) { textContent += `> IMPACTS KEYS: ${item.assignedKeys.join(', ')}\n`; }
+                textContent += `\n---------------------------------------\n\n`;
+            }
+            
+            const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `Brand_Sonar_${activeBrandData.brand_name}_Export.txt`;
+            link.click();
+            URL.revokeObjectURL(link.href);
+        }
+
+        function showNarrative() {
+            const output = document.getElementById('narrative-output');
+            output.innerHTML = `<h4>Suggested Narrative Angles:</h4><ol><li><strong>The Challenger Angle:</strong> Start with the brand's perceived strength (its Story), then reveal the critical tension: this story is failing to connect with customers, evidenced by service and quality complaints. This creates a powerful "promise vs. reality" arc.</li><li><strong>The Hidden Strength Angle:</strong> Focus the narrative on the highly positive employee sentiment ('mission-driven,' 'electric'). Frame this as a powerful, authentic internal culture that is currently an untapped asset for external marketing, especially for recruitment.</li><li><strong>The Polarization Angle:</strong> Frame the brand as a victim of its own success. Its strong identity creates intense loyalty and intense frustration. The key challenge is not to find a middle ground, but to elevate the customer experience to match the high expectations set by the brand's powerful story.</li></ol>`;
+            output.style.display = 'block';
+            window.scrollTo({ top: output.offsetTop, behavior: 'smooth' });
+        }
+    });
+</script>
+
+</body>
+</html>

@@ -11,32 +11,28 @@ emphasizing chain-of-thought analysis and strict JSON output requirements.
 DECONSTRUCTION_KEYS_PROMPTS = {
     "positioning_themes": {
         "name": "Positioning Themes",
-        "prompt": """You are a senior brand strategist analyzing a website's strategic positioning.
+        "prompt": """You are a senior market strategist. Your task is to analyze the provided website text to synthesize the brand's core **Positioning Themes**. A theme is a high-level concept the brand is trying to own (e.g., "Effortless Simplicity," "Rugged Durability," "Pioneering Innovation").
 
-CONTEXT: You've been provided with text content from a brand's website. Your task is to identify the core positioning themes - the fundamental strategic pillars that define what this brand stands for.
+Follow this four-step process:
+1. **Step 1 (Concept Extraction):** Read through all the content and identify the most repeated concepts, keywords, and value propositions.
+2. **Step 2 (Theme Synthesis):** Group the extracted concepts into 3-5 high-level strategic themes. For example, "fast," "easy," and "intuitive" might synthesize into a theme of "Effortless Simplicity."
+3. **Step 3 (Evidence Gathering):** For each synthesized theme, find two distinct, direct quotes from the text that serve as the strongest evidence.
+4. **Step 4 (Final Output):** Assemble the results into the required JSON format.
 
-PROCESS:
-1. Read through all content carefully
-2. Identify recurring strategic themes and messages
-3. Select the 3-5 most prominent and important themes
-4. For each theme, find the strongest verbatim evidence from the text
-
-REQUIREMENTS:
-- Each theme should be a short, descriptive phrase (2-5 words)
-- Confidence scores must reflect the strength and frequency of evidence (0-100)
-- Evidence MUST be exact quotes from the provided text - no paraphrasing
-- Think strategically - look for themes that define the brand's market position
-
-OUTPUT FORMAT (JSON only, no other text):
-{
+Your final output MUST be a JSON object containing a list of the top 3-5 themes, structured as follows:
+{{
   "themes": [
-    {
-      "theme": "Innovation Leadership",
-      "confidence": 85,
-      "evidence": "We pioneer breakthrough technologies that reshape industries"
-    }
+    {{
+      "theme": "Effortless Simplicity",
+      "description": "A one-sentence explanation of what this theme means for the brand",
+      "evidence_quotes": [
+        "Direct quote 1 supporting the theme",
+        "Direct quote 2 supporting the theme"
+      ],
+      "confidence": 85
+    }}
   ]
-}
+}}
 
 TEXT CONTENT:
 {text_content}
@@ -50,11 +46,17 @@ Analyze the content and output ONLY the JSON structure above.""",
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["theme", "confidence", "evidence"],
+                        "required": ["theme", "description", "evidence_quotes", "confidence"],
                         "properties": {
                             "theme": {"type": "string", "minLength": 1, "maxLength": 50},
-                            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-                            "evidence": {"type": "string", "minLength": 1}
+                            "description": {"type": "string", "minLength": 1, "maxLength": 200},
+                            "evidence_quotes": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "minItems": 1,
+                                "maxItems": 3
+                            },
+                            "confidence": {"type": "integer", "minimum": 0, "maximum": 100}
                         }
                     },
                     "minItems": 1,
@@ -66,32 +68,25 @@ Analyze the content and output ONLY the JSON structure above.""",
     
     "key_messages": {
         "name": "Key Messages",
-        "prompt": """You are a senior brand strategist analyzing a website's core messaging.
+        "prompt": """You are a senior copywriter and brand messaging analyst. Your task is to identify the most prominent and strategically important **Key Messages** from the provided website text.
 
-CONTEXT: You've been provided with text content from a brand's website. Your task is to extract the key messages - the primary value propositions and taglines that the brand repeatedly emphasizes.
+For each message you identify, you must perform two distinct tasks:
+1. **Extract the Core Message:** Isolate the exact tagline, slogan, or value proposition statement. **Keep it under 200 characters and as concise as possible.**
+2. **Extract the Strategic Context:** Provide the surrounding sentence or short paragraph that gives the message its meaning. **Crucially, the context must NOT contain the core message itself.**
 
-PROCESS:
-1. Scan for prominent headlines, taglines, and repeated phrases
-2. Identify value propositions that appear multiple times or in prominent positions
-3. Select the 3-5 most important and frequently communicated messages
-4. Find the clearest instance of each message in the text
+Classify each message as either a "Tagline" (a short, memorable slogan) or a "Value Proposition" (a statement of benefit).
 
-REQUIREMENTS:
-- Messages should be actual taglines or value propositions (not generic descriptions)
-- Confidence reflects how prominently and frequently the message appears (0-100)
-- Evidence MUST be verbatim quotes - the exact wording as it appears
-- Focus on messages that communicate specific value or differentiation
-
-OUTPUT FORMAT (JSON only, no other text):
-{
-  "messages": [
-    {
-      "message": "Trusted by millions worldwide",
-      "confidence": 90,
-      "evidence": "Join the 50 million users who trust us with their data every day"
-    }
+Your final output MUST be a JSON object structured as follows:
+{{
+  "key_messages": [
+    {{
+      "message": "Reinventing essentials for sustainable living",
+      "context": "To meet the challenges of tomorrow, we are transforming our portfolio, our operations, and our mindset.",
+      "type": "Tagline",
+      "confidence": 90
+    }}
   ]
-}
+}}
 
 TEXT CONTENT:
 {text_content}
@@ -99,17 +94,18 @@ TEXT CONTENT:
 Analyze the content and output ONLY the JSON structure above.""",
         "schema": {
             "type": "object",
-            "required": ["messages"],
+            "required": ["key_messages"],
             "properties": {
-                "messages": {
+                "key_messages": {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["message", "confidence", "evidence"],
+                        "required": ["message", "context", "type", "confidence"],
                         "properties": {
-                            "message": {"type": "string", "minLength": 1, "maxLength": 100},
-                            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-                            "evidence": {"type": "string", "minLength": 1}
+                            "message": {"type": "string", "minLength": 1, "maxLength": 200},
+                            "context": {"type": "string", "minLength": 1, "maxLength": 300},
+                            "type": {"type": "string", "enum": ["Tagline", "Value Proposition"]},
+                            "confidence": {"type": "integer", "minimum": 0, "maximum": 100}
                         }
                     },
                     "minItems": 1,
@@ -121,110 +117,109 @@ Analyze the content and output ONLY the JSON structure above.""",
     
     "tone_of_voice": {
         "name": "Tone of Voice",
-        "prompt": """You are a senior brand strategist analyzing a website's tone of voice.
+        "prompt": """You are an expert in brand voice and communication strategy. Your task is to analyze the provided website text to define the brand's **Tone of Voice**.
 
-CONTEXT: You've been provided with text content from a brand's website. Your task is to identify the key characteristics of how this brand communicates - its tone of voice.
+Follow this step-by-step analysis:
+1. **Identify the Primary Tone:** Determine the single, most dominant personality trait of the communication (e.g., "Authoritative," "Playful," "Empathetic").
+2. **Identify the Secondary Tone:** Determine a complementary trait that adds nuance (e.g., "Optimistic," "Witty," "Reassuring").
+3. **Find Evidence:** For both the primary and secondary tones, find the single best direct quote from the text that exemplifies it.
+4. **Check for Contradictions:** Scan the text for any moments where the tone feels inconsistent with the primary/secondary traits you identified.
 
-PROCESS:
-1. Analyze the language style, word choices, and communication patterns
-2. Identify 3-4 adjectives that best describe the brand's tone
-3. For each adjective, explain why it applies
-4. Find specific textual evidence that demonstrates this tone
-
-REQUIREMENTS:
-- Use single, precise adjectives (e.g., "Authoritative", "Playful", "Empathetic")
-- Justifications should be brief (1-2 sentences) but insightful
-- Confidence reflects how consistently this tone appears (0-100)
-- Evidence MUST be exact quotes that exemplify the tone
-
-OUTPUT FORMAT (JSON only, no other text):
-{
-  "tone_descriptors": [
-    {
-      "adjective": "Confident",
-      "justification": "The brand uses definitive statements and positions itself as a leader",
-      "confidence": 85,
-      "evidence": "We don't just follow trends, we set them"
-    }
-  ]
-}
+Your final output MUST be a JSON object structured as follows:
+{{
+  "primary_tone": {{
+    "tone": "Authoritative",
+    "justification": "Why you chose this tone",
+    "evidence_quote": "A direct quote that perfectly exemplifies this tone"
+  }},
+  "secondary_tone": {{
+    "tone": "Optimistic",
+    "justification": "Why you chose this tone",
+    "evidence_quote": "A direct quote that perfectly exemplifies this tone"
+  }},
+  "contradictions": [
+    {{
+      "contradiction": "Describe a moment where the tone felt inconsistent",
+      "evidence_quote": "A direct quote showing the inconsistency"
+    }}
+  ],
+  "confidence": 85
+}}
 
 TEXT CONTENT:
 {text_content}
 
-Analyze the content and output ONLY the JSON structure above.""",
+Analyze the content and output ONLY the JSON structure above.
+
+IMPORTANT:
+- Always include an `evidence_quote` of **5–25 words**, **copied verbatim** from the provided snippets for BOTH primary and secondary tones. If no short quote fits, choose the shortest complete sentence from the snippets. Do **not** leave it blank.
+""",
         "schema": {
             "type": "object",
-            "required": ["tone_descriptors"],
+            "required": ["primary_tone", "secondary_tone", "confidence"],
             "properties": {
-                "tone_descriptors": {
+                "primary_tone": {
+                    "type": "object",
+                    "required": ["tone", "justification", "evidence_quote"],
+                    "properties": {
+                        "tone": {"type": "string", "minLength": 1, "maxLength": 30},
+                        "justification": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "evidence_quote": {"type": "string", "minLength": 1}
+                    }
+                },
+                "secondary_tone": {
+                    "type": "object",
+                    "required": ["tone", "justification", "evidence_quote"],
+                    "properties": {
+                        "tone": {"type": "string", "minLength": 1, "maxLength": 30},
+                        "justification": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "evidence_quote": {"type": "string", "minLength": 1}
+                    }
+                },
+                "contradictions": {
                     "type": "array",
                     "items": {
                         "type": "object",
-                        "required": ["adjective", "justification", "confidence", "evidence"],
+                        "required": ["contradiction", "evidence_quote"],
                         "properties": {
-                            "adjective": {"type": "string", "minLength": 1, "maxLength": 30},
-                            "justification": {"type": "string", "minLength": 1, "maxLength": 200},
-                            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-                            "evidence": {"type": "string", "minLength": 1}
+                            "contradiction": {"type": "string", "minLength": 1, "maxLength": 200},
+                            "evidence_quote": {"type": "string", "minLength": 1}
                         }
                     },
-                    "minItems": 1,
-                    "maxItems": 4
-                }
+                    "maxItems": 3
+                },
+                "confidence": {"type": "integer", "minimum": 0, "maximum": 100}
             }
         }
     },
     
     "brand_elements": {
         "name": "Brand Elements",
-        "prompt": """You are a senior brand strategist with expertise in visual identity systems.
+        "prompt": """You are a world-class brand identity consultant. Your goal is to conduct a holistic audit of the brand's identity, synthesizing insights from the provided **website screenshots** and **text corpus**. Your focus is on **coherence and strategic alignment**.
 
-CONTEXT: You've been provided with screenshots and text from a brand's website. Your task is to analyze the coherence and effectiveness of the brand's visual identity.
+Follow this three-step reasoning process:
+1. **Step 1 (Visual Hypothesis):** Analyze the screenshots *first*. Form a preliminary hypothesis about the brand's personality, tone, and values based only on the visual evidence (colors, fonts, imagery).
+2. **Step 2 (Verbal Analysis):** Analyze the text corpus to understand the brand's explicitly stated values, tone, and key messages.
+3. **Step 3 (Synthesize & Critique):** Compare your visual hypothesis from Step 1 with your verbal analysis from Step 2. Identify points of **harmony** (where the visuals perfectly support the text) and **dissonance** (where they contradict or miss an opportunity).
 
-PROCESS:
-1. Review all screenshots to form an overall visual impression
-2. Analyze color consistency, typography, imagery style, and brand architecture
-3. Evaluate how well these elements work together (coherence score)
-4. Assess strategic alignment with the brand's messaging
-5. Identify specific visual evidence
-
-REQUIREMENTS:
-- Overall impression should capture the visual essence in 2-3 sentences
-- Coherence score: 1 (very inconsistent) to 5 (perfectly cohesive)
-- Consistency ratings: "High", "Medium", or "Low" for each element
-- Notes should be specific observations, not generic comments
-- Evidence should reference specific visual elements you can see
-
-OUTPUT FORMAT (JSON only, no other text):
-{
-  "overall_impression": {
-    "summary": "A modern, minimalist visual identity with strong tech sector positioning",
-    "keywords": ["Modern", "Minimalist", "Tech-forward"]
-  },
+Based on this synthesis, your final output MUST be a JSON object with the following structure. **IMPORTANT: coherence_score must be 1-5 only:**
+{{
+  "overall_impression": {{
+    "summary": "A brief summary of the visual feel and personality",
+    "keywords": ["Keyword1", "Keyword2", "Keyword3"]
+  }},
   "coherence_score": 4,
-  "detailed_analysis": {
-    "color_palette": {
-      "consistency": "High",
-      "notes": "Consistent use of deep blue (#003366) with orange accents throughout"
-    },
-    "typography": {
-      "consistency": "Medium",
-      "notes": "Sans-serif headers consistent, but body text varies between pages"
-    },
-    "imagery": {
-      "consistency": "High",
-      "notes": "Cohesive use of abstract geometric patterns and professional photography"
-    },
-    "brand_architecture": {
-      "consistency": "High",
-      "notes": "Clear visual hierarchy with consistent logo placement and navigation structure"
-    }
-  },
-  "strategic_alignment": "Visual identity strongly reinforces the innovation and trust positioning through clean, professional design",
-  "confidence": 75,
-  "evidence": "Homepage hero uses the primary blue (#003366) with geometric patterns visible in screenshots 1-3"
-}
+  "visual_identity": {{
+    "color_palette": {{ "description": "Describe the primary/secondary colors and their psychological impact", "consistency_notes": "Are they used consistently?" }},
+    "typography": {{ "description": "Describe the font styles and their personality", "consistency_notes": "Is the hierarchy clear and consistent?" }},
+    "imagery_style": {{ "description": "Describe the dominant style of photos/illustrations", "consistency_notes": "Is the style consistent across pages?" }}
+  }},
+  "strategic_alignment": {{
+    "harmony": "Describe one key way the visual and verbal identities work together perfectly, citing evidence from both the image and text.",
+    "dissonance": "Describe one key area where the visuals and verbals seem to contradict each other. State 'None observed' if no significant contradictions exist."
+  }},
+  "confidence": 75
+}}
 
 SCREENSHOTS AND TEXT:
 {screenshot_context}
@@ -232,13 +227,13 @@ SCREENSHOTS AND TEXT:
 Analyze the visual identity and output ONLY the JSON structure above.""",
         "schema": {
             "type": "object",
-            "required": ["overall_impression", "coherence_score", "detailed_analysis", "strategic_alignment", "confidence", "evidence"],
+            "required": ["overall_impression", "coherence_score", "visual_identity", "strategic_alignment", "confidence"],
             "properties": {
                 "overall_impression": {
                     "type": "object",
                     "required": ["summary", "keywords"],
                     "properties": {
-                        "summary": {"type": "string", "minLength": 1, "maxLength": 200},
+                        "summary": {"type": "string", "minLength": 1, "maxLength": 300},
                         "keywords": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -248,47 +243,45 @@ Analyze the visual identity and output ONLY the JSON structure above.""",
                     }
                 },
                 "coherence_score": {"type": "integer", "minimum": 1, "maximum": 5},
-                "detailed_analysis": {
+                "visual_identity": {
                     "type": "object",
-                    "required": ["color_palette", "typography", "imagery", "brand_architecture"],
+                    "required": ["color_palette", "typography", "imagery_style"],
                     "properties": {
                         "color_palette": {
                             "type": "object",
-                            "required": ["consistency", "notes"],
+                            "required": ["description", "consistency_notes"],
                             "properties": {
-                                "consistency": {"type": "string", "enum": ["High", "Medium", "Low"]},
-                                "notes": {"type": "string", "minLength": 1, "maxLength": 200}
+                                "description": {"type": "string", "minLength": 1, "maxLength": 300},
+                                "consistency_notes": {"type": "string", "minLength": 1, "maxLength": 200}
                             }
                         },
                         "typography": {
                             "type": "object",
-                            "required": ["consistency", "notes"],
+                            "required": ["description", "consistency_notes"],
                             "properties": {
-                                "consistency": {"type": "string", "enum": ["High", "Medium", "Low"]},
-                                "notes": {"type": "string", "minLength": 1, "maxLength": 200}
+                                "description": {"type": "string", "minLength": 1, "maxLength": 300},
+                                "consistency_notes": {"type": "string", "minLength": 1, "maxLength": 200}
                             }
                         },
-                        "imagery": {
+                        "imagery_style": {
                             "type": "object",
-                            "required": ["consistency", "notes"],
+                            "required": ["description", "consistency_notes"],
                             "properties": {
-                                "consistency": {"type": "string", "enum": ["High", "Medium", "Low"]},
-                                "notes": {"type": "string", "minLength": 1, "maxLength": 200}
-                            }
-                        },
-                        "brand_architecture": {
-                            "type": "object",
-                            "required": ["consistency", "notes"],
-                            "properties": {
-                                "consistency": {"type": "string", "enum": ["High", "Medium", "Low"]},
-                                "notes": {"type": "string", "minLength": 1, "maxLength": 200}
+                                "description": {"type": "string", "minLength": 1, "maxLength": 300},
+                                "consistency_notes": {"type": "string", "minLength": 1, "maxLength": 200}
                             }
                         }
                     }
                 },
-                "strategic_alignment": {"type": "string", "minLength": 1, "maxLength": 300},
-                "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-                "evidence": {"type": "string", "minLength": 1}
+                "strategic_alignment": {
+                    "type": "object",
+                    "required": ["harmony", "dissonance"],
+                    "properties": {
+                        "harmony": {"type": "string", "minLength": 1, "maxLength": 400},
+                        "dissonance": {"type": "string", "minLength": 1, "maxLength": 400}
+                    }
+                },
+                "confidence": {"type": "integer", "minimum": 0, "maximum": 100}
             }
         }
     },
@@ -311,10 +304,10 @@ REQUIREMENTS:
 - Provide a brief (1-2 sentence) strategic justification
 
 OUTPUT FORMAT (JSON only, no other text):
-{
+{{
   "alignment": "Yes",
   "justification": "The minimalist visual design directly reinforces the innovation and simplicity themes found in the messaging"
-}
+}}
 
 Analyze the alignment and output ONLY the JSON structure above.""",
         "schema": {
@@ -322,7 +315,7 @@ Analyze the alignment and output ONLY the JSON structure above.""",
             "required": ["alignment", "justification"],
             "properties": {
                 "alignment": {"type": "string", "enum": ["Yes", "No"]},
-                "justification": {"type": "string", "minLength": 1, "maxLength": 200}
+                "justification": {"type": "string", "minLength": 1, "maxLength": 1000}
             }
         }
     }
@@ -340,13 +333,34 @@ def track_discovery_performance(key_name):
             
             latency_ms = int((time.time() - start_time) * 1000)
             
-            # Log performance metrics
-            log("info", f"Discovery key '{key_name}' completed", {
-                "key_name": key_name,
-                "latency_ms": latency_ms,
-                "model": "gpt-5",
-                "tokens": result.get("token_usage", 0) if isinstance(result, dict) else 0
-            })
+            # Extract token usage from tuple return format (analysis_result, metrics)
+            token_usage = 0
+            if isinstance(result, tuple) and len(result) == 2:
+                analysis_result, metrics = result
+                token_usage = metrics.get("token_usage", 0)
+            elif isinstance(result, dict):
+                token_usage = result.get("token_usage", 0)
+            
+            # Log performance metrics (use print if log not available)
+            try:
+                from scanner import log
+                log("info", f"Discovery key '{key_name}' completed")
+                print(f"[INFO] ✅ Configuration validation passed")
+                print(f"[INFO] Discovery key '{key_name}' completed")
+                print(f"[DETAILS] {{")
+                print(f'  "key_name": "{key_name}",')
+                print(f'  "latency_ms": {latency_ms},')
+                print(f'  "model": "gpt-5",')
+                print(f'  "tokens": {token_usage}')
+                print(f"}}")
+            except ImportError:
+                print(f"[INFO] Discovery key '{key_name}' completed")
+                print(f"[DETAILS] {{")
+                print(f'  "key_name": "{key_name}",')
+                print(f'  "latency_ms": {latency_ms},')
+                print(f'  "model": "gpt-5",')
+                print(f'  "tokens": {token_usage}')
+                print(f"}}")
             
             return result
         return wrapper

@@ -16,28 +16,66 @@ from collections import defaultdict, deque
 from flask import Flask, request, send_from_directory, send_file, jsonify, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from io import BytesIO
+import signal
+from threading import Event
 from dotenv import load_dotenv
 # Import record_feedback from scanner.py
-from scanner import run_full_scan_stream, SHARED_CACHE, record_feedback, _validate_url, _clean_url, analyze_feedback_patterns, get_prompt_improvements_from_feedback, get_cost_summary, run_retention_cleanup, get_scan_metrics, track_scan_metric, start_background_threads
+from scanner import SHARED_CACHE, record_feedback, _validate_url, _clean_url, analyze_feedback_patterns, get_prompt_improvements_from_feedback, get_cost_summary, run_retention_cleanup, get_scan_metrics, track_scan_metric, start_background_threads
+
+# Discovery Mode imports
+try:
+    from discovery_integration import DiscoveryFeedbackHandler, FeatureFlags
+    from discovery_schemas import DiscoveryFeedback
+    DISCOVERY_MODE_AVAILABLE = True
+    # Use the Discovery-optimized scanner for Discovery Mode
+    from scanner_discovery import run_full_scan_stream as run_discovery_scan_stream, init_discovery_mode
+    
+    # Initialize Discovery Mode when components are available
+    discovery_init_result = init_discovery_mode()
+    if discovery_init_result:
+        print("✅ Discovery Mode with concurrent API optimization initialized successfully", flush=True)
+    else:
+        print("⚠️ Discovery Mode components loaded but initialization failed (check OPENAI_API_KEY)", flush=True)
+        DISCOVERY_MODE_AVAILABLE = False
+except ImportError:
+    DISCOVERY_MODE_AVAILABLE = False
+    print("Discovery Mode components not available", flush=True)
+
+# Import regular scanner for diagnosis mode
+from scanner import run_full_scan_stream as run_diagnosis_scan_stream
 
 load_dotenv()
+
+# Ensure PERSISTENT_DATA_DIR is set for Discovery Mode
+if not os.getenv("PERSISTENT_DATA_DIR"):
+    # Use a writable directory for local development
+    local_data_dir = os.path.join(os.getcwd(), "data")
+    os.makedirs(local_data_dir, exist_ok=True)
+    os.environ["PERSISTENT_DATA_DIR"] = local_data_dir
+    print(f"✅ Set PERSISTENT_DATA_DIR to: {local_data_dir}", flush=True)
 
 # Admin authentication configuration
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 if not ADMIN_API_KEY:
-    # Generate a secure default key if not set
-    ADMIN_API_KEY = base64.b64encode(os.urandom(32)).decode('utf-8')
-    print("WARNING: No ADMIN_API_KEY set. Using generated key. Check logs for key retrieval.", flush=True)
-    print("Set ADMIN_API_KEY environment variable for production!", flush=True)
-    # Write key to a secure file instead of logging
+    # Generate secure key but don't log it
+    import secrets
+    ADMIN_API_KEY = secrets.token_urlsafe(32)
+    
+    # Store in secure location accessible only to admin
+    secure_dir = os.getenv("SECURE_CONFIG_DIR", os.path.join(os.getenv("PERSISTENT_DATA_DIR", "/tmp"), "secure"))
+    key_file = os.path.join(secure_dir, "admin.key")
+    
     try:
-        key_file = os.path.join(os.getenv("PERSISTENT_DATA_DIR", "/tmp"), ".admin_key")
+        os.makedirs(secure_dir, mode=0o700, exist_ok=True)
         with open(key_file, "w") as f:
-            f.write(f"Generated Admin API Key: {ADMIN_API_KEY}\n")
-        os.chmod(key_file, 0o600)  # Readable only by owner
-        print(f"Generated admin key saved to {key_file} (secure access only)", flush=True)
+            f.write(ADMIN_API_KEY)
+        os.chmod(key_file, 0o600)  # Owner read/write only
+        print(f"SECURITY: Admin key generated and stored securely at {key_file}")
+        print("Set ADMIN_API_KEY environment variable for production!")
     except Exception as e:
-        print(f"WARNING: Could not save admin key securely: {e}", flush=True)
+        print("ERROR: Could not store admin key securely. This is a security risk.")
+        print(f"Error: {e}")
+        print("Consider setting ADMIN_API_KEY environment variable manually.")
 
 def require_admin_auth(f):
     """Decorator for admin endpoint authentication."""
@@ -248,7 +286,7 @@ def add_security_headers(response):
 
 # CORS configuration - restrict origins in production
 # Default to allow Render domain and common localhost ports for development
-default_origins = 'https://memoscan2.onrender.com,http://localhost:5000,http://127.0.0.1:5000'
+default_origins = 'https://memoscan2.onrender.com,http://localhost:5000,http://127.0.0.1:5000,http://localhost:8081,http://127.0.0.1:8081'
 allowed_origins = os.getenv('ALLOWED_ORIGINS', default_origins).split(',')
 
 # Clean up origins (remove empty strings and whitespace)
@@ -264,6 +302,22 @@ socketio = SocketIO(app, cors_allowed_origins=allowed_origins, async_mode='geven
 # Start background threads after app initialization
 start_background_threads()
 
+# Graceful shutdown handling
+shutdown_event = Event()
+
+def _graceful_shutdown(*_args):
+    print("Received shutdown signal, draining...", flush=True)
+    shutdown_event.set()
+    try:
+        from scanner import close_shared_http_client, close_shared_playwright_browser
+        close_shared_http_client()
+        close_shared_playwright_browser()
+    except Exception as e:
+        print(f"Shutdown cleanup failed: {e}", flush=True)
+
+signal.signal(signal.SIGTERM, _graceful_shutdown)
+signal.signal(signal.SIGINT, _graceful_shutdown)
+
 def cleanup_expired_scans():
     """Remove expired scans to prevent resource leaks."""
     now = time.time()
@@ -278,10 +332,17 @@ def cleanup_expired_scans():
 
 def run_scan_in_background(sid, data, scan_id=None, user_id=None):
     url = data.get("url")
-    print(f"BACKGROUND SCAN STARTED for SID: {sid} on URL: {url} (scan_id: {scan_id}, user: {user_id})", flush=True)
+    mode = data.get("mode", "diagnosis")  # Extract mode from data
+    print(f"BACKGROUND SCAN STARTED for SID: {sid} on URL: {url} (scan_id: {scan_id}, user: {user_id}, mode: {mode})", flush=True)
     
     try:
-        for update in run_full_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id):
+        # Use the appropriate scanner based on mode
+        if mode == "discovery" and DISCOVERY_MODE_AVAILABLE:
+            scan_stream = run_discovery_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id, mode=mode)
+        else:
+            scan_stream = run_diagnosis_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id, mode=mode)
+        
+        for update in scan_stream:
             # Check if scan has been cancelled or expired
             if scan_id and scan_id not in active_scans:
                 print(f"Scan {scan_id} was cancelled or expired, stopping", flush=True)
@@ -394,20 +455,39 @@ def get_screenshot(screenshot_id):
     if not cached_screenshot:
         return jsonify({"error": "Screenshot not found"}), 404
     
-    # Handle both old format (plain base64) and new format (dict with data and format)
+    # New path-first format
+    if isinstance(cached_screenshot, dict) and cached_screenshot.get('path'):
+        path = cached_screenshot['path']
+        # Try to infer mimetype from stored format
+        mimetype = cached_screenshot.get('format', 'image/jpeg')
+        try:
+            return send_file(path, mimetype=mimetype)
+        except Exception:
+            return jsonify({"error": "Screenshot file not found"}), 404
+    
+    # Old formats: (dict with base64) or plain base64 string
     if isinstance(cached_screenshot, dict):
         img_base64 = cached_screenshot.get('data')
         mimetype = cached_screenshot.get('format', 'image/png')
     else:
-        # Legacy format - assume PNG for backward compatibility
         img_base64 = cached_screenshot
         mimetype = 'image/png'
-    
     if not img_base64:
         return jsonify({"error": "Screenshot data not found"}), 404
-    
     img_data = base64.b64decode(img_base64)
     return send_file(BytesIO(img_data), mimetype=mimetype)
+
+@app.route("/metrics")
+def metrics():
+    try:
+        cache_items = len(SHARED_CACHE)
+        return jsonify({
+            "active_scans": len(active_scans),
+            "cache_items": cache_items,
+            "timestamp": time.time()
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 def get_system_resources():
     """Get system resource usage."""
@@ -590,6 +670,35 @@ def handle_feedback():
         print(f"Error handling feedback: {e}", flush=True)
         return jsonify({"status": "error", "message": "Failed to record feedback"}), 500
 
+@app.route("/feedback/discovery", methods=["POST"])
+def handle_discovery_feedback():
+    """Handle Discovery Mode specific feedback."""
+    if not DISCOVERY_MODE_AVAILABLE:
+        return jsonify({"status": "error", "message": "Discovery Mode not available"}), 404
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data provided"}), 400
+        
+        # Validate CSRF token
+        csrf_token = request.headers.get('X-CSRF-Token') or data.get('csrf_token')
+        if not validate_csrf_token(csrf_token):
+            return jsonify({"status": "error", "message": "Invalid or missing CSRF token"}), 403
+        
+        # Validate and record Discovery feedback
+        feedback = DiscoveryFeedback(**data)
+        success = DiscoveryFeedbackHandler.record_feedback(feedback)
+        
+        if success:
+            return jsonify({"status": "success", "message": "Discovery feedback recorded"}), 200
+        else:
+            return jsonify({"status": "error", "message": "Failed to record feedback"}), 500
+            
+    except Exception as e:
+        print(f"Error handling Discovery feedback: {e}", flush=True)
+        return jsonify({"status": "error", "message": str(e)}), 400
+
 @app.route("/feedback/analytics")
 @require_admin_auth
 def feedback_analytics():
@@ -647,6 +756,34 @@ def scan_metrics():
         print(f"Error generating metrics: {e}", flush=True)
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/api/features")
+def get_features():
+    """Get feature flag status for the current user."""
+    try:
+        user_id = get_user_session_id()
+        
+        if DISCOVERY_MODE_AVAILABLE:
+            return jsonify({
+                "discovery_mode": FeatureFlags.is_discovery_enabled(user_id),
+                "features": FeatureFlags.get_enabled_features()
+            }), 200
+        else:
+            return jsonify({
+                "discovery_mode": False,
+                "features": {
+                    "discovery_mode": False,
+                    "visual_analysis": False,
+                    "export_features": False,
+                    "advanced_feedback": False
+                }
+            }), 200
+    except Exception as e:
+        print(f"Error getting feature status: {e}", flush=True)
+        return jsonify({
+            "discovery_mode": False,
+            "features": {"discovery_mode": False}
+        }), 500
+
 @socketio.on('start_scan')
 def handle_start_scan(data):
     # Clean up expired scans and sessions
@@ -680,9 +817,22 @@ def handle_start_scan(data):
         return
     
     url = data.get("url")
+    mode = data.get("mode", "diagnosis")  # Get mode from request data
+    
     if not url:
         emit("scan_update", {"type": "error", "message": "No URL provided."})
         return
+    
+    # Check if Discovery Mode is requested and available
+    if mode == "discovery":
+        if not DISCOVERY_MODE_AVAILABLE:
+            emit("scan_update", {"type": "error", "message": "Discovery Mode is not available on this server."})
+            return
+        
+        # Check feature flag (get user_id from session)
+        if not FeatureFlags.is_discovery_enabled(user_id):
+            emit("scan_update", {"type": "error", "message": "Discovery Mode is not enabled for your account."})
+            return
     
     # Validate URL before processing
     cleaned_url = _clean_url(url)
@@ -720,15 +870,27 @@ def signal_handler(signum, frame):
         print(f"Cancelling scan {scan_id}", flush=True)
         del active_scans[scan_id]
     
-    # Give time for background tasks to notice cancellation
-    time.sleep(2)
+    # Give time for background tasks to notice cancellation (non-blocking for gevent)
+    try:
+        from gevent import sleep as gevent_sleep
+        gevent_sleep(0.1)
+    except Exception:
+        pass
     
     # Log final stats
     if hasattr(SHARED_CACHE, 'get_stats'):
         print(f"Final cache stats: {SHARED_CACHE.get_stats()}", flush=True)
     
     print("Graceful shutdown complete.", flush=True)
-    sys.exit(0)
+    # Use Werkzeug shutdown if available; otherwise exit
+    try:
+        from flask import request
+        func = request.environ.get('werkzeug.server.shutdown')
+        if func:
+            func()
+    except Exception:
+        pass
+    os._exit(0)
 
 # Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)

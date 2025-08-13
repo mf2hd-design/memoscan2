@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MemoScan v2 – Strategic Brand Analysis (Discovery Mode)</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data:; connect-src 'self' ws: wss:;">
+    
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary-color: #007acc;
+            --primary-dark: #005fa3;
+            --border-color: #ddd;
+            --bg-light: #f7f7f7;
+            --text-dark: #333;
+            --text-light: #666;
+            --error-color: #d9534f;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --info-color: #17a2b8;
+        }
+        
+        * { 
+            box-sizing: border-box; 
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-light);
+            margin: 0;
+            padding: 2rem;
+            color: var(--text-dark);
+            line-height: 1.6;
+        }
+        
+        h1, h2 { color: var(--primary-color); }
+        
+        #container { max-width: 1200px; margin: 0 auto; }
+        
+        /* Enhanced Form Section */
+        #form-section {
+            background: #fff;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,.08);
+            margin-bottom: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #form-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary-color), #00c3ff);
+            transform: translateX(-100%);
+            animation: shimmer 20s infinite;
+            will-change: transform;
+        }
+        
+        @keyframes shimmer {
+            0%, 95% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        input[type=text] {
+            flex: 1;
+            padding: 1rem;
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        input[type=text]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(0, 122, 204, 0.1);
+        }
+        
+        button {
+            padding: 1rem 2rem;
+            background: var(--primary-color);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            text-transform: none;
+        }
+        
+        button:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 122, 204, 0.3);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        /* Progress System */
+        .progress-section {
+            display: none;
+            background: #fff;
+            padding: 1.5rem 2rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.06);
+            margin-bottom: 2rem;
+        }
+        
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .progress-info {
+            font-weight: 600;
+            color: var(--text-dark);
+        }
+        
+        .progress-percentage {
+            color: var(--primary-color);
+            font-weight: bold;
+        }
+        
+        .progress-container {
+            background: #e9ecef;
+            border-radius: 20px;
+            height: 8px;
+            overflow: hidden;
+            margin-bottom: 0.5rem;
+        }
+        
+        .progress-bar {
+            background: linear-gradient(90deg, var(--primary-color), #00c3ff);
+            height: 100%;
+            border-radius: 20px;
+            width: 0%;
+            transition: width 0.3s ease;
+            position: relative;
+        }
+        
+        .progress-bar.active::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background-image: linear-gradient(
+                -45deg,
+                rgba(255,255,255,.2) 25%,
+                transparent 25%,
+                transparent 50%,
+                rgba(255,255,255,.2) 50%,
+                rgba(255,255,255,.2) 75%,
+                transparent 75%,
+                transparent
+            );
+            background-size: 30px 30px;
+            animation: progressStripes 1s linear infinite;
+        }
+        
+        @keyframes progressStripes {
+            0% { background-position: 30px 0; }
+            100% { background-position: 0 0; }
+        }
+        
+        .phase-text {
+            font-size: 0.9rem;
+            color: var(--text-light);
+            text-align: center;
+        }
+        
+        /* Results Grid - Discovery Mode Enhanced */
+        #results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+        
+        .discovery-result-block {
+            background: #fff;
+            border-left: 5px solid var(--primary-color);
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,.06);
+            margin-bottom: 1.5rem;
+            opacity: 0;
+            transform: translateY(20px) translateZ(0);
+            animation: fadeInUp 0.5s forwards;
+            transition: all 0.3s ease;
+            will-change: transform, box-shadow;
+        }
+        
+        @keyframes fadeInUp {
+            to {
+                opacity: 1;
+                transform: translateY(0) translateZ(0);
+            }
+        }
+        
+        .discovery-result-block:hover {
+            transform: translateY(-2px) translateZ(0);
+            box-shadow: 0 4px 16px rgba(0,0,0,.1);
+        }
+        
+        .discovery-block h3 {
+            color: var(--primary-color);
+            margin-bottom: 1rem;
+            font-size: 1.2rem;
+            border-bottom: 2px solid var(--bg-light);
+            padding-bottom: 0.5rem;
+        }
+        
+        .discovery-items {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        
+        .discovery-item {
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            background: var(--bg-light);
+        }
+        
+        .discovery-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        
+        .confidence-badge {
+            background: var(--primary-color);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .evidence-details {
+            margin-top: 0.5rem;
+        }
+        
+        .evidence-details summary {
+            cursor: pointer;
+            color: var(--primary-color);
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .evidence-details summary:hover {
+            text-decoration: underline;
+        }
+        
+        .evidence-text {
+            background: #fff;
+            padding: 0.75rem;
+            border-radius: 4px;
+            border-left: 3px solid var(--primary-color);
+            margin-top: 0.5rem;
+            font-style: italic;
+            color: var(--text-light);
+        }
+        
+        .tone-justification {
+            color: var(--text-light);
+            font-size: 0.9rem;
+            margin-top: 0.5rem;
+            line-height: 1.5;
+        }
+        
+        /* Visual Evidence Gallery */
+        #evidence-gallery {
+            margin-top: 2rem;
+            background: #fff;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 4px 16px rgba(0,0,0,.08);
+        }
+        
+        #evidence-gallery h3 {
+            color: var(--text-dark);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        #screenshot-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        .screenshot-item {
+            flex-basis: 300px;
+        }
+        
+        .screenshot-item img {
+            max-width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .screenshot-item img:hover {
+            transform: scale(1.05);
+        }
+        
+        .screenshot-item figcaption {
+            font-size: 0.8rem;
+            color: var(--text-light);
+            margin-top: 0.5rem;
+            text-align: center;
+            word-break: break-all;
+        }
+        
+        /* Modal for enlarged screenshots */
+        #modal-overlay {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            justify-content: center;
+            align-items: center;
+        }
+        
+        #modal-image {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+        }
+        
+        #modal-close {
+            position: absolute;
+            top: 20px;
+            right: 35px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        /* Executive Summary */
+        #summary-container {
+            margin-top: 2rem;
+            background: #fff;
+            padding: 1.5rem 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,.08);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 0.95rem;
+            line-height: 1.6;
+        }
+        
+        #summary-container h3, #summary-container h4 {
+            color: var(--primary-color);
+        }
+        
+        /* Status and Activity Feed */
+        #status-container {
+            margin-top: 1.5rem;
+            background: #fafafa;
+            border-radius: 6px;
+            padding: 0.5rem 1rem;
+            color: var(--text-light);
+            font-style: italic;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 0.9rem;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+            
+            #container {
+                margin: 0;
+            }
+            
+            .input-group {
+                flex-direction: column;
+            }
+            
+            #results-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+            
+            .discovery-item-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>🔍 MemoScan v2 - Discovery Mode</h1>
+        <h2>Strategic Brand Discovery & Analysis</h2>
+        
+        <div id="form-section">
+            <p>Enter a brand website URL to begin strategic discovery analysis:</p>
+            <div class="input-group">
+                <input id="url" type="text" placeholder="https://www.example.com">
+                <button id="scan-button">Start Discovery Analysis</button>
+            </div>
+            <div id="status-container"></div>
+        </div>
+
+        <div class="progress-section" id="progress-section">
+            <div class="progress-header">
+                <div class="progress-info">Discovery Analysis Progress</div>
+                <div class="progress-percentage">0%</div>
+            </div>
+            <div class="progress-container">
+                <div class="progress-bar" id="progress-bar"></div>
+            </div>
+            <div class="phase-text" id="phase-text">Initializing...</div>
+        </div>
+
+        <div id="results-grid"></div>
+
+        <div id="summary-container" style="display: none;">
+            <h3>Executive Summary</h3>
+            <div id="summary-text"></div>
+        </div>
+        
+        <div id="evidence-gallery" style="display: none;">
+            <h3>Visual Evidence</h3>
+            <p>Click any thumbnail to enlarge.</p>
+            <div id="screenshot-container"></div>
+        </div>
+    </div>
+
+    <div id="modal-overlay">
+        <span id="modal-close">×</span>
+        <img id="modal-image" src="" alt="Enlarged Screenshot">
+    </div>
+
+<script>
+    // Security utilities matching production template
+    const SecurityUtils = {
+        sanitizeHtmlContent(content) {
+            const tempDiv = document.createElement('div');
+            tempDiv.textContent = content;
+            return tempDiv.innerHTML;
+        },
+        
+        sanitizeMessage(message) {
+            return this.sanitizeHtmlContent(message);
+        }
+    };
+
+    class MemoScanDiscovery {
+        constructor() {
+            this.socket = io();
+            this.initializeElements();
+            this.attachEventListeners();
+            this.setupSocketHandlers();
+        }
+        
+        initializeElements() {
+            this.urlInput = document.getElementById("url");
+            this.scanButton = document.getElementById("scan-button");
+            this.resultsGrid = document.getElementById("results-grid");
+            this.statusContainer = document.getElementById("status-container");
+            this.evidenceGallery = document.getElementById("evidence-gallery");
+            this.screenshotContainer = document.getElementById("screenshot-container");
+            this.modalOverlay = document.getElementById("modal-overlay");
+            this.modalImage = document.getElementById("modal-image");
+            this.modalClose = document.getElementById("modal-close");
+            this.summaryContainer = document.getElementById("summary-container");
+            this.summaryText = document.getElementById("summary-text");
+            this.progressSection = document.getElementById("progress-section");
+            this.progressBar = document.getElementById("progress-bar");
+            this.progressPercentage = document.querySelector(".progress-percentage");
+            this.phaseText = document.getElementById("phase-text");
+        }
+        
+        attachEventListeners() {
+            this.scanButton.addEventListener("click", () => this.startScan());
+            this.modalClose.addEventListener('click', () => this.closeModal());
+            this.modalOverlay.addEventListener('click', (event) => {
+                if (event.target === this.modalOverlay) {
+                    this.closeModal();
+                }
+            });
+        }
+        
+        setupSocketHandlers() {
+            this.socket.on('connect', () => {
+                this.statusContainer.innerHTML = `<div>Ready for Discovery Analysis.</div>`;
+            });
+            
+            this.socket.on('disconnect', () => {
+                this.statusContainer.innerHTML += `<div style="color: red;"><strong>Connection Lost.</strong> Please refresh the page.</div>`;
+            });
+            
+            this.socket.on('scan_update', (msg) => this.handleScanUpdate(msg));
+        }
+        
+        startScan() {
+            const url = this.urlInput.value.trim();
+            if (!url) {
+                alert("Please enter a URL.");
+                return;
+            }
+            
+            this.scanButton.disabled = true;
+            this.scanButton.textContent = "Analyzing...";
+            this.resultsGrid.innerHTML = "";
+            this.statusContainer.innerHTML = "";
+            this.screenshotContainer.innerHTML = "";
+            this.evidenceGallery.style.display = 'none';
+            this.summaryContainer.style.display = 'none';
+            this.summaryText.innerHTML = '';
+            this.progressSection.style.display = 'block';
+            this.progressBar.style.width = '0%';
+            this.progressPercentage.textContent = '0%';
+            
+            this.socket.emit('start_scan', { url: url, mode: 'discovery' });
+        }
+        
+        handleScanUpdate(msg) {
+            switch(msg.type) {
+                case 'status':
+                    this.updateProgress(msg.progress || 0, msg.message);
+                    this.statusContainer.innerHTML += `<div>${msg.message}</div>`;
+                    this.statusContainer.scrollTop = this.statusContainer.scrollHeight;
+                    break;
+                    
+                case 'screenshot_ready':
+                    this.addScreenshot(msg.id, msg.url);
+                    break;
+                    
+                case 'discovery_result':
+                    this.displayDiscoveryResult(msg.key, msg.analysis);
+                    break;
+                    
+                case 'summary':
+                    this.displaySummary(msg.text);
+                    break;
+                    
+                case 'complete':
+                    this.handleScanComplete();
+                    break;
+                    
+                case 'error':
+                    this.handleError(msg.message);
+                    break;
+            }
+        }
+        
+        updateProgress(percentage, message) {
+            this.progressBar.style.width = `${Math.min(100, Math.max(0, percentage))}%`;
+            this.progressPercentage.textContent = `${Math.round(percentage)}%`;
+            this.phaseText.textContent = message;
+            
+            if (percentage > 0 && percentage < 100) {
+                this.progressBar.classList.add('active');
+            } else {
+                this.progressBar.classList.remove('active');
+            }
+        }
+        
+        addScreenshot(id, url) {
+            this.evidenceGallery.style.display = 'block';
+            const figure = document.createElement('figure');
+            figure.className = 'screenshot-item';
+            
+            const img = document.createElement('img');
+            const imgSrc = `/screenshot/${id}`;
+            img.src = imgSrc;
+            img.alt = `Screenshot of ${url}`;
+            
+            const caption = document.createElement('figcaption');
+            caption.textContent = url.replace(/^https?:\/\//, '').substring(0, 40) + '...';
+            
+            img.addEventListener('click', () => {
+                this.modalImage.src = imgSrc;
+                this.modalOverlay.style.display = 'flex';
+            });
+            
+            figure.appendChild(img);
+            figure.appendChild(caption);
+            this.screenshotContainer.appendChild(figure);
+        }
+        
+        displayDiscoveryResult(key, analysis) {
+            const block = document.createElement('div');
+            block.className = 'discovery-result-block';
+            block.innerHTML = this.renderDiscoveryBlockContent(key, analysis);
+            this.resultsGrid.appendChild(block);
+        }
+        
+        renderDiscoveryBlockContent(key, analysis) {
+            switch (key) {
+                case 'positioning_themes':
+                    return this.renderPositioningThemes(analysis);
+                case 'key_messages':
+                    return this.renderKeyMessages(analysis);
+                case 'tone_of_voice':
+                    return this.renderToneOfVoice(analysis);
+                case 'brand_elements':
+                    return this.renderBrandElements(analysis);
+                case 'visual_text_alignment':
+                    return this.renderVisualTextAlignment(analysis);
+                default:
+                    return this.renderGenericDiscovery(key, analysis);
+            }
+        }
+        
+        renderPositioningThemes(analysis) {
+            if (!analysis.themes || analysis.themes.length === 0) {
+                return `<div class="discovery-block">
+                    <h3>🎯 Positioning Themes</h3>
+                    <p>No positioning themes found in the analysis.</p>
+                </div>`;
+            }
+            
+            const themesHtml = analysis.themes.map(theme => `
+                <div class="discovery-item">
+                    <div class="discovery-item-header">
+                        <strong>${SecurityUtils.sanitizeHtmlContent(theme.theme)}</strong>
+                        <span class="confidence-badge">${theme.confidence}%</span>
+                    </div>
+                    <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(theme.description || '')}</p>
+                    <details class="evidence-details">
+                        <summary>Show Evidence (${theme.evidence_quotes ? theme.evidence_quotes.length : 0} quotes)</summary>
+                        <div class="evidence-text">
+                            ${theme.evidence_quotes ? theme.evidence_quotes.map(quote => 
+                                `<blockquote style="margin: 0.5rem 0; padding-left: 1rem; border-left: 3px solid var(--primary-color); font-style: italic;">"${SecurityUtils.sanitizeHtmlContent(quote)}"</blockquote>`
+                            ).join('') : SecurityUtils.sanitizeHtmlContent(theme.evidence || 'No evidence provided')}
+                        </div>
+                    </details>
+                </div>
+            `).join('');
+            
+            return `<div class="discovery-block">
+                <h3>🎯 Positioning Themes</h3>
+                <div class="discovery-items">${themesHtml}</div>
+            </div>`;
+        }
+        
+        renderKeyMessages(analysis) {
+            if (!analysis.key_messages || analysis.key_messages.length === 0) {
+                return `<div class="discovery-block">
+                    <h3>💬 Key Messages</h3>
+                    <p>No key messages found in the analysis.</p>
+                </div>`;
+            }
+            
+            const messagesHtml = analysis.key_messages.map(message => `
+                <div class="discovery-item">
+                    <div class="discovery-item-header">
+                        <strong>${SecurityUtils.sanitizeHtmlContent(message.message)}</strong>
+                        <span class="confidence-badge">${message.confidence}%</span>
+                        <span class="message-type-badge" style="background: ${message.type === 'Tagline' ? '#17a2b8' : '#28a745'}; color: white; padding: 0.2rem 0.5rem; border-radius: 8px; font-size: 0.7rem; margin-left: 0.5rem;">${message.type}</span>
+                    </div>
+                    <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(message.context || '')}</p>
+                </div>
+            `).join('');
+            
+            return `<div class="discovery-block">
+                <h3>💬 Key Messages</h3>
+                <div class="discovery-items">${messagesHtml}</div>
+            </div>`;
+        }
+        
+        renderToneOfVoice(analysis) {
+            if (!analysis.primary_tone && !analysis.tone_descriptors) {
+                return `<div class="discovery-block">
+                    <h3>🎭 Tone of Voice</h3>
+                    <p>No tone analysis found.</p>
+                </div>`;
+            }
+            
+            let toneHtml = '';
+            
+            // Handle new primary/secondary structure
+            if (analysis.primary_tone) {
+                toneHtml += `
+                    <div class="discovery-item" style="border-left: 4px solid #007acc;">
+                        <div class="discovery-item-header">
+                            <strong>Primary: ${SecurityUtils.sanitizeHtmlContent(analysis.primary_tone.tone)}</strong>
+                            <span class="confidence-badge">${analysis.confidence || 'N/A'}%</span>
+                        </div>
+                        <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(analysis.primary_tone.justification)}</p>
+                        <details class="evidence-details">
+                            <summary>Show Evidence</summary>
+                            <p class="evidence-text">"${SecurityUtils.sanitizeHtmlContent(analysis.primary_tone.evidence_quote)}"</p>
+                        </details>
+                    </div>`;
+                
+                if (analysis.secondary_tone) {
+                    toneHtml += `
+                        <div class="discovery-item" style="border-left: 4px solid #6c757d;">
+                            <div class="discovery-item-header">
+                                <strong>Secondary: ${SecurityUtils.sanitizeHtmlContent(analysis.secondary_tone.tone)}</strong>
+                            </div>
+                            <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(analysis.secondary_tone.justification)}</p>
+                            <details class="evidence-details">
+                                <summary>Show Evidence</summary>
+                                <p class="evidence-text">"${SecurityUtils.sanitizeHtmlContent(analysis.secondary_tone.evidence_quote)}"</p>
+                            </details>
+                        </div>`;
+                }
+                
+                // Show contradictions if any
+                if (analysis.contradictions && analysis.contradictions.length > 0) {
+                    const contradictionsHtml = analysis.contradictions.map(contradiction => `
+                        <div class="discovery-item" style="border-left: 4px solid #dc3545; background: #fff5f5;">
+                            <div class="discovery-item-header">
+                                <strong>⚠️ Contradiction Detected</strong>
+                            </div>
+                            <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(contradiction.contradiction)}</p>
+                            <details class="evidence-details">
+                                <summary>Show Evidence</summary>
+                                <p class="evidence-text">"${SecurityUtils.sanitizeHtmlContent(contradiction.evidence_quote)}"</p>
+                            </details>
+                        </div>
+                    `).join('');
+                    toneHtml += contradictionsHtml;
+                }
+            } 
+            // Fallback for old structure
+            else if (analysis.tone_descriptors) {
+                toneHtml = analysis.tone_descriptors.map(tone => `
+                    <div class="discovery-item">
+                        <div class="discovery-item-header">
+                            <strong>${SecurityUtils.sanitizeHtmlContent(tone.adjective)}</strong>
+                            <span class="confidence-badge">${tone.confidence}%</span>
+                        </div>
+                        <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(tone.justification)}</p>
+                        <details class="evidence-details">
+                            <summary>Show Evidence</summary>
+                            <p class="evidence-text">${SecurityUtils.sanitizeHtmlContent(tone.evidence)}</p>
+                        </details>
+                    </div>
+                `).join('');
+            }
+            
+            return `<div class="discovery-block">
+                <h3>🎭 Tone of Voice</h3>
+                <div class="discovery-items">${toneHtml}</div>
+            </div>`;
+        }
+        
+        renderBrandElements(analysis) {
+            if (!analysis.overall_impression) {
+                return `<div class="discovery-block">
+                    <h3>🎨 Brand Elements</h3>
+                    <p>No visual brand analysis available.</p>
+                </div>`;
+            }
+            
+            // Visual identity breakdown
+            let visualIdentityHtml = '';
+            if (analysis.visual_identity) {
+                const sections = [
+                    { key: 'color_palette', label: '🎨 Color Palette', icon: 'palette' },
+                    { key: 'typography', label: '🔤 Typography', icon: 'font' },
+                    { key: 'imagery_style', label: '📸 Imagery Style', icon: 'image' }
+                ];
+                
+                visualIdentityHtml = sections.map(section => {
+                    const data = analysis.visual_identity[section.key];
+                    if (!data) return '';
+                    
+                    return `
+                        <div class="discovery-item">
+                            <div class="discovery-item-header">
+                                <strong>${section.label}</strong>
+                            </div>
+                            <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(data.description)}</p>
+                            <details class="evidence-details">
+                                <summary>Consistency Notes</summary>
+                                <p class="evidence-text">${SecurityUtils.sanitizeHtmlContent(data.consistency_notes)}</p>
+                            </details>
+                        </div>`;
+                }).filter(Boolean).join('');
+            }
+            
+            return `<div class="discovery-block">
+                <h3>🎨 Brand Elements</h3>
+                <div class="discovery-items">
+                    <div class="discovery-item" style="border-left: 4px solid #28a745;">
+                        <div class="discovery-item-header">
+                            <strong>Overall Impression</strong>
+                            <span class="confidence-badge">${analysis.confidence || 'N/A'}%</span>
+                        </div>
+                        <p class="tone-justification">${SecurityUtils.sanitizeHtmlContent(analysis.overall_impression.summary)}</p>
+                        <div style="margin-top: 0.5rem;">
+                            <strong style="font-size: 0.9rem; color: var(--text-light);">Keywords:</strong>
+                            ${analysis.overall_impression.keywords ? analysis.overall_impression.keywords.map(keyword => 
+                                `<span style="background: #e3f2fd; color: #1976d2; padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.8rem; margin: 0.2rem; display: inline-block;">${SecurityUtils.sanitizeHtmlContent(keyword)}</span>`
+                            ).join('') : ''}
+                        </div>
+                        <div style="margin-top: 1rem;">
+                            <strong style="font-size: 0.9rem; color: var(--text-dark);">Coherence Score: </strong>
+                            <span style="background: var(--primary-color); color: white; padding: 0.3rem 0.8rem; border-radius: 15px; font-weight: bold;">${analysis.coherence_score}/5</span>
+                        </div>
+                    </div>
+                    ${visualIdentityHtml}
+                    ${analysis.strategic_alignment ? `
+                        <div class="discovery-item">
+                            <div class="discovery-item-header">
+                                <strong>🎯 Strategic Alignment</strong>
+                            </div>
+                            <details class="evidence-details" open>
+                                <summary>Visual-Brand Harmony</summary>
+                                <p class="evidence-text">${SecurityUtils.sanitizeHtmlContent(analysis.strategic_alignment.harmony)}</p>
+                            </details>
+                            ${analysis.strategic_alignment.dissonance !== 'None observed' ? `
+                                <details class="evidence-details">
+                                    <summary>⚠️ Areas for Improvement</summary>
+                                    <p class="evidence-text">${SecurityUtils.sanitizeHtmlContent(analysis.strategic_alignment.dissonance)}</p>
+                                </details>
+                            ` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            </div>`;
+        }
+        
+        renderVisualTextAlignment(analysis) {
+            if (!analysis.alignment) {
+                return `<div class="discovery-block">
+                    <h3>🔄 Visual-Text Alignment</h3>
+                    <p>No alignment analysis available.</p>
+                </div>`;
+            }
+            
+            const alignmentColor = analysis.alignment === 'Yes' ? '#28a745' : '#dc3545';
+            const alignmentIcon = analysis.alignment === 'Yes' ? '✅' : '❌';
+            
+            return `<div class="discovery-block">
+                <h3>🔄 Visual-Text Alignment</h3>
+                <div class="discovery-items">
+                    <div class="discovery-item" style="border-left: 4px solid ${alignmentColor};">
+                        <div class="discovery-item-header">
+                            <strong>${alignmentIcon} Alignment: ${analysis.alignment}</strong>
+                        </div>
+                        <div class="alignment-assessment" style="margin-top: 1rem; padding: 1rem; background: ${analysis.alignment === 'Yes' ? '#f8fff8' : '#fff8f8'}; border-radius: 6px;">
+                            <h4 style="margin: 0 0 0.5rem 0; color: var(--text-dark); font-size: 1rem;">Strategic Assessment:</h4>
+                            <p style="margin: 0; line-height: 1.6; color: var(--text-dark);">${SecurityUtils.sanitizeHtmlContent(analysis.justification)}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        
+        renderGenericDiscovery(key, analysis) {
+            return `<div class="discovery-block">
+                <h3>${SecurityUtils.sanitizeMessage(key)}</h3>
+                <pre>${SecurityUtils.sanitizeHtmlContent(JSON.stringify(analysis, null, 2))}</pre>
+            </div>`;
+        }
+        
+        displaySummary(text) {
+            this.summaryContainer.style.display = 'block';
+            
+            // XSS Prevention: Sanitize HTML output from marked.parse()
+            const htmlContent = marked.parse(text);
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = htmlContent;
+            
+            // Remove any script tags or dangerous attributes
+            tempDiv.querySelectorAll('script').forEach(script => script.remove());
+            tempDiv.querySelectorAll('*').forEach(el => {
+                ['onclick', 'onload', 'onerror', 'onmouseover', 'onfocus'].forEach(attr => {
+                    el.removeAttribute(attr);
+                });
+                ['href', 'src'].forEach(attr => {
+                    const value = el.getAttribute(attr);
+                    if (value && (value.startsWith('javascript:') || value.startsWith('data:'))) {
+                        el.removeAttribute(attr);
+                    }
+                });
+            });
+            
+            this.summaryText.innerHTML = tempDiv.innerHTML;
+        }
+        
+        handleScanComplete() {
+            this.statusContainer.innerHTML += `<div><strong>✅ Discovery Analysis Complete!</strong></div>`;
+            this.statusContainer.scrollTop = this.statusContainer.scrollHeight;
+            this.scanButton.disabled = false;
+            this.scanButton.textContent = "Start Discovery Analysis";
+            this.progressSection.style.display = 'none';
+        }
+        
+        handleError(message) {
+            this.resultsGrid.innerHTML += `<div class="discovery-result-block" style="border-left-color: var(--error-color);"><h3>❌ Error</h3><p>${SecurityUtils.sanitizeMessage(message)}</p></div>`;
+        }
+        
+        closeModal() {
+            this.modalOverlay.style.display = 'none';
+        }
+    }
+
+    // Initialize the Discovery Mode application
+    document.addEventListener('DOMContentLoaded', () => {
+        new MemoScanDiscovery();
+    });
+</script>
+
+</body>
+</html>
