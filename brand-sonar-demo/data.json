@@ -1,0 +1,69 @@
+{
+  "brand_name": "Tesla",
+  "executive_summary": "Tesla's brand memorability is a study in contrasts. It scores exceptionally high in Story and Attention, driven by a powerful, almost mythic founder narrative and a constant stream of media coverage. However, this is significantly undermined by a growing weakness in Consistency and a polarizing Emotion score, where the brand's promise of a sustainable future clashes with customer experiences of service issues and quality control. The key strategic challenge is to bridge this widening gap between the myth and the reality.",
+  "strategist_hypothesis": {
+    "Emotion": "Strong",
+    "Attention": "Strong",
+    "Story": "Strong",
+    "Involvement": "Moderate",
+    "Repetition": "Strong",
+    "Consistency": "Moderate"
+  },
+  "keys": {
+    "Emotion": {
+      "score": 55,
+      "rating": "Moderate",
+      "rationale": "The brand evokes powerful, but highly polarized, emotions. Strong loyalty from fans is offset by significant frustration from customers regarding service and quality.",
+      "evidence": [
+        { "id": "e1", "type": "Trustpilot Review", "content": "'Best car I've ever owned. I feel like I'm driving the future. Five stars isn't enough!'", "source": "Trustpilot" },
+        { "id": "e2", "type": "Trustpilot Review", "content": "'An absolute nightmare. Two months in the service center for a simple panel gap issue. They just don't care after they have your money.'", "source": "Trustpilot" },
+        { "id": "e3", "type": "Glassdoor Review", "content": "'Working here is like being on a mission. We are fundamentally changing the world, and that energy is electric.'", "source": "Glassdoor" },
+        { "id": "e4", "type": "Website Copy", "content": "'Accelerating the world's transition to sustainable energy.'", "source": "Tesla.com" }
+      ]
+    },
+    "Attention": {
+      "score": 95,
+      "rating": "Strong",
+      "rationale": "Unmatched in its ability to generate constant, global media attention through product announcements, a high-profile CEO, and unconventional marketing.",
+      "evidence": [
+        { "id": "a1", "type": "News Headline", "content": "'Tesla Cybertruck launch event generates over 10 billion media impressions.'", "source": "Google News" },
+        { "id": "a2", "type": "Social Media", "content": "CEO's personal X/Twitter account drives more engagement than the next five automotive brands combined.", "source": "X/Twitter" }
+      ]
+    },
+    "Story": {
+      "score": 92,
+      "rating": "Strong",
+      "rationale": "Possesses one of the most compelling and clear founder-led narratives of the modern era: a story of visionary ambition, technological disruption, and a mission-driven purpose.",
+      "evidence": [
+        { "id": "s1", "type": "Website Copy", "content": "'Tesla's mission is to accelerate the world's transition to sustainable energy.'", "source": "Tesla.com" },
+        { "id": "s2", "type": "Media Analysis", "content": "The brand is consistently framed in media narratives as a revolutionary force, not just a car company.", "source": "News Analysis" }
+      ]
+    },
+    "Involvement": {
+      "score": 75,
+      "rating": "Strong",
+      "rationale": "Owners feel like they are part of a movement, not just customers. The brand's referral program and active online communities create a strong sense of belonging.",
+      "evidence": [
+        { "id": "i1", "type": "Community Forum", "content": "'Just took delivery of my Model Y! So excited to join the family.'", "source": "Reddit r/TeslaMotors" },
+        { "id": "i2", "type": "Product Feature", "content": "The Supercharger network and software updates create a closed ecosystem that fosters deep user investment.", "source": "Product Analysis" }
+      ]
+    },
+    "Repetition": {
+      "score": 85,
+      "rating": "Strong",
+      "rationale": "The core brand elements—the 'T' logo, the distinctive vehicle silhouettes, the focus on 'sustainability'—are repeated consistently across all major touchpoints.",
+      "evidence": [
+        { "id": "r1", "type": "Visual Identity", "content": "The minimalist 'T' logo is instantly recognizable and applied consistently from cars to chargers to merchandise.", "source": "Visual Audit" }
+      ]
+    },
+    "Consistency": {
+      "score": 40,
+      "rating": "Weak",
+      "rationale": "This is the brand's greatest weakness. The promise of a premium, futuristic experience is frequently broken by reports of inconsistent build quality and frustrating customer service.",
+      "evidence": [
+        { "id": "c1", "type": "Key Tension", "content": "The brand promises a seamless, high-tech future, but the reality of customer service is often described with words like 'frustrating,' 'slow,' and 'unresponsive.'", "source": "Synthesis Engine" },
+        { "id": "c2", "type": "News Headline", "content": "'Tesla faces class-action lawsuit over inconsistent build quality and panel gaps.'", "source": "Google News" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MemoScan v2 – Strategic Brand Discovery</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data:; connect-src 'self' ws: wss:;">
+    
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    
+    <style>
+        :root {
+            --primary-color: #007acc;
+            --primary-dark: #005fa3;
+            --border-color: #ddd;
+            --bg-light: #f7f7f7;
+            --text-dark: #333;
+            --text-light: #666;
+            --error-color: #d9534f;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --info-color: #17a2b8;
+            
+            /* Confidence colors (0-5 scale) */
+            --confidence-0: #d9534f;
+            --confidence-1: #f0ad4e;
+            --confidence-2: #5bc0de;
+            --confidence-3: #5cb85c;
+            --confidence-4: #0275d8;
+            --confidence-5: #004085;
+        }
+        
+        * { 
+            box-sizing: border-box; 
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-light);
+            margin: 0;
+            padding: 2rem;
+            color: var(--text-dark);
+            line-height: 1.6;
+        }
+        
+        h1, h2 { color: var(--primary-color); }
+        
+        #container { max-width: 1200px; margin: 0 auto; }
+        
+        /* Enhanced Form Section */
+        #form-section {
+            background: #fff;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,.08);
+            margin-bottom: 2rem;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #form-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--primary-color), #00c3ff);
+            transform: translateX(-100%);
+            animation: shimmer 20s infinite;
+            will-change: transform;
+        }
+        
+        @keyframes shimmer {
+            0%, 95% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        input[type=text] {
+            flex: 1;
+            padding: 1rem;
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        input[type=text]:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(0, 122, 204, 0.1);
+        }
+        
+        button {
+            padding: 1rem 2rem;
+            background: var(--primary-color);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        button:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 122, 204, 0.3);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        /* Progress Bar - Optimized for Performance */
+        #progress-container {
+            display: none;
+            margin-top: 1.5rem;
+            background: #f0f4f8;
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+        
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
+            color: var(--text-light);
+        }
+        
+        .time-remaining {
+            font-size: 0.8rem;
+            color: var(--info-color);
+            margin-top: 0.5rem;
+            font-weight: 500;
+        }
+        
+        .progress-bar-wrapper {
+            background: #e0e0e0;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary-color), #00c3ff);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+            position: relative;
+            overflow: hidden;
+            transform: translateZ(0);
+            will-change: width;
+        }
+        
+        .progress-bar.active::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(
+                90deg,
+                rgba(255, 255, 255, 0) 0%,
+                rgba(255, 255, 255, 0.3) 50%,
+                rgba(255, 255, 255, 0) 100%
+            );
+            transform: translateX(-100%) translateZ(0);
+            animation: progress-shimmer 1.5s infinite;
+            will-change: transform;
+        }
+        
+        @keyframes progress-shimmer {
+            0% { transform: translateX(-100%) translateZ(0); }
+            100% { transform: translateX(100%) translateZ(0); }
+        }
+        
+        .phase-indicator {
+            margin-top: 1rem;
+            font-size: 0.85rem;
+            color: var(--text-dark);
+            font-weight: 500;
+        }
+        
+        /* Phase Visual Indicators */
+        .phase-visual {
+            display: none;
+            margin: 2rem 0;
+            background: #fff;
+            border-radius: 12px;
+            padding: 2rem;
+            box-shadow: 0 4px 16px rgba(0,0,0,.08);
+        }
+        
+        .phase-steps {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: relative;
+        }
+        
+        .phase-steps::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #e0e0e0;
+            transform: translateY(-50%);
+            z-index: 1;
+        }
+        
+        .phase-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: #fff;
+            padding: 0.5rem;
+            z-index: 2;
+            position: relative;
+        }
+        
+        .phase-icon {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: #f0f0f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.5rem;
+            color: var(--text-light);
+            transition: all 0.3s ease;
+        }
+        
+        .phase-step.active .phase-icon {
+            background: var(--primary-color);
+            color: white;
+            transform: scale(1.1);
+        }
+        
+        .phase-step.completed .phase-icon {
+            background: var(--success-color);
+            color: white;
+        }
+        
+        .phase-label {
+            font-size: 0.8rem;
+            color: var(--text-light);
+            font-weight: 500;
+        }
+        
+        .phase-step.active .phase-label {
+            color: var(--primary-color);
+            font-weight: 600;
+        }
+        
+        /* Live Metrics Dashboard */
+        #metrics-dashboard {
+            display: none;
+            background: #fff;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,.06);
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+        }
+        
+        .metric-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 1rem;
+            border-radius: 8px;
+            text-align: center;
+            transform: scale(1) translateZ(0);
+            transition: transform 0.3s ease;
+            will-change: transform;
+        }
+        
+        .metric-card.updating {
+            transform: scale(1.05) translateZ(0);
+        }
+        
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin: 0.25rem 0;
+        }
+        
+        .metric-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--text-light);
+            letter-spacing: 0.5px;
+        }
+        
+        /* Activity Feed - Memory Optimized */
+        #activity-feed {
+            display: none;
+            background: #fff;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px rgba(0,0,0,.06);
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .activity-header {
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-dark);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .activity-item {
+            padding: 0.75rem;
+            border-left: 3px solid var(--primary-color);
+            margin-bottom: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 0 4px 4px 0;
+            font-size: 0.9rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            opacity: 0;
+            transform: translateX(-20px) translateZ(0);
+            animation: slideIn 0.3s ease forwards;
+            will-change: transform, opacity;
+        }
+        
+        @keyframes slideIn {
+            to {
+                opacity: 1;
+                transform: translateX(0) translateZ(0);
+            }
+        }
+        
+        .activity-timestamp {
+            font-size: 0.75rem;
+            color: var(--text-light);
+        }
+        
+        /* Discovery Results Grid */
+        #results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 1.5rem;
+            margin-top: 2rem;
+        }
+        
+        .result-block {
+            background: #fff;
+            border-left: 5px solid;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeInUp 0.5s ease forwards;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        @keyframes fadeInUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .result-block.discovery { border-left-color: #6f42c1; }
+        .result-block.error { border-left-color: var(--error-color); }
+        
+        .result-block h3 {
+            margin: 0 0 1rem;
+            color: var(--primary-color);
+            font-size: 1.2rem;
+        }
+        
+        .discovery-items {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        
+        .discovery-item {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            background: #f8f9fa;
+            position: relative;
+        }
+        
+        .discovery-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        
+        .confidence-badge {
+            background: var(--primary-color);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .discovery-description {
+            color: var(--text-light);
+            font-size: 0.95rem;
+            margin-bottom: 0.75rem;
+            line-height: 1.5;
+        }
+        
+        .evidence-details summary {
+            cursor: pointer;
+            color: var(--primary-color);
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        
+        .evidence-details summary:hover {
+            text-decoration: underline;
+        }
+        
+        .evidence-quotes {
+            margin-top: 0.5rem;
+        }
+        
+        .evidence-quote {
+            background: #fff;
+            padding: 0.75rem;
+            border-radius: 4px;
+            border-left: 3px solid var(--primary-color);
+            margin: 0.5rem 0;
+            font-style: italic;
+            color: var(--text-light);
+        }
+        
+        /* Visual Brand Elements Specific Styles */
+        .brand-keywords {
+            margin-top: 0.75rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        
+        .keyword-tag {
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+        }
+        
+        .coherence-score {
+            margin-top: 1rem;
+            text-align: center;
+            padding: 1rem;
+            background: var(--bg-light);
+            border-radius: 6px;
+        }
+        
+        .coherence-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        
+        .alignment-assessment {
+            margin-top: 1rem;
+            padding: 1.5rem;
+            border-radius: 8px;
+            line-height: 1.6;
+        }
+        
+        .alignment-yes {
+            background: #f8fff8;
+            border-left: 4px solid var(--success-color);
+        }
+        
+        .alignment-no {
+            background: #fff8f8;
+            border-left: 4px solid var(--error-color);
+        }
+        
+        #summary-container {
+            margin-top: 2rem;
+            background: #fff;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,.08);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        #summary-container::before {
+            content: '✨';
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            font-size: 2rem;
+            opacity: 0.1;
+        }
+        
+        #summary-container h3, #summary-container h4 { color: var(--primary-color); }
+        
+        #evidence-gallery { margin-top: 2rem; }
+        #evidence-gallery h3 { color: var(--text-dark); border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; margin-bottom: 1rem; }
+        #screenshot-container { display: flex; flex-wrap: wrap; gap: 1rem; }
+        .screenshot-item { flex-basis: 300px; }
+        .screenshot-item img {
+            max-width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,.08);
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .screenshot-item img:hover { transform: scale(1.05); }
+        .screenshot-item figcaption {
+            font-size: 0.8rem;
+            color: var(--text-light);
+            margin-top: 0.5rem;
+            text-align: center;
+        }
+        
+        /* Modal for screenshots */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal-image {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+        }
+        
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 35px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+            
+            #container {
+                margin: 0;
+            }
+            
+            .input-group {
+                flex-direction: column;
+            }
+            
+            #results-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+            
+            .discovery-item-header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .phase-steps {
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 1rem;
+            }
+            
+            .phase-steps::before {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>MemoScan v2 – Strategic Brand Discovery</h1>
+        <p>Discover and analyze brand positioning, messaging, and visual identity. Enter a URL to begin.</p>
+        
+        <div id="form-section">
+            <div class="input-group">
+                <input type="text" id="url-input" placeholder="https://example.com" value="">
+                <button id="scan-button" onclick="MemoScan.startScan()">
+                    <i class="fas fa-search"></i> Start Discovery Analysis
+                </button>
+            </div>
+            
+            <div id="progress-container">
+                <div class="progress-header">
+                    <span class="progress-text">Processing...</span>
+                    <span class="progress-percentage">0%</span>
+                </div>
+                <div class="progress-bar-wrapper">
+                    <div class="progress-bar" style="width: 0%"></div>
+                </div>
+                <div class="phase-indicator">
+                    <i class="fas fa-circle-notch fa-spin"></i> <span class="phase-text">Initializing...</span>
+                </div>
+                <div class="time-remaining">
+                    <i class="fas fa-clock"></i> <span id="time-remaining-text">Calculating time remaining...</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="phase-visual" id="phase-visual">
+            <div class="phase-steps">
+                <div class="phase-step" data-phase="discovery">
+                    <div class="phase-icon"><i class="fas fa-search"></i></div>
+                    <div class="phase-label">Discovery</div>
+                </div>
+                <div class="phase-step" data-phase="scoring">
+                    <div class="phase-icon"><i class="fas fa-sort-amount-down"></i></div>
+                    <div class="phase-label">Scoring</div>
+                </div>
+                <div class="phase-step" data-phase="analysis">
+                    <div class="phase-icon"><i class="fas fa-microscope"></i></div>
+                    <div class="phase-label">Analysis</div>
+                </div>
+                <div class="phase-step" data-phase="ai_analysis">
+                    <div class="phase-icon"><i class="fas fa-brain"></i></div>
+                    <div class="phase-label">AI Insights</div>
+                </div>
+                <div class="phase-step" data-phase="summary">
+                    <div class="phase-icon"><i class="fas fa-file-alt"></i></div>
+                    <div class="phase-label">Summary</div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="metrics-dashboard">
+            <h3><i class="fas fa-chart-line"></i> Live Discovery Metrics</h3>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-total-links">0</div>
+                    <div class="metric-label">Pages Discovered</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-high-value">0</div>
+                    <div class="metric-label">High-Value Pages</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-screenshots">0</div>
+                    <div class="metric-label">Screenshots</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-value" id="metric-insights">0/5</div>
+                    <div class="metric-label">Discovery Keys</div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="activity-feed">
+            <div class="activity-header">
+                <i class="fas fa-stream"></i> Live Activity Feed
+            </div>
+            <div id="activity-items"></div>
+        </div>
+        
+        <div id="results-grid"></div>
+        <div id="summary-container" style="display: none;"></div>
+        <div id="evidence-gallery" style="display: none;">
+            <h3>Visual Evidence</h3>
+            <div id="screenshot-container"></div>
+        </div>
+    </div>
+    
+    <!-- Screenshot Modal -->
+    <div id="screenshot-modal" class="modal">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <img class="modal-image" id="modal-image" src="" alt="Enlarged Screenshot">
+    </div>
+
+<script>
+// Production-Ready MemoScan Discovery Frontend - Exact Match with Production Template
+
+class SecurityUtils {
+    static escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    static sanitizeMessage(message) {
+        // Remove potentially dangerous characters and limit length
+        return this.escapeHtml(String(message).substring(0, 500));
+    }
+
+    static sanitizeHtmlContent(htmlString) {
+        if (!htmlString) return '';
+        // Parse markdown to HTML first
+        const htmlContent = marked.parse(htmlString);
+        // Create temporary DOM element for manual sanitization
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = htmlContent;
+        // Remove any potentially dangerous elements and attributes
+        tempDiv.querySelectorAll('script, object, embed, iframe').forEach(el => el.remove());
+        tempDiv.querySelectorAll('*').forEach(el => {
+            // Remove dangerous event attributes
+            ['onclick', 'onload', 'onerror', 'onmouseover', 'onfocus', 'onblur', 'onchange', 'onsubmit'].forEach(attr => {
+                el.removeAttribute(attr);
+            });
+            // Remove javascript: and data: URLs from href and src
+            ['href', 'src'].forEach(attr => {
+                const value = el.getAttribute(attr);
+                if (value && (value.startsWith('javascript:') || value.startsWith('data:'))) {
+                    el.removeAttribute(attr);
+                }
+            });
+        });
+        return tempDiv.innerHTML;
+    }
+}
+
+class DiscoveryMemoScan {
+    constructor() {
+        this.socket = io();
+        this.metrics = {
+            totalLinks: 0,
+            highValue: 0,
+            screenshots: 0,
+            insights: 0
+        };
+        this.discoveryKeys = ['positioning_themes', 'key_messages', 'tone_of_voice', 'brand_elements', 'visual_text_alignment'];
+        this.currentPhase = '';
+        this.startTime = null;
+        
+        this.initializeElements();
+        this.setupEventListeners();
+        this.setupSocketHandlers();
+    }
+    
+    initializeElements() {
+        this.elements = {
+            urlInput: document.getElementById('url-input'),
+            scanButton: document.getElementById('scan-button'),
+            progressContainer: document.getElementById('progress-container'),
+            progressBar: document.querySelector('.progress-bar'),
+            progressText: document.querySelector('.progress-text'),
+            progressPercentage: document.querySelector('.progress-percentage'),
+            phaseText: document.querySelector('.phase-text'),
+            timeRemaining: document.getElementById('time-remaining-text'),
+            phaseVisual: document.getElementById('phase-visual'),
+            metricsDashboard: document.getElementById('metrics-dashboard'),
+            activityFeed: document.getElementById('activity-feed'),
+            activityItems: document.getElementById('activity-items'),
+            resultsGrid: document.getElementById('results-grid'),
+            summaryContainer: document.getElementById('summary-container'),
+            evidenceGallery: document.getElementById('evidence-gallery'),
+            screenshotContainer: document.getElementById('screenshot-container')
+        };
+    }
+    
+    setupEventListeners() {
+        this.elements.scanButton.addEventListener('click', () => this.startScan());
+        this.elements.urlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') this.startScan();
+        });
+    }
+    
+    setupSocketHandlers() {
+        this.socket.on('connect', () => {
+            this.addActivityItem('Connected to Discovery Mode server', 'success');
+        });
+        
+        this.socket.on('disconnect', () => {
+            this.addActivityItem('Connection lost - please refresh', 'error');
+        });
+        
+        this.socket.on('scan_update', (msg) => this.handleScanUpdate(msg));
+    }
+    
+    startScan() {
+        const url = this.elements.urlInput.value.trim();
+        if (!url) {
+            alert('Please enter a URL to analyze');
+            return;
+        }
+        
+        // Reset UI
+        this.resetScan();
+        this.startTime = Date.now();
+        
+        // Show progress elements
+        this.elements.progressContainer.style.display = 'block';
+        this.elements.phaseVisual.style.display = 'block';
+        this.elements.metricsDashboard.style.display = 'block';
+        this.elements.activityFeed.style.display = 'block';
+        
+        // Update button state
+        this.elements.scanButton.disabled = true;
+        this.elements.scanButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing...';
+        
+        // Start scan
+        this.socket.emit('start_scan', { url: url, mode: 'discovery' });
+        this.addActivityItem(`Starting Discovery analysis for ${url}`, 'info');
+    }
+    
+    resetScan() {
+        this.metrics = { totalLinks: 0, highValue: 0, screenshots: 0, insights: 0 };
+        this.updateMetrics();
+        this.elements.resultsGrid.innerHTML = '';
+        this.elements.activityItems.innerHTML = '';
+        this.elements.screenshotContainer.innerHTML = '';
+        this.elements.summaryContainer.style.display = 'none';
+        this.elements.evidenceGallery.style.display = 'none';
+        this.resetPhaseVisual();
+    }
+    
+    handleScanUpdate(msg) {
+        switch (msg.type) {
+            case 'status':
+                this.updateProgress(msg.progress || 0, msg.message);
+                this.addActivityItem(msg.message, 'info');
+                this.updatePhase(msg.phase);
+                break;
+                
+            case 'screenshot_ready':
+                this.handleScreenshot(msg);
+                break;
+                
+            case 'discovery_result':
+                this.handleDiscoveryResult(msg);
+                break;
+                
+            case 'summary':
+                this.handleSummary(msg);
+                break;
+                
+            case 'complete':
+                this.handleScanComplete(msg);
+                break;
+                
+            case 'error':
+                this.handleError(msg);
+                break;
+                
+            default:
+                this.addActivityItem(msg.message || JSON.stringify(msg), 'info');
+        }
+    }
+    
+    updateProgress(percentage, message) {
+        const clampedPercentage = Math.min(100, Math.max(0, percentage));
+        this.elements.progressBar.style.width = `${clampedPercentage}%`;
+        this.elements.progressPercentage.textContent = `${Math.round(clampedPercentage)}%`;
+        this.elements.phaseText.textContent = message || 'Processing...';
+        
+        if (clampedPercentage > 0 && clampedPercentage < 100) {
+            this.elements.progressBar.classList.add('active');
+        } else {
+            this.elements.progressBar.classList.remove('active');
+        }
+        
+        // Update time remaining
+        if (this.startTime && clampedPercentage > 5) {
+            const elapsed = Date.now() - this.startTime;
+            const estimatedTotal = (elapsed / clampedPercentage) * 100;
+            const remaining = Math.max(0, estimatedTotal - elapsed);
+            this.elements.timeRemaining.textContent = `${Math.ceil(remaining / 1000)}s remaining`;
+        }
+    }
+    
+    updatePhase(phase) {
+        if (!phase || phase === this.currentPhase) return;
+        
+        this.currentPhase = phase;
+        
+        // Reset all phases
+        document.querySelectorAll('.phase-step').forEach(step => {
+            step.classList.remove('active', 'completed');
+        });
+        
+        // Mark completed phases
+        const phaseOrder = ['discovery', 'scoring', 'analysis', 'ai_analysis', 'summary'];
+        const currentIndex = phaseOrder.indexOf(phase);
+        
+        phaseOrder.forEach((p, index) => {
+            const stepElement = document.querySelector(`[data-phase="${p}"]`);
+            if (!stepElement) return;
+            
+            if (index < currentIndex) {
+                stepElement.classList.add('completed');
+            } else if (index === currentIndex) {
+                stepElement.classList.add('active');
+            }
+        });
+    }
+    
+    updateMetrics() {
+        document.getElementById('metric-total-links').textContent = this.metrics.totalLinks;
+        document.getElementById('metric-high-value').textContent = this.metrics.highValue;
+        document.getElementById('metric-screenshots').textContent = this.metrics.screenshots;
+        document.getElementById('metric-insights').textContent = `${this.metrics.insights}/5`;
+        
+        // Add updating animation
+        document.querySelectorAll('.metric-card').forEach(card => {
+            card.classList.add('updating');
+            setTimeout(() => card.classList.remove('updating'), 300);
+        });
+    }
+    
+    addActivityItem(message, type = 'info') {
+        const item = document.createElement('div');
+        item.className = 'activity-item';
+        
+        const timestamp = new Date().toLocaleTimeString();
+        const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : '📊';
+        
+        item.innerHTML = `
+            <span>${icon} ${SecurityUtils.sanitizeMessage(message)}</span>
+            <span class="activity-timestamp">${timestamp}</span>
+        `;
+        
+        this.elements.activityItems.appendChild(item);
+        this.elements.activityItems.scrollTop = this.elements.activityItems.scrollHeight;
+        
+        // Limit activity items to prevent memory issues
+        if (this.elements.activityItems.children.length > 50) {
+            this.elements.activityItems.removeChild(this.elements.activityItems.firstChild);
+        }
+    }
+    
+    handleScreenshot(msg) {
+        this.metrics.screenshots++;
+        this.updateMetrics();
+        
+        const figure = document.createElement('figure');
+        figure.className = 'screenshot-item';
+        
+        const img = document.createElement('img');
+        const imgSrc = `/screenshot/${msg.id}`;
+        img.src = imgSrc;
+        img.alt = `Screenshot of ${msg.url}`;
+        
+        const caption = document.createElement('figcaption');
+        caption.textContent = msg.url.replace(/^https?:\/\//, '').substring(0, 40) + '...';
+        
+        img.addEventListener('click', () => this.showModal(imgSrc));
+        
+        figure.appendChild(img);
+        figure.appendChild(caption);
+        this.elements.screenshotContainer.appendChild(figure);
+        this.elements.evidenceGallery.style.display = 'block';
+        
+        this.addActivityItem(`Screenshot captured: ${msg.url}`, 'success');
+    }
+    
+    handleDiscoveryResult(msg) {
+        this.metrics.insights++;
+        this.updateMetrics();
+        
+        const block = document.createElement('div');
+        block.className = 'result-block discovery';
+        block.innerHTML = this.renderDiscoveryResult(msg.key, msg.analysis);
+        this.elements.resultsGrid.appendChild(block);
+        
+        this.addActivityItem(`Discovery result: ${msg.key.replace(/_/g, ' ')}`, 'success');
+    }
+    
+    renderDiscoveryResult(key, analysis) {
+        const keyName = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        
+        switch (key) {
+            case 'positioning_themes':
+                return this.renderPositioningThemes(keyName, analysis);
+            case 'key_messages':
+                return this.renderKeyMessages(keyName, analysis);
+            case 'tone_of_voice':
+                return this.renderToneOfVoice(keyName, analysis);
+            case 'brand_elements':
+                return this.renderBrandElements(keyName, analysis);
+            case 'visual_text_alignment':
+                return this.renderVisualTextAlignment(keyName, analysis);
+            default:
+                return this.renderGenericDiscovery(keyName, analysis);
+        }
+    }
+    
+    renderPositioningThemes(title, analysis) {
+        if (!analysis.themes || analysis.themes.length === 0) {
+            return `<h3>🎯 ${title}</h3><p>No positioning themes identified.</p>`;
+        }
+        
+        const themesHtml = analysis.themes.map(theme => `
+            <div class="discovery-item">
+                <div class="discovery-item-header">
+                    <strong>${SecurityUtils.escapeHtml(theme.theme)}</strong>
+                    <span class="confidence-badge">${theme.confidence}%</span>
+                </div>
+                <div class="discovery-description">${SecurityUtils.escapeHtml(theme.description || '')}</div>
+                <details class="evidence-details">
+                    <summary>Evidence (${theme.evidence_quotes ? theme.evidence_quotes.length : 0} quotes)</summary>
+                    <div class="evidence-quotes">
+                        ${theme.evidence_quotes ? theme.evidence_quotes.map(quote => 
+                            `<div class="evidence-quote">"${SecurityUtils.escapeHtml(quote)}"</div>`
+                        ).join('') : (theme.evidence ? `<div class="evidence-quote">"${SecurityUtils.escapeHtml(theme.evidence)}"</div>` : 'No evidence provided')}
+                    </div>
+                </details>
+            </div>
+        `).join('');
+        
+        return `<h3>🎯 ${title}</h3><div class="discovery-items">${themesHtml}</div>`;
+    }
+    
+    renderKeyMessages(title, analysis) {
+        if (!analysis.key_messages || analysis.key_messages.length === 0) {
+            return `<h3>💬 ${title}</h3><p>No key messages identified.</p>`;
+        }
+        
+        const messagesHtml = analysis.key_messages.map(message => `
+            <div class="discovery-item">
+                <div class="discovery-item-header">
+                    <strong>${SecurityUtils.escapeHtml(message.message)}</strong>
+                    <span class="confidence-badge">${message.confidence}%</span>
+                </div>
+                <div class="discovery-description">
+                    <strong>Type:</strong> ${SecurityUtils.escapeHtml(message.type)}<br>
+                    <strong>Context:</strong> ${SecurityUtils.escapeHtml(message.context || '')}
+                </div>
+            </div>
+        `).join('');
+        
+        return `<h3>💬 ${title}</h3><div class="discovery-items">${messagesHtml}</div>`;
+    }
+    
+    renderToneOfVoice(title, analysis) {
+        if (!analysis.primary_tone && !analysis.tone_descriptors) {
+            return `<h3>🎭 ${title}</h3><p>No tone analysis available.</p>`;
+        }
+        
+        let toneHtml = '';
+        
+        if (analysis.primary_tone) {
+            toneHtml += `
+                <div class="discovery-item">
+                    <div class="discovery-item-header">
+                        <strong>Primary: ${SecurityUtils.escapeHtml(analysis.primary_tone.tone)}</strong>
+                        <span class="confidence-badge">${analysis.confidence || 'N/A'}%</span>
+                    </div>
+                    <div class="discovery-description">${SecurityUtils.escapeHtml(analysis.primary_tone.justification)}</div>
+                    <details class="evidence-details">
+                        <summary>Evidence</summary>
+                        <div class="evidence-quote">"${SecurityUtils.escapeHtml(analysis.primary_tone.evidence_quote)}"</div>
+                    </details>
+                </div>`;
+                
+            if (analysis.secondary_tone) {
+                toneHtml += `
+                    <div class="discovery-item">
+                        <div class="discovery-item-header">
+                            <strong>Secondary: ${SecurityUtils.escapeHtml(analysis.secondary_tone.tone)}</strong>
+                        </div>
+                        <div class="discovery-description">${SecurityUtils.escapeHtml(analysis.secondary_tone.justification)}</div>
+                        <details class="evidence-details">
+                            <summary>Evidence</summary>
+                            <div class="evidence-quote">"${SecurityUtils.escapeHtml(analysis.secondary_tone.evidence_quote)}"</div>
+                        </details>
+                    </div>`;
+            }
+            
+            if (analysis.contradictions && analysis.contradictions.length > 0) {
+                const contradictionsHtml = analysis.contradictions.map(contradiction => `
+                    <div class="discovery-item" style="border-left: 4px solid var(--warning-color);">
+                        <div class="discovery-item-header">
+                            <strong>⚠️ Contradiction</strong>
+                        </div>
+                        <div class="discovery-description">${SecurityUtils.escapeHtml(contradiction.contradiction)}</div>
+                        <details class="evidence-details">
+                            <summary>Evidence</summary>
+                            <div class="evidence-quote">"${SecurityUtils.escapeHtml(contradiction.evidence_quote)}"</div>
+                        </details>
+                    </div>
+                `).join('');
+                toneHtml += contradictionsHtml;
+            }
+        }
+        
+        return `<h3>🎭 ${title}</h3><div class="discovery-items">${toneHtml}</div>`;
+    }
+    
+    renderBrandElements(title, analysis) {
+        if (!analysis.overall_impression) {
+            return `<h3>🎨 ${title}</h3><p>No visual brand analysis available.</p>`;
+        }
+        
+        let elementsHtml = `
+            <div class="discovery-item">
+                <div class="discovery-item-header">
+                    <strong>Overall Impression</strong>
+                    <span class="confidence-badge">${analysis.confidence || 'N/A'}%</span>
+                </div>
+                <div class="discovery-description">${SecurityUtils.escapeHtml(analysis.overall_impression.summary)}</div>
+                <div class="brand-keywords">
+                    ${analysis.overall_impression.keywords ? analysis.overall_impression.keywords.map(keyword => 
+                        `<span class="keyword-tag">${SecurityUtils.escapeHtml(keyword)}</span>`
+                    ).join('') : ''}
+                </div>
+                <div class="coherence-score">
+                    <div class="coherence-value">${analysis.coherence_score}/5</div>
+                    <div>Coherence Score</div>
+                </div>
+            </div>`;
+            
+        if (analysis.visual_identity) {
+            const sections = [
+                { key: 'color_palette', label: '🎨 Color Palette' },
+                { key: 'typography', label: '🔤 Typography' },
+                { key: 'imagery_style', label: '📸 Imagery Style' }
+            ];
+            
+            sections.forEach(section => {
+                const data = analysis.visual_identity[section.key];
+                if (data) {
+                    elementsHtml += `
+                        <div class="discovery-item">
+                            <div class="discovery-item-header">
+                                <strong>${section.label}</strong>
+                            </div>
+                            <div class="discovery-description">${SecurityUtils.escapeHtml(data.description)}</div>
+                            <details class="evidence-details">
+                                <summary>Consistency Notes</summary>
+                                <div class="evidence-quote">${SecurityUtils.escapeHtml(data.consistency_notes)}</div>
+                            </details>
+                        </div>`;
+                }
+            });
+        }
+        
+        return `<h3>🎨 ${title}</h3><div class="discovery-items">${elementsHtml}</div>`;
+    }
+    
+    renderVisualTextAlignment(title, analysis) {
+        if (!analysis.alignment) {
+            return `<h3>🔄 ${title}</h3><p>No alignment analysis available.</p>`;
+        }
+        
+        const alignmentClass = analysis.alignment === 'Yes' ? 'alignment-yes' : 'alignment-no';
+        const alignmentIcon = analysis.alignment === 'Yes' ? '✅' : '❌';
+        
+        return `
+            <h3>🔄 ${title}</h3>
+            <div class="discovery-items">
+                <div class="discovery-item">
+                    <div class="discovery-item-header">
+                        <strong>${alignmentIcon} Alignment: ${analysis.alignment}</strong>
+                    </div>
+                    <div class="alignment-assessment ${alignmentClass}">
+                        <h4>Strategic Assessment</h4>
+                        <p>${SecurityUtils.escapeHtml(analysis.justification)}</p>
+                    </div>
+                </div>
+            </div>`;
+    }
+    
+    renderGenericDiscovery(title, analysis) {
+        return `<h3>${SecurityUtils.escapeHtml(title)}</h3><pre>${SecurityUtils.escapeHtml(JSON.stringify(analysis, null, 2))}</pre>`;
+    }
+    
+    handleSummary(msg) {
+        this.elements.summaryContainer.style.display = 'block';
+        this.elements.summaryContainer.innerHTML = `<h3>Executive Summary</h3><div>${SecurityUtils.sanitizeHtmlContent(msg.text)}</div>`;
+        this.addActivityItem('Executive summary generated', 'success');
+    }
+    
+    handleScanComplete(msg) {
+        this.elements.scanButton.disabled = false;
+        this.elements.scanButton.innerHTML = '<i class="fas fa-search"></i> Start Discovery Analysis';
+        this.elements.progressContainer.style.display = 'none';
+        
+        this.addActivityItem(msg.message || 'Discovery analysis completed', 'success');
+        
+        // Mark all phases as completed
+        document.querySelectorAll('.phase-step').forEach(step => {
+            step.classList.remove('active');
+            step.classList.add('completed');
+        });
+    }
+    
+    handleError(msg) {
+        const errorBlock = document.createElement('div');
+        errorBlock.className = 'result-block error';
+        errorBlock.innerHTML = `<h3>❌ Error</h3><p>${SecurityUtils.sanitizeMessage(msg.message)}</p>`;
+        this.elements.resultsGrid.appendChild(errorBlock);
+        
+        this.addActivityItem(`Error: ${msg.message}`, 'error');
+    }
+    
+    resetPhaseVisual() {
+        document.querySelectorAll('.phase-step').forEach(step => {
+            step.classList.remove('active', 'completed');
+        });
+    }
+    
+    showModal(imgSrc) {
+        const modal = document.getElementById('screenshot-modal');
+        const modalImage = document.getElementById('modal-image');
+        modalImage.src = imgSrc;
+        modal.style.display = 'flex';
+    }
+}
+
+// Global functions for modal
+function closeModal() {
+    document.getElementById('screenshot-modal').style.display = 'none';
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('screenshot-modal');
+    if (event.target === modal) {
+        modal.style.display = 'none';
+    }
+}
+
+// Initialize the application
+const MemoScan = new DiscoveryMemoScan();
+
+// Expose for button onclick handlers
+window.MemoScan = {
+    startScan: () => MemoScan.startScan()
+};
+</script>
+
+</body>
+</html>
