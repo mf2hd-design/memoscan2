@@ -650,10 +650,110 @@ def run_summary_phase(all_results: list):
     yield {'type': 'activity', 'message': '📋 Creating executive summary...', 'timestamp': time.time()}
     
     try:
-        if any(r.get('type') == 'discovery_result' for r in all_results):
-            executive_summary = "🔍 **Discovery Mode Analysis Complete**\n\nThis analysis focused on brand positioning, key messages, and tone of voice using advanced AI analysis.\n\nKey insights have been extracted and are available in the detailed results above."
-        else:
-            executive_summary = "📊 **Memorability Analysis Complete**\n\nThis analysis evaluated the brand's memorability across six key factors.\n\nDetailed results and recommendations are provided above."
+        # Collect discovery results by key
+        def _find(key_name: str):
+            return next((r for r in all_results if r.get('type') == 'discovery_result' and r.get('key') == key_name and isinstance(r.get('analysis'), dict)), None)
+
+        has_discovery = any(r.get('type') == 'discovery_result' for r in all_results)
+        if not has_discovery:
+            executive_summary = (
+                "📊 Memorability Analysis Complete\n\n"
+                "Detailed results and recommendations are provided above."
+            )
+            yield {'type': 'activity', 'message': '✅ Executive summary generated', 'timestamp': time.time()}
+            return executive_summary
+
+        pos = _find('positioning_themes')
+        kms = _find('key_messages')
+        tov = _find('tone_of_voice')
+        be  = _find('brand_elements')
+        vta = _find('visual_text_alignment')
+
+        lines = []
+        lines.append("🔍 Discovery Mode Summary\n")
+
+        # Positioning Themes
+        if pos:
+            pt = pos['analysis']
+            themes = pt.get('themes') or []
+            if isinstance(themes, list) and themes:
+                top_names = []
+                for t in themes[:3]:
+                    name = (t.get('theme') or '').strip()
+                    conf = t.get('confidence')
+                    if name:
+                        top_names.append(f"{name}{f' ({conf}%)' if isinstance(conf, (int, float)) else ''}")
+                if top_names:
+                    lines.append(f"Positioning: {', '.join(top_names)}.")
+
+        # Key Messages
+        if kms:
+            km = kms['analysis']
+            klist = km.get('key_messages') or []
+            if isinstance(klist, list) and klist:
+                msgs = []
+                for m in klist[:4]:
+                    msg = (m.get('message') or '').strip()
+                    typ = (m.get('type') or '').strip()
+                    if msg:
+                        if typ:
+                            msgs.append(f"{msg} [{typ}]")
+                        else:
+                            msgs.append(msg)
+                if msgs:
+                    lines.append(f"Key messages: { '; '.join(msgs) }.")
+
+        # Tone of Voice
+        if tov:
+            tv = tov['analysis']
+            p = tv.get('primary_tone') or {}
+            s = tv.get('secondary_tone') or {}
+            p_name = (p.get('tone') or '—').strip()
+            s_name = (s.get('tone') or '—').strip()
+            # Quote snippets
+            def _snip(q: str) -> str:
+                q = (q or '').strip()
+                return (q[:120] + '…') if len(q) > 120 else q
+            p_q = _snip(p.get('evidence_quote') or '')
+            s_q = _snip(s.get('evidence_quote') or '')
+            part = f"Tone: primary {p_name}"
+            if p_q:
+                part += f" (\"{p_q}\")"
+            part += f", secondary {s_name}"
+            if s_q:
+                part += f" (\"{s_q}\")"
+            lines.append(part + ".")
+
+        # Brand Elements
+        if be:
+            bea = be['analysis']
+            impression = (bea.get('overall_impression', {}) or {})
+            summary = (impression.get('summary') or '').strip()
+            keywords = impression.get('keywords') or []
+            if summary:
+                lines.append(f"Visual identity: {summary}.")
+            if isinstance(keywords, list) and keywords:
+                lines.append(f"Visual keywords: {', '.join(keywords[:5])}.")
+            cs = bea.get('coherence_score')
+            if isinstance(cs, (int, float)):
+                lines.append(f"Coherence score: {cs}/5.")
+
+        # Visual-Text Alignment (optional)
+        if vta:
+            vtaa = vta['analysis']
+            align = vtaa.get('alignment')
+            just = (vtaa.get('justification') or '').strip()
+            if align in ['Yes', 'No']:
+                sentence = f"Visual-text alignment: {align}."
+                if just:
+                    sentence += f" {just}"
+                lines.append(sentence)
+
+        # Fallback if nothing assembled
+        if len(lines) <= 1:
+            lines.append("Key insights have been extracted and are available above.")
+
+        executive_summary = "\n\n".join(lines)
         
         yield {'type': 'activity', 'message': '✅ Executive summary generated', 'timestamp': time.time()}
         return executive_summary

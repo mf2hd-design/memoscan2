@@ -16,7 +16,8 @@ import threading
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 
-from discovery_prompts import DECONSTRUCTION_KEYS_PROMPTS, track_discovery_performance
+from discovery_prompts import DECONSTRUCTION_KEYS_PROMPTS, track_discovery_performance, PROMPT_VERSION
+from llm_client import LLMClient
 from discovery_schemas import (
     SchemaValidator,
     PositioningThemesResult,
@@ -188,10 +189,21 @@ class DiscoveryAnalyzer:
         self.cache = cache
         self.validator = SchemaValidator()
         self.performance_metrics = {}
+        # Unified LLM client abstraction (capability probe + circuit breaker + fallbacks)
+        self.llm_client = LLMClient()
         # Initialize cache directory for per-key result persistence
         base_dir = os.getenv("PERSISTENT_DATA_DIR", "/tmp")
         self.cache_root = os.path.join(base_dir, "discovery_cache")
         os.makedirs(self.cache_root, exist_ok=True)
+        # Optional Redis cache
+        self.redis = None
+        redis_url = os.getenv("REDIS_URL")
+        if redis_url:
+            try:
+                import redis  # type: ignore
+                self.redis = redis.from_url(redis_url, decode_responses=True)
+            except Exception:
+                self.redis = None
 
     # === Simple token-aware scheduler ===
     _llm_semaphore = threading.Semaphore(int(os.getenv("DISCOVERY_LLM_CONCURRENCY", "2")))
@@ -247,6 +259,95 @@ class DiscoveryAnalyzer:
     def _adaptive_timeout(input_tokens: int, cap: int = 90) -> int:
         return int(min(20 + 0.002 * input_tokens, cap))
 
+    # === Chunking & Relevance Scoring for very long inputs ===
+    def _chunk_text_with_overlap(self, text: str, model: str, chunk_token_limit: int = 800, overlap_tokens: int = 120) -> List[str]:
+        if not text:
+            return []
+        # Split by paragraph; fall back to single newlines if needed
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        if len(paragraphs) <= 1:
+            paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+
+        chunks: List[str] = []
+        current: List[str] = []
+        current_tokens = 0
+        for para in paragraphs:
+            ptoks = LLMClient.estimate_tokens(para, model=model)
+            if current_tokens + ptoks <= chunk_token_limit:
+                current.append(para)
+                current_tokens += ptoks
+            else:
+                if current:
+                    chunks.append("\n".join(current))
+                # start new chunk; include overlap from previous chunk tail
+                overlap_text = "\n".join(current)[-overlap_tokens*4:] if current else ""
+                current = [overlap_text, para] if overlap_text else [para]
+                current_tokens = LLMClient.estimate_tokens("\n".join(current), model=model)
+        if current:
+            chunks.append("\n".join(current))
+        return [c for c in chunks if c.strip()]
+
+    def _score_chunk_relevance(self, chunk: str, key_name: str) -> float:
+        text_lower = chunk.lower()
+        # Lightweight keyword sets per key
+        if key_name == "key_messages":
+            keywords = [
+                "message", "value", "benefit", "tagline", "proposition",
+                "solution", "customer", "platform", "we ", "our ", "mission", "vision", "about"
+            ]
+        elif key_name == "tone_of_voice":
+            keywords = [
+                "tone", "voice", "style", "we ", "our ", "commitment", "innovation", "quality",
+                "excellence", "mission", "vision", "values"
+            ]
+        else:
+            keywords = ["we ", "our ", "customer", "solution"]
+
+        score = 0.0
+        for kw in keywords:
+            score += text_lower.count(kw)
+        # Boost for quotes as evidence snippets
+        score += text_lower.count('"') * 0.5
+        score += text_lower.count("\u201c") * 0.5
+        score += text_lower.count("\u201d") * 0.5
+        # Penalize overly short chunks
+        tokens = LLMClient.estimate_tokens(chunk)
+        if tokens < 120:
+            score *= 0.7
+        return score
+
+    def _select_relevant_text(self, text: str, key_name: str, target_model: str, max_total_tokens: int) -> Tuple[str, Dict[str, Any]]:
+        info: Dict[str, Any] = {"chunking_applied": False}
+        total_tokens = LLMClient.estimate_tokens(text, model=target_model)
+        info["tokens_before"] = total_tokens
+        if total_tokens <= max_total_tokens:
+            info.update({"tokens_after": total_tokens, "chunks_considered": 1, "chunks_selected": 1})
+            return text, info
+        # Build chunks and score
+        chunks = self._chunk_text_with_overlap(text, model=target_model)
+        scored = [(self._score_chunk_relevance(c, key_name), c) for c in chunks]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        info["chunking_applied"] = True
+        info["chunks_considered"] = len(scored)
+        # Accumulate top chunks within budget
+        selected: List[str] = []
+        running = 0
+        for _, c in scored:
+            ctoks = LLMClient.estimate_tokens(c, model=target_model)
+            if running + ctoks <= max_total_tokens:
+                selected.append(c)
+                running += ctoks
+            if running >= max_total_tokens * 0.95:
+                break
+        if not selected:
+            # Fallback: take the highest scoring single chunk
+            selected = [scored[0][1]] if scored else [text[:4000]]
+            running = LLMClient.estimate_tokens(selected[0], model=target_model)
+        info["chunks_selected"] = len(selected)
+        info["tokens_after"] = running
+        reduced = "\n\n".join(selected)
+        return reduced, info
+
     # === Per-key disk cache helpers ===
     def _key_cache_path(self, key_name: str, content_hash: str) -> str:
         d = os.path.join(self.cache_root, key_name)
@@ -254,6 +355,15 @@ class DiscoveryAnalyzer:
         return os.path.join(d, f"{content_hash}.json")
 
     def _load_cached_result(self, key_name: str, content_fingerprint: str) -> Optional[dict]:
+        # Try Redis first
+        if self.redis is not None:
+            try:
+                v = self.redis.get(f"discovery:{key_name}:{content_fingerprint}")
+                if v:
+                    return json.loads(v)
+            except Exception:
+                pass
+        # Fallback to disk
         path = self._key_cache_path(key_name, content_fingerprint)
         try:
             if os.path.exists(path):
@@ -265,11 +375,35 @@ class DiscoveryAnalyzer:
 
     def _save_cached_result(self, key_name: str, content_fingerprint: str, result: dict) -> None:
         try:
+            # Redis
+            if self.redis is not None:
+                try:
+                    ttl = int(os.getenv("DISCOVERY_CACHE_TTL", "86400"))
+                    self.redis.setex(f"discovery:{key_name}:{content_fingerprint}", ttl, json.dumps(result))
+                except Exception:
+                    pass
+            # Disk
             path = self._key_cache_path(key_name, content_fingerprint)
             with open(path, 'w') as f:
                 json.dump(result, f)
         except Exception:
             pass
+
+    def _compute_fingerprint(self, key_name: str, text: str, schema_class) -> str:
+        try:
+            try:
+                schema_dict = schema_class.schema()
+            except Exception:
+                schema_dict = schema_class.model_json_schema()
+        except Exception:
+            schema_dict = {}
+        prompt = DECONSTRUCTION_KEYS_PROMPTS[key_name]["prompt"]
+        m = hashlib.sha256()
+        m.update((text or "").encode())
+        m.update(prompt.encode())
+        m.update(json.dumps(schema_dict, sort_keys=True).encode())
+        m.update(PROMPT_VERSION.encode())
+        return m.hexdigest()
         
     def _analyze_all_sequential(self, text_content: str, screenshots: Optional[List[str]] = None) -> Dict[str, Any]:
         """
@@ -496,9 +630,10 @@ class DiscoveryAnalyzer:
                 if not _should_use_responses():
                     raise Exception("Responses disabled by capability/env")
                 # First try GPT-5 with Responses API (recommended approach)
+                tokens_needed = self._estimate_tokens(text_content)
                 response = safe_responses_call(
                     client,
-                    timeout_seconds=max(20, int(timeout_seconds * 0.9)),
+                    timeout_seconds=self._adaptive_timeout(tokens_needed, cap=75),
                     model="gpt-5",
                     input=f"You are a senior brand strategist. Analyze the following website content and identify 3-5 key positioning themes. Output only valid JSON.\n\n{prompt.format(text_content=text_content)}",
                     reasoning={
@@ -662,37 +797,33 @@ class DiscoveryAnalyzer:
     @track_discovery_performance("key_messages")
     def analyze_key_messages(self, text_content: str) -> Tuple[Optional[dict], Dict[str, Any]]:
         """Analyze key messages using GPT-5 Responses API with JSON Schema (fallback to GPT-4o chat)."""
-        from openai import OpenAI
-        
         start_time = time.time()
         metrics = {"key_name": "key_messages"}
         
         try:
             # Validate/sanitize; expect candidate lines, keep tighter budget
             text_content = self._validate_and_sanitize_input(text_content, max_chars=12000)
-            
-            # Load environment variables if needed
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                try:
-                    from dotenv import load_dotenv
-                    load_dotenv()
-                    api_key = os.getenv("OPENAI_API_KEY")
-                except ImportError:
-                    pass
-            
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY environment variable is required for Discovery analysis")
-            client = OpenAI(api_key=api_key)
 
-            # Disk cache lookup
-            content_fingerprint = hashlib.sha256((text_content or "").encode()).hexdigest()
+            # Cache lookup (prompt+schema aware)
+            content_fingerprint = self._compute_fingerprint("key_messages", text_content, KeyMessagesResult)
             cached = self._load_cached_result("key_messages", content_fingerprint)
             if cached:
                 metrics["cache_hit"] = True
                 metrics["latency_ms"] = 0
                 return cached, metrics
             
+            # Pre-select relevant content for long inputs (map-like distillation)
+            reduced_text, sel_info = self._select_relevant_text(
+                text_content, key_name="key_messages", target_model="gpt-4o", max_total_tokens=1800
+            )
+            metrics.update({
+                "preselect_applied": sel_info.get("chunking_applied", False),
+                "preselect_tokens_before": sel_info.get("tokens_before"),
+                "preselect_tokens_after": sel_info.get("tokens_after"),
+                "preselect_chunks_considered": sel_info.get("chunks_considered"),
+                "preselect_chunks_selected": sel_info.get("chunks_selected")
+            })
+
             # GPT-5 Responses API with JSON Schema, fallback to Chat Completions (gpt-4o)
             primary_prompt = (
                 "Task: From the candidate lines below, extract the 3–5 most important key messages the brand is trying to land.\n\n"
@@ -701,66 +832,30 @@ class DiscoveryAnalyzer:
                 "- “Context” is a one‑sentence rationale referencing where/how it’s used.\n"
                 "- Type: \"Tagline\" if top‑level brand line; otherwise \"Value Proposition\".\n"
                 "- Prefer high-signal, repeated ideas; de‑duplicate; avoid navigation/boilerplate.\n\n"
-                f"Candidate lines:\n{text_content}"
+                f"Candidate lines:\n{reduced_text}"
             )
+            # Unified LLM call via LLMClient with schema enforcement on chat fallback
             try:
-                if not _should_use_responses():
-                    raise Exception("Responses disabled by capability/env")
-                # Budget + adaptive timeout
-                tokens_needed = self._estimate_tokens(text_content)
-                timeout_seconds = self._adaptive_timeout(tokens_needed, cap=75)
-                if not self._acquire_budget(tokens_needed):
-                    raise TimeoutError("LLM budget unavailable")
-                # Use Responses API without schema param for broader SDK compatibility
-                response = safe_responses_call(
-                    client,
-                    timeout_seconds=timeout_seconds,
-                    model="gpt-5",
-                    input=primary_prompt,
-                    reasoning={"effort": "minimal"},
-                    text={"verbosity": "low"}
+                try:
+                    schema_dict = KeyMessagesResult.schema()
+                except Exception:
+                    schema_dict = KeyMessagesResult.model_json_schema()
+                raw_output, meta = self.llm_client.choose_and_call(
+                    key_name="key_messages",
+                    prompt=primary_prompt,
+                    schema=schema_dict,
+                    enforce_schema=True,
                 )
+                metrics.update({
+                    "api_used": meta.get("api_used"),
+                    "model": meta.get("model"),
+                    "token_usage": meta.get("token_usage", 0),
+                    "breaker_open": meta.get("breaker_open", False)
+                })
+            except Exception as e:
+                metrics["error"] = "llm_call_failed"
+                metrics["error_details"] = str(e)
                 raw_output = None
-                if hasattr(response, 'output') and isinstance(response.output, list):
-                    for item in response.output:
-                        if hasattr(item, 'content') and item.content:
-                            for c in item.content:
-                                if getattr(c, 'type', '') == 'output_text' and hasattr(c, 'text'):
-                                    raw_output = c.text
-                                    break
-                        if raw_output:
-                            break
-                if not raw_output and hasattr(response, 'text') and isinstance(response.text, str):
-                    raw_output = response.text
-                if not raw_output:
-                    raise Exception("Failed to extract JSON from GPT-5 response")
-                metrics["api_used"] = "responses_api"
-                metrics["model"] = "gpt-5"
-                self._release_budget()
-            except Exception:
-                self._release_budget()
-                fallback_prompt = (
-                    "Extract 3–5 key messages with fields: message (≤200), context (≤300), type (\"Tagline\"|\"Value Proposition\"), confidence (0–100).\n"
-                    "Output only valid JSON: {{ \"key_messages\": [ {{ \"message\": \"...\", \"context\": \"...\", \"type\": \"Tagline\", \"confidence\": 90 }} ] }}.\n\n"
-                    f"Candidates:\n{text_content}"
-                )
-                # adaptive timeout for fallback
-                tokens_needed = self._estimate_tokens(text_content)
-                timeout_seconds = self._adaptive_timeout(tokens_needed, cap=60)
-                response = safe_openai_call(
-                    client,
-                    timeout_seconds=timeout_seconds,
-                    max_retries=1,
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": "You are a senior brand strategist. Output only valid JSON."},
-                        {"role": "user", "content": fallback_prompt}
-                    ],
-                    response_format={"type": "json_object"}
-                )
-                raw_output = response.choices[0].message.content
-                metrics["token_usage"] = response.usage.total_tokens if hasattr(response, 'usage') else 0
-                metrics["model"] = response.model if hasattr(response, 'model') else "gpt-4o"
             
             # Validate and repair; if fails, run schema-repair fallback via Chat Completions
             result, repairs = self.validator.validate_with_repair(
@@ -781,7 +876,7 @@ class DiscoveryAnalyzer:
                         f"Candidate lines:\n{text_content}"
                     )
                     repair_resp = safe_openai_call(
-                        client,
+                        self.llm_client.client,
                         timeout_seconds=self._adaptive_timeout(self._estimate_tokens(text_content), cap=60),
                         max_retries=1,
                         model="gpt-4o",
@@ -869,8 +964,7 @@ class DiscoveryAnalyzer:
 
     @track_discovery_performance("tone_of_voice")
     def analyze_tone_of_voice(self, text_content: str) -> Tuple[Optional[dict], Dict[str, Any]]:
-        """Analyze tone of voice using a robust multi-stage fallback and repair process."""
-        from openai import OpenAI
+        """Analyze tone of voice using unified LLM client with fallbacks and schema repair."""
         
         start_time = time.time()
         metrics = {"key_name": "tone_of_voice"}
@@ -879,24 +973,24 @@ class DiscoveryAnalyzer:
 
         try:
             text_content = self._validate_and_sanitize_input(text_content, max_chars=4000)
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                try:
-                    from dotenv import load_dotenv
-                    load_dotenv()
-                    api_key = os.getenv("OPENAI_API_KEY")
-                except ImportError:
-                    pass
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY environment variable is required.")
-            client = OpenAI(api_key=api_key)
-
-            content_fingerprint = hashlib.sha256((text_content or "").encode()).hexdigest()
+            content_fingerprint = self._compute_fingerprint("tone_of_voice", text_content, ToneOfVoiceResult)
             cached = self._load_cached_result("tone_of_voice", content_fingerprint)
             if cached:
                 metrics["cache_hit"] = True
                 metrics["latency_ms"] = int((time.time() - start_time) * 1000)
                 return cached, metrics
+
+            # Pre-select relevant content for tone inputs
+            reduced_text, sel_info = self._select_relevant_text(
+                text_content, key_name="tone_of_voice", target_model="gpt-4o", max_total_tokens=1400
+            )
+            metrics.update({
+                "preselect_applied": sel_info.get("chunking_applied", False),
+                "preselect_tokens_before": sel_info.get("tokens_before"),
+                "preselect_tokens_after": sel_info.get("tokens_after"),
+                "preselect_chunks_considered": sel_info.get("chunks_considered"),
+                "preselect_chunks_selected": sel_info.get("chunks_selected")
+            })
 
             primary_prompt = (
                 "Task: Identify the brand’s tone of voice.\n\n"
@@ -907,63 +1001,30 @@ class DiscoveryAnalyzer:
                 "- confidence (0–100)\n\n"
                 "Use only the snippets below; avoid guessing.\n\n"
                 "Snippets:\n"
-            ) + text_content
+            ) + reduced_text
             
-            # Stage 1: Attempt GPT-5 Responses API
+            # Unified LLM call via LLMClient with schema enforcement on chat fallback
             try:
-                if not _should_use_responses():
-                    raise Exception("Responses disabled by capability/env")
-                tokens_needed = self._estimate_tokens(text_content)
-                if not self._acquire_budget(tokens_needed):
-                    raise TimeoutError("LLM budget unavailable")
-                response = safe_responses_call(
-                    client,
-                    timeout_seconds=self._adaptive_timeout(tokens_needed, cap=75),
-                    model="gpt-5",
-                    input=primary_prompt,
-                    reasoning={"effort": "minimal"},
-                    text={"verbosity": "low"}
-                )
-                if hasattr(response, 'output') and isinstance(response.output, list):
-                    for item in response.output:
-                        if hasattr(item, 'content') and item.content:
-                            for c in item.content:
-                                if getattr(c, 'type', '') == 'output_text' and hasattr(c, 'text'):
-                                    raw_output = c.text
-                                    break
-                        if raw_output: break
-                if not raw_output and hasattr(response, 'text') and isinstance(response.text, str):
-                    raw_output = response.text
-                if not raw_output:
-                    raise Exception("Failed to extract JSON from GPT-5 response")
-                metrics.update({"api_used": "responses_api", "model": "gpt-5"})
-                self._release_budget()
-            except Exception as gpt5_error:
-                self._release_budget()
-                print(f"[INFO] GPT-5 unavailable for tone_of_voice ({type(gpt5_error).__name__}); falling back to gpt-4o.")
-                metrics.update({"api_used": "chat_completions_fallback", "model": "gpt-4o"})
-
-                # Stage 2: Fallback to GPT-4o with strict schema
                 try:
+                    schema_dict = ToneOfVoiceResult.schema()
+                except Exception:
                     schema_dict = ToneOfVoiceResult.model_json_schema()
-                    response = safe_openai_call(
-                        client,
-                        timeout_seconds=self._adaptive_timeout(self._estimate_tokens(text_content), cap=90),
-                        model="gpt-4o",
-                        messages=[
-                            {"role": "system", "content": "You are a brand strategist. Output valid JSON matching the schema."},
-                            {"role": "user", "content": primary_prompt}
-                        ],
-                        response_format={"type": "json_schema", "json_schema": {"name": "ToneOfVoiceResult", "schema": schema_dict, "strict": True}}
-                    )
-                    raw_output = response.choices[0].message.content
-                    metrics.update({
-                        "token_usage": getattr(response.usage, 'total_tokens', 0),
-                        "model": getattr(response, 'model', 'gpt-4o')
-                    })
-                except Exception as fallback_error:
-                    print(f"[ERROR] GPT-4o fallback for tone_of_voice also failed: {fallback_error}")
-                    metrics.update({"error": "fallback_failed", "error_details": str(fallback_error)})
+                raw_output, meta = self.llm_client.choose_and_call(
+                    key_name="tone_of_voice",
+                    prompt=primary_prompt,
+                    schema=schema_dict,
+                    enforce_schema=True,
+                )
+                metrics.update({
+                    "api_used": meta.get("api_used"),
+                    "model": meta.get("model"),
+                    "token_usage": meta.get("token_usage", 0),
+                    "breaker_open": meta.get("breaker_open", False)
+                })
+            except Exception as e:
+                metrics["error"] = "llm_call_failed"
+                metrics["error_details"] = str(e)
+                raw_output = None
 
             # Stage 3: Validate and (if needed) Repair
             repairs = []
@@ -979,7 +1040,7 @@ class DiscoveryAnalyzer:
                     schema_dict = ToneOfVoiceResult.model_json_schema()
                     repair_prompt = f"You are a strict JSON schema formatter. Using only the snippets, produce valid JSON matching ToneOfVoiceResult.\n\nSnippets:\n{text_content}"
                     repair_resp = safe_openai_call(
-                        client,
+                        self.llm_client.client,
                         timeout_seconds=self._adaptive_timeout(self._estimate_tokens(text_content), cap=60),
                         model="gpt-4o-mini", # Use a faster model for repair
                         messages=[
@@ -1405,11 +1466,17 @@ class DiscoveryAnalyzer:
     
     def _log_discovery_result(self, key_name: str, raw_output: str, validated_result: Any, metrics: dict):
         """Log Discovery analysis results for monitoring and debugging."""
+        # Attach a trace id for correlating logs across components
+        import uuid as _uuid
+        trace_id = metrics.get("trace_id") or _uuid.uuid4().hex[:12]
+        metrics["trace_id"] = trace_id
+
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "scan_id": self.scan_id,
             "key_name": key_name,
             "model_id": metrics.get("model", "unknown"),
+            "prompt_version": PROMPT_VERSION,
             "prompt_hash": hashlib.sha256(
                 DECONSTRUCTION_KEYS_PROMPTS[key_name]["prompt"].encode()
             ).hexdigest()[:8],
@@ -1417,6 +1484,7 @@ class DiscoveryAnalyzer:
             "token_usage": metrics.get("token_usage"),
             "validation_status": metrics.get("validation_status"),
             "repairs_applied": metrics.get("repairs", []),
+            "trace_id": trace_id,
             "raw_output_truncated": str(raw_output)[:500] if raw_output else None
         }
         
@@ -1430,10 +1498,16 @@ class DiscoveryAnalyzer:
     
     def _log_discovery_error(self, key_name: str, error: Exception, metrics: dict):
         """Log Discovery analysis errors."""
+        import uuid as _uuid
+        trace_id = metrics.get("trace_id") or _uuid.uuid4().hex[:12]
+        metrics["trace_id"] = trace_id
+
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "scan_id": self.scan_id,
             "key_name": key_name,
+            "prompt_version": PROMPT_VERSION,
+            "trace_id": trace_id,
             "error": str(error),
             "error_type": type(error).__name__,
             "metrics": metrics
@@ -1452,11 +1526,17 @@ class DiscoveryAnalyzer:
         Truncates raw output to protect logs. Intended for troubleshooting only.
         """
         try:
+            import uuid as _uuid
+            trace_id = metrics.get("trace_id") or _uuid.uuid4().hex[:12]
+            metrics["trace_id"] = trace_id
+
             debug_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "scan_id": self.scan_id,
                 "key_name": key_name,
                 "stage": stage,
+                "prompt_version": PROMPT_VERSION,
+                "trace_id": trace_id,
                 "validation_status": metrics.get("validation_status"),
                 "repairs": metrics.get("repairs", []),
                 "error": metrics.get("error"),

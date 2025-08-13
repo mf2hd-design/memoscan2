@@ -7,6 +7,9 @@ These prompts are specifically crafted for GPT-5's enhanced reasoning capabiliti
 emphasizing chain-of-thought analysis and strict JSON output requirements.
 """
 
+# Programmatic version tag for logs/metrics
+PROMPT_VERSION = "1.0.0"
+
 # Discovery Mode prompt dictionary - GPT-5 optimized
 DECONSTRUCTION_KEYS_PROMPTS = {
     "positioning_themes": {
