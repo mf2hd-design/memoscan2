@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MemoScan v2 – Strategic Brand Analysis</title>
+    <title>MemoScan</title>
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data:; connect-src 'self' ws: wss:;">
     
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -78,11 +78,9 @@
             100% { transform: translateX(100%); }
         }
         
-        .input-group {
-            display: flex;
-            gap: 1rem;
-            margin-bottom: 1.5rem;
-        }
+        .input-group { display: flex; gap: 1rem; margin-bottom: 0.5rem; }
+        .helper-text { color: var(--text-light); font-size: 0.9rem; margin: 0.25rem 0 0.5rem; }
+        .footer-note { color: var(--text-light); font-size: 0.85rem; margin-top: 0.75rem; }
         
         /* Fallback for older browsers */
         @supports not (display: flex) {
@@ -96,17 +94,10 @@
         }
         
         /* Mode Selector Styles */
-        .mode-selector {
-            margin-bottom: 2rem;
-            text-align: center;
-        }
+        .mode-selector { margin-bottom: 1.25rem; text-align: center; }
         
-        .mode-selector h3 {
-            margin-bottom: 1.5rem;
-            color: var(--text-dark);
-            font-size: 1.2rem;
-            font-weight: 500;
-        }
+        .mode-selector h3 { margin-bottom: 0.25rem; color: var(--text-dark); font-size: 1rem; font-weight: 500; }
+        .subline { color: var(--text-light); margin-top: -0.25rem; margin-bottom: 1rem; }
         
         .mode-options {
             display: flex;
@@ -115,22 +106,7 @@
             flex-wrap: wrap;
         }
         
-        .mode-button {
-            flex: 1;
-            max-width: 300px;
-            min-width: 250px;
-            padding: 1.5rem;
-            border: 2px solid var(--border-color);
-            border-radius: 12px;
-            background: #fff;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 1rem;
-        }
+        .mode-button { flex: 1; max-width: 300px; min-width: 250px; padding: 1.25rem; border: 2px solid var(--border-color); border-radius: 12px; background: #fff; cursor: pointer; transition: all 0.3s ease; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
         
         .mode-button:hover {
             border-color: var(--primary-color);
@@ -149,18 +125,8 @@
             color: var(--primary-color);
         }
         
-        .mode-content strong {
-            display: block;
-            font-size: 1.1rem;
-            margin-bottom: 0.5rem;
-            color: var(--text-dark);
-        }
-        
-        .mode-content small {
-            color: var(--text-light);
-            font-size: 0.9rem;
-            line-height: 1.4;
-        }
+        .mode-content strong { display: block; font-size: 1.05rem; margin-bottom: 0.25rem; color: var(--text-dark); }
+        .mode-content small { color: var(--text-light); font-size: 0.9rem; line-height: 1.4; }
         
         /* Responsive mode selector */
         @media (max-width: 768px) {
@@ -776,37 +742,39 @@
 </head>
 <body>
     <div id="container">
-        <h1>MemoScan v2 – Strategic Brand Analysis</h1>
-        <p>Analyze brand memorability using Saffron's six-key framework. Enter a URL to begin.</p>
+        <h1>MemoScan</h1>
+        <p class="subline">Paste a URL. Choose a mode.</p>
         
         <div id="form-section">
             <!-- Mode selector -->
             <div id="mode-selector" class="mode-selector" style="display: none;">
-                <h3>What would you like to do?</h3>
+                <h3></h3>
                 <div class="mode-options">
-                    <button class="mode-button active" data-mode="diagnosis" onclick="MemoScan.selectMode('diagnosis')">
+                    <button class="mode-button active" data-mode="diagnosis" onclick="MemoScan.selectMode('diagnosis')" aria-label="Diagnose Memorability – select card">
                         <i class="fas fa-chart-line"></i>
                         <div class="mode-content">
-                            <strong>📊 Diagnose Memorability</strong>
-                            <small>Test how memorable your messaging is</small>
+                            <strong>📊 Measure Memorability</strong>
+                            <small>Six Keys score & quick fixes</small>
                         </div>
                     </button>
-                    <button class="mode-button" data-mode="discovery" onclick="MemoScan.selectMode('discovery')">
+                    <button class="mode-button" data-mode="discovery" onclick="MemoScan.selectMode('discovery')" aria-label="Audit the Brand – select card">
                         <i class="fas fa-search"></i>
                         <div class="mode-content">
-                            <strong>🔍 Discover Brand Strategy</strong>
-                            <small>Audit what a brand is currently communicating</small>
+                            <strong>🔍 Audit the Brand</strong>
+                            <small>Current messages & signals</small>
                         </div>
                     </button>
                 </div>
             </div>
             
             <div class="input-group">
-                <input type="text" id="url-input" placeholder="https://example.com" value="">
-                <button id="scan-button" onclick="MemoScan.startScan()">
+                <input type="text" id="url-input" placeholder="Paste homepage URL (e.g., brand.com)" aria-label="Website homepage URL" value="">
+                <button id="scan-button" onclick="MemoScan.startScan()" aria-label="Diagnose Memorability – start">
                     <i class="fas fa-search"></i> Start Analysis
                 </button>
             </div>
+            <div class="helper-text">Works best with the corporate homepage, not a local subsidiary. Scanner speaks English, Spanish and German.</div>
+            <div class="footer-note">Analysis takes ~5–10 minutes.</div>
             
             <div id="progress-container">
                 <div class="progress-header">
