@@ -5,3 +5,6 @@ __pycache__/
 venv/
 .DS_Store # macOS specific
 feedback_log.jsonl # Your feedback log file
+# Ignore venvs
+.venv/
+venv/
