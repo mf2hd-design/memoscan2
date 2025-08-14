@@ -220,7 +220,9 @@
       hi.innerHTML = '';
       (c.high_cost_calls || []).forEach(entry => {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${new Date(entry.timestamp*1000).toLocaleString()}</td><td>${entry.api_type||'—'}</td><td>$${Number(entry.cost||0).toFixed(2)}</td><td class="muted">${entry.details?JSON.stringify(entry.details):'—'}</td>`;
+        const dt = new Date(entry.timestamp*1000);
+        const when = dt.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', hour12: false });
+        tr.innerHTML = `<td>${when}</td><td>${entry.api_type||'—'}</td><td>$${Number(entry.cost||0).toFixed(2)}</td><td class="muted">${entry.details?JSON.stringify(entry.details):'—'}</td>`;
         hi.appendChild(tr);
       });
     }
@@ -278,7 +280,7 @@
       tbody.innerHTML = '';
       (e.errors || []).forEach(row => {
         const tr = document.createElement('tr');
-        const when = row.timestamp ? new Date(row.timestamp * 1000).toLocaleString() : '—';
+        const when = row.timestamp ? new Date(row.timestamp * 1000).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', hour12: false }) : '—';
         tr.innerHTML = `<td>${when}</td><td>${row.source||'—'}</td><td>${row.scan_id||'—'}</td><td>${row.key_name||'—'}</td><td>${(row.message||'').toString().slice(0,200)}</td>`;
         tbody.appendChild(tr);
       });
@@ -344,7 +346,7 @@
       rc.innerHTML = '';
       (f.recent || []).forEach(r => {
         const tr = document.createElement('tr');
-        const when = r.timestamp ? new Date(r.timestamp * 1000).toLocaleString() : '—';
+        const when = r.timestamp ? new Date(r.timestamp * 1000).toLocaleString('de-DE', { timeZone: 'Europe/Berlin', hour12: false }) : '—';
         tr.innerHTML = `<td>${when}</td><td>${r.scan_id||'—'}</td><td>${r.key_name||'—'}</td><td>${r.helpful? 'Yes':'No'}</td><td>${r.category||'—'}</td><td>${(r.comment||'')}</td>`;
         rc.appendChild(tr);
       });

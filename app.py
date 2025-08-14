@@ -895,7 +895,9 @@ def validate_feedback_input(data):
         errors.append("Invalid analysis ID")
     if not key_name or key_name not in ["Emotion", "Attention", "Story", "Involvement", "Repetition", "Consistency"]:
         errors.append("Invalid key name")
-    if feedback_type not in ["too_high", "about_right", "too_low"]:
+    # Accept legacy and new feedback types
+    allowed_types = {"too_high", "about_right", "too_low", "accurate", "mixed", "not_accurate"}
+    if feedback_type not in allowed_types:
         errors.append("Invalid feedback type")
     
     # Validate and sanitize scores

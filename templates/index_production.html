@@ -1562,11 +1562,11 @@
                 </div>
                 
                 <div class="feedback-controls">
-                    <div class="feedback-question">How accurate is this ${SecurityUtils.sanitizeMessage(key)} score of ${analysis.score}/5?</div>
+                    <div class="feedback-question">How accurate is this assessment?</div>
                     <div class="accuracy-buttons">
-                        <button class="accuracy-btn too-high" data-feedback-type="too_high" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Too High</button>
-                        <button class="accuracy-btn about-right" data-feedback-type="about_right" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">About Right</button>
-                        <button class="accuracy-btn too-low" data-feedback-type="too_low" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Too Low</button>
+                        <button class="accuracy-btn about-right" data-feedback-type="accurate" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Accurate</button>
+                        <button class="accuracy-btn mixed" data-feedback-type="mixed" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Mixed</button>
+                        <button class="accuracy-btn too-low" data-feedback-type="not_accurate" data-analysis-id="${analysis.analysis_id}" data-key-name="${key}" data-ai-score="${analysis.score}" data-confidence="${analysis.confidence}">Not accurate</button>
                     </div>
                 </div>
             `;
@@ -1643,7 +1643,7 @@
                 <h3>🎯 Positioning Themes</h3>
                 <div class="discovery-items">${themesHtml}</div>
                 <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
-                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"feedback-question\">How accurate is this assessment?</div>
                     <div class=\"accuracy-buttons\">
                         <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"true\">Yes</button>
                         <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
@@ -1686,7 +1686,7 @@
                 <h3>💬 Key Messages</h3>
                 <div class="discovery-items">${messagesHtml}</div>
                 <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
-                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"feedback-question\">How accurate is this assessment?</div>
                     <div class=\"accuracy-buttons\">
                         <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"true\">Yes</button>
                         <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
@@ -1774,7 +1774,7 @@
                 <h3>🎭 Tone of Voice</h3>
                 <div class="discovery-items">${toneHtml}</div>
                 <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
-                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"feedback-question\">How accurate is this assessment?</div>
                     <div class=\"accuracy-buttons\">
                         <button class=\"discovery-feedback-btn\" data-key-name=\"tone_of_voice\" data-helpful=\"true\">Yes</button>
                         <button class=\"discovery-feedback-btn\" data-key-name=\"tone_of_voice\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
@@ -1870,7 +1870,7 @@
                     ` : ''}
                 </div>
                 <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
-                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"feedback-question\">How accurate is this assessment?</div>
                     <div class=\"accuracy-buttons\">
                         <button class=\"discovery-feedback-btn\" data-key-name=\"brand_elements\" data-helpful=\"true\">Yes</button>
                         <button class=\"discovery-feedback-btn\" data-key-name=\"brand_elements\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
@@ -1906,7 +1906,7 @@
                     </div>
                 </div>
                 <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
-                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"feedback-question\">How accurate is this assessment?</div>
                     <div class=\"accuracy-buttons\">
                         <button class=\"discovery-feedback-btn\" data-key-name=\"visual_text_alignment\" data-helpful=\"true\">Yes</button>
                         <button class=\"discovery-feedback-btn\" data-key-name=\"visual_text_alignment\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
