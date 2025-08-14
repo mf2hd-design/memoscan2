@@ -147,7 +147,7 @@
 
     async function api(path) {
       const hours = $('#hours').value;
-      const url = `${path}?hours=${encodeURIComponent(hours)}`;
+      const url = `${path}?hours=${encodeURIComponent(hours)}&_=${Date.now()}`; // bust caches
       $('#status').textContent = 'Loading…';
       const res = await fetch(url);
       const data = await res.json();

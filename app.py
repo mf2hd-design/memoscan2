@@ -342,7 +342,13 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
         else:
             # Diagnosis stream does not accept a 'mode' argument
             scan_stream = run_diagnosis_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id)
-        
+        # Track scan start for discovery (diagnosis handles its own logging)
+        if mode == "discovery":
+            try:
+                track_scan_metric(scan_id, "started", {"mode": mode, "url": url})
+            except Exception:
+                pass
+
         for update in scan_stream:
             # Check if scan has been cancelled or expired
             if scan_id and scan_id not in active_scans:
@@ -353,6 +359,16 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             print(f"📡 APP.PY FORWARDING MESSAGE: {update.get('type', 'unknown')} - {update}", flush=True)
             socketio.emit("scan_update", update, room=sid)
             socketio.sleep(0)
+
+            # Track completion/failure for discovery scans
+            if mode == "discovery":
+                try:
+                    if update.get("type") == "complete":
+                        track_scan_metric(scan_id, "completed", {"mode": mode})
+                    elif update.get("type") == "error":
+                        track_scan_metric(scan_id, "failed", {"mode": mode, "error": update.get("message")})
+                except Exception:
+                    pass
     except ValueError as e:
         # Input validation errors
         print(f"VALIDATION ERROR for SID {sid}: {e}", flush=True)
@@ -360,6 +376,11 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "type": "error",
             "message": f"Invalid input: {str(e)}"
         }, room=sid)
+        try:
+            if mode == "discovery":
+                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+        except Exception:
+            pass
     except ConnectionError as e:
         # Network/connection errors
         print(f"CONNECTION ERROR for SID {sid}: {e}", flush=True)
@@ -367,6 +388,11 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "type": "error",
             "message": "Unable to connect to the target website. Please check the URL and try again."
         }, room=sid)
+        try:
+            if mode == "discovery":
+                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+        except Exception:
+            pass
     except TimeoutError as e:
         # Timeout errors
         print(f"TIMEOUT ERROR for SID {sid}: {e}", flush=True)
@@ -374,6 +400,11 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "type": "error",
             "message": "The scan timed out. The website may be slow or unavailable."
         }, room=sid)
+        try:
+            if mode == "discovery":
+                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+        except Exception:
+            pass
     except Exception as e:
         # Unexpected errors
         print(f"UNEXPECTED ERROR for SID {sid}: {e}", flush=True)
@@ -383,6 +414,11 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "type": "error",
             "message": "An unexpected error occurred. Please try again later."
         }, room=sid)
+        try:
+            if mode == "discovery":
+                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+        except Exception:
+            pass
     finally:
         # Clean up scan tracking
         if scan_id and scan_id in active_scans:
