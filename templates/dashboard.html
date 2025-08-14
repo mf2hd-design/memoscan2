@@ -42,6 +42,7 @@
       <div class="tab" data-view="costs">Costs</div>
       <div class="tab" data-view="feedback">Feedback</div>
       <div class="tab" data-view="improvements">Improvements</div>
+      <div class="tab" data-view="errors">Errors</div>
     </div>
   </header>
   <main>
@@ -65,9 +66,17 @@
         <div class="kpi"><h4>Completion rate</h4><div class="v" id="kpi-rate">—</div></div>
         <div class="kpi"><h4>Avg duration (s)</h4><div class="v" id="kpi-avg">—</div></div>
       </div>
+      <div class="row">
+        <div class="kpi"><h4>Diagnosis scans (24h)</h4><div class="v" id="kpi-diag">—</div></div>
+        <div class="kpi"><h4>Discovery scans (24h)</h4><div class="v" id="kpi-disc">—</div></div>
+      </div>
       <div class="panel">
         <h3 style="margin-top:0">By hour</h3>
         <table id="metrics-table"><thead><tr><th>Hour</th><th>Started</th><th>Completed</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Models (last window)</h3>
+        <table id="models-table"><thead><tr><th>Category</th><th>Key</th><th>Count</th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 
@@ -106,6 +115,13 @@
       <div class="panel">
         <h3 style="margin-top:0">Prompt improvement suggestions</h3>
         <table id="imp-table"><thead><tr><th>Area</th><th>Recommendation</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="view-errors" style="display:none;">
+      <div class="panel">
+        <h3 style="margin-top:0">Recent errors</h3>
+        <table id="err-table"><thead><tr><th>Time</th><th>Source</th><th>Scan ID</th><th>Key</th><th>Message</th></tr></thead><tbody></tbody></table>
       </div>
     </section>
   </main>
@@ -227,9 +243,52 @@
       if (active === 'costs') await loadCosts();
       if (active === 'feedback') await loadFeedback();
       if (active === 'improvements') await loadImprovements();
+      if (active === 'errors') await loadErrors();
     }
 
     refresh();
+
+    async function loadErrors() {
+      const e = await api('/dashboard/api/errors');
+      const tbody = $('#err-table tbody');
+      tbody.innerHTML = '';
+      (e.errors || []).forEach(row => {
+        const tr = document.createElement('tr');
+        const when = row.timestamp ? new Date(row.timestamp * 1000).toLocaleString() : '—';
+        tr.innerHTML = `<td>${when}</td><td>${row.source||'—'}</td><td>${row.scan_id||'—'}</td><td>${row.key_name||'—'}</td><td>${(row.message||'').toString().slice(0,200)}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadModels() {
+      const adv = await api('/dashboard/api/metrics/advanced');
+      // Mode breakdown
+      const diag = adv.by_mode && adv.by_mode.diagnosis || 0;
+      const disc = adv.by_mode && adv.by_mode.discovery && adv.by_mode.discovery.total_scans || 0;
+      $('#kpi-diag').textContent = fmt(diag);
+      $('#kpi-disc').textContent = fmt(disc);
+      // Models table
+      const tbody = $('#models-table tbody');
+      tbody.innerHTML = '';
+      const models = adv.models || {};
+      Object.entries(models.discovery_analysis_success || {}).forEach(([model, count]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>Discovery success</td><td>${model}</td><td>${fmt(count)}</td>`;
+        tbody.appendChild(tr);
+      });
+      Object.entries(models.api_calls_by_type || {}).forEach(([api, count]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>API calls</td><td>${api}</td><td>${fmt(count)}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Extend refresh to load model breakdown alongside metrics
+    const _origLoadMetrics = loadMetrics;
+    loadMetrics = async function() {
+      await _origLoadMetrics();
+      await loadModels();
+    }
   </script>
 </body>
 </html>

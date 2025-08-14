@@ -538,6 +538,158 @@ def dashboard_feedback_improvements_api():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/dashboard/api/errors")
+def dashboard_errors_api():
+    """Combined error feed from diagnosis and discovery."""
+    try:
+        hours = request.args.get('hours', 24, type=int)
+        cutoff = time.time() - (hours * 3600)
+        data_dir = os.getenv("PERSISTENT_DATA_DIR", "/data")
+        results = []
+
+        # Diagnosis failures from scan_metrics.jsonl
+        metrics_path = os.path.join(data_dir, "scan_metrics.jsonl")
+        if os.path.exists(metrics_path):
+            try:
+                with open(metrics_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        ts = entry.get("timestamp")
+                        if isinstance(ts, (int, float)) and ts >= cutoff and entry.get("event_type") == "failed":
+                            results.append({
+                                "timestamp": ts,
+                                "source": "diagnosis",
+                                "scan_id": entry.get("scan_id"),
+                                "message": (entry.get("details") or {}).get("error") or (entry.get("details") or {}).get("reason") or "failed",
+                                "details": entry.get("details")
+                            })
+            except Exception:
+                pass
+
+        # Discovery errors from discovery_errors.jsonl (ISO timestamps)
+        d_errors_path = os.path.join(data_dir, "discovery_errors.jsonl")
+        if os.path.exists(d_errors_path):
+            try:
+                from datetime import datetime as _dt
+                with open(d_errors_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        iso = entry.get("timestamp")
+                        try:
+                            ts = _dt.fromisoformat(iso).timestamp() if isinstance(iso, str) else None
+                        except Exception:
+                            ts = None
+                        if ts and ts >= cutoff:
+                            results.append({
+                                "timestamp": ts,
+                                "source": "discovery",
+                                "scan_id": entry.get("scan_id"),
+                                "key_name": entry.get("key_name"),
+                                "message": entry.get("error"),
+                                "details": entry
+                            })
+            except Exception:
+                pass
+
+        # Sort newest first
+        results.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        return jsonify({"errors": results[:200]}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard/api/metrics/advanced")
+def dashboard_metrics_advanced_api():
+    """Enhanced metrics including mode and model breakdowns."""
+    try:
+        hours = request.args.get('hours', 24, type=int)
+        cutoff = time.time() - (hours * 3600)
+        base = get_scan_metrics(hours)
+
+        data_dir = os.getenv("PERSISTENT_DATA_DIR", "/data")
+        # Discovery: counts by scan_id from discovery_metrics.jsonl
+        discovery_totals = {"total_scans": 0, "completed": 0}
+        discovery_scan_ids = set()
+        d_metrics_path = os.path.join(data_dir, "discovery_metrics.jsonl")
+        if os.path.exists(d_metrics_path):
+            try:
+                from datetime import datetime as _dt
+                with open(d_metrics_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        iso = entry.get("timestamp")
+                        try:
+                            ts = _dt.fromisoformat(iso).timestamp() if isinstance(iso, str) else None
+                        except Exception:
+                            ts = None
+                        if ts and ts >= cutoff:
+                            sid = entry.get("scan_id")
+                            if sid and sid not in discovery_scan_ids:
+                                discovery_scan_ids.add(sid)
+            except Exception:
+                pass
+        discovery_totals["total_scans"] = len(discovery_scan_ids)
+        discovery_totals["completed"] = len(discovery_scan_ids)  # entries are written at end of scan
+
+        # Model breakdowns
+        model_counts = {"discovery_analysis_success": {}, "api_calls_by_type": {}}
+        # Discovery per-model from discovery_analysis.jsonl where validation_status == "success"
+        d_analysis_path = os.path.join(data_dir, "discovery_analysis.jsonl")
+        if os.path.exists(d_analysis_path):
+            try:
+                from datetime import datetime as _dt
+                with open(d_analysis_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        iso = entry.get("timestamp")
+                        try:
+                            ts = _dt.fromisoformat(iso).timestamp() if isinstance(iso, str) else None
+                        except Exception:
+                            ts = None
+                        if not ts or ts < cutoff:
+                            continue
+                        if (entry.get("validation_status") == "success"):
+                            model = entry.get("model_id") or "unknown"
+                            model_counts["discovery_analysis_success"][model] = model_counts["discovery_analysis_success"].get(model, 0) + 1
+            except Exception:
+                pass
+
+        # API calls by type from api_costs.jsonl (includes e.g. gpt-4o)
+        costs_path = os.path.join(data_dir, "api_costs.jsonl")
+        if os.path.exists(costs_path):
+            try:
+                with open(costs_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        ts = entry.get("timestamp")
+                        if isinstance(ts, (int, float)) and ts >= cutoff:
+                            api_type = (entry.get("details") or {}).get("api_type") or entry.get("api_type") or "unknown"
+                            model_counts["api_calls_by_type"][api_type] = model_counts["api_calls_by_type"].get(api_type, 0) + 1
+            except Exception:
+                pass
+
+        # Compose response
+        response = {
+            "summary": base,
+            "by_mode": {
+                "diagnosis": base.get("total_scans", 0),
+                "discovery": discovery_totals
+            },
+            "models": model_counts
+        }
+        return jsonify(response), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def get_system_resources():
     """Get system resource usage."""
     import psutil
