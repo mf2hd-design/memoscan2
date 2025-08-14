@@ -806,6 +806,96 @@ def dashboard_metrics_advanced_api():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/dashboard/api/scans")
+def dashboard_scans_api():
+    """List recent scans in descending order with start time, duration, status, mode, and errors."""
+    try:
+        hours = request.args.get('hours', 24, type=int)
+        cutoff = time.time() - (hours * 3600)
+        data_dir = os.getenv("PERSISTENT_DATA_DIR", "/data")
+        metrics_path = os.path.join(data_dir, "scan_metrics.jsonl")
+        scans = {}
+
+        if os.path.exists(metrics_path):
+            try:
+                with open(metrics_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        ts = entry.get("timestamp")
+                        if not isinstance(ts, (int, float)) or ts < cutoff:
+                            continue
+                        sid = entry.get("scan_id")
+                        if not sid:
+                            continue
+                        evt = entry.get("event_type")
+                        details = entry.get("details") or {}
+                        rec = scans.setdefault(sid, {
+                            "scan_id": sid,
+                            "start_ts": None,
+                            "end_ts": None,
+                            "status": "unknown",
+                            "mode": details.get("mode") or "diagnosis",
+                            "url": details.get("url") or details.get("cleaned_url"),
+                            "error": None,
+                            "duration_s": None,
+                            "discovery_key_errors": []
+                        })
+                        # Prefer explicit mode if ever provided later
+                        if details.get("mode"):
+                            rec["mode"] = details.get("mode")
+                        if evt == "started":
+                            rec["start_ts"] = ts
+                            rec["status"] = "started"
+                        elif evt == "completed":
+                            rec["end_ts"] = ts
+                            rec["status"] = "completed"
+                        elif evt == "failed":
+                            rec["end_ts"] = rec["end_ts"] or ts
+                            rec["status"] = "failed"
+                            rec["error"] = details.get("error") or details.get("reason")
+                        elif evt == "cancelled":
+                            rec["end_ts"] = ts
+                            rec["status"] = "cancelled"
+                        # compute duration when possible
+                        if rec["start_ts"] and rec["end_ts"] and rec["duration_s"] is None:
+                            rec["duration_s"] = max(0, int(rec["end_ts"] - rec["start_ts"]))
+            except Exception:
+                pass
+
+        # Merge discovery per-key errors to show where analysis failed
+        try:
+            d_errors_path = os.path.join(data_dir, "discovery_errors.jsonl")
+            if os.path.exists(d_errors_path):
+                from datetime import datetime as _dt
+                with open(d_errors_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        iso = entry.get("timestamp")
+                        try:
+                            ts = _dt.fromisoformat(iso).timestamp() if isinstance(iso, str) else None
+                        except Exception:
+                            ts = None
+                        if not ts or ts < cutoff:
+                            continue
+                        sid = entry.get("scan_id")
+                        if sid in scans:
+                            key_name = entry.get("key_name") or "unknown"
+                            msg = entry.get("error") or (entry.get("metrics") or {}).get("error_details")
+                            scans[sid].setdefault("discovery_key_errors", []).append({"key": key_name, "message": msg})
+        except Exception:
+            pass
+
+        # Build list and sort by start_ts desc
+        scan_list = list(scans.values())
+        scan_list.sort(key=lambda r: (r.get("start_ts") or 0), reverse=True)
+        return jsonify({"scans": scan_list}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def get_system_resources():
     """Get system resource usage."""
     import psutil

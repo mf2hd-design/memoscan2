@@ -72,8 +72,8 @@
         <div class="kpi"><h4>Discovery scans (24h)</h4><div class="v" id="kpi-disc">—</div></div>
       </div>
       <div class="panel">
-        <h3 style="margin-top:0">By hour</h3>
-        <table id="metrics-table"><thead><tr><th>Hour</th><th>Started</th><th>Completed</th></tr></thead><tbody></tbody></table>
+        <h3 style="margin-top:0">Recent scans</h3>
+        <table id="metrics-table"><thead><tr><th>Start (CEST)</th><th>Mode</th><th>Status</th><th>Duration</th><th>Error/Key</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="panel">
         <h3 style="margin-top:0">Models (last window)</h3>
@@ -192,16 +192,18 @@
       $('#kpi-cancelled').textContent = fmt(m.cancelled);
       $('#kpi-rate').textContent = m.completion_rate != null ? (m.completion_rate * 100).toFixed(0) + '%' : '—';
       $('#kpi-avg').textContent = m.avg_duration != null ? Math.round(m.avg_duration) : '—';
-
+      // Recent scans
+      const scans = await api('/dashboard/api/scans');
       const tbody = $('#metrics-table tbody');
       tbody.innerHTML = '';
-      if (m.by_hour) {
-        Object.entries(m.by_hour).sort(([a],[b]) => a.localeCompare(b)).forEach(([hour, vals]) => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${hour}</td><td>${fmt(vals.started)}</td><td>${fmt(vals.completed)}</td>`;
-          tbody.appendChild(tr);
-        });
-      }
+      (scans.scans || []).forEach(rec => {
+        const start = rec.start_ts ? new Date(rec.start_ts * 1000).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour12: false }) : '—';
+        const dur = rec.duration_s != null ? `${rec.duration_s}s` : (rec.end_ts && rec.start_ts) ? `${Math.max(0, Math.round(rec.end_ts - rec.start_ts))}s` : '—';
+        const err = rec.error ? rec.error : (rec.discovery_key_errors && rec.discovery_key_errors.length ? `${rec.discovery_key_errors[0].key}: ${rec.discovery_key_errors[0].message || ''}` : '');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${start}</td><td>${rec.mode||'diagnosis'}</td><td>${rec.status}</td><td>${dur}</td><td class="muted">${err||''}</td>`;
+        tbody.appendChild(tr);
+      });
     }
 
     async function loadCosts() {
