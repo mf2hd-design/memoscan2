@@ -490,6 +490,54 @@ def metrics():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- Public, user-friendly Dashboard routes (no admin key required) ---
+@app.route("/dashboard")
+@app.route("/dashboard/<path:subpage>")
+def dashboard(subpage=None):
+    """Serve the dashboard SPA which renders Metrics, Costs, and Feedback views."""
+    try:
+        return send_from_directory('templates', 'dashboard.html')
+    except Exception as e:
+        return jsonify({"error": f"Dashboard not available: {e}"}), 500
+
+@app.route("/dashboard/api/metrics")
+def dashboard_metrics_api():
+    """Unprotected metrics API for the dashboard UI."""
+    hours = request.args.get('hours', 24, type=int)
+    try:
+        data = get_scan_metrics(hours)
+        return jsonify(data), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard/api/costs")
+def dashboard_costs_api():
+    """Unprotected costs API for the dashboard UI."""
+    hours = request.args.get('hours', 24, type=int)
+    try:
+        data = get_cost_summary(hours)
+        return jsonify(data), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard/api/feedback/analytics")
+def dashboard_feedback_analytics_api():
+    """Unprotected feedback analytics for the dashboard UI."""
+    try:
+        data = analyze_feedback_patterns()
+        return jsonify(data), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/dashboard/api/feedback/improvements")
+def dashboard_feedback_improvements_api():
+    """Unprotected feedback improvements for the dashboard UI."""
+    try:
+        data = get_prompt_improvements_from_feedback()
+        return jsonify(data), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def get_system_resources():
     """Get system resource usage."""
     import psutil

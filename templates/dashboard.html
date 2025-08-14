@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MemoScan Dashboard</title>
+  <style>
+    :root {
+      --primary: #007acc; --bg: #f7f7f7; --text: #222; --muted:#666; --card:#fff;
+      --ok:#28a745; --warn:#ffc107; --err:#dc3545;
+    }
+    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); }
+    header { background: #fff; border-bottom: 1px solid #eee; padding: 1rem 1.5rem; position: sticky; top: 0; z-index: 1; }
+    .brand { font-weight: 700; color: var(--primary); }
+    .tabs { display: flex; gap: .5rem; margin-top: .75rem; }
+    .tab { padding: .5rem .75rem; border-radius: 8px; cursor: pointer; color: var(--primary); border: 1px solid var(--primary); background: #fff; }
+    .tab.active { background: var(--primary); color: #fff; }
+    main { max-width: 1100px; margin: 1rem auto; padding: 0 1rem 2rem; }
+    .panel { background: var(--card); border: 1px solid #eee; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
+    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; }
+    .kpi { background: #fafafa; border: 1px solid #eee; border-radius: 10px; padding: .75rem 1rem; }
+    .kpi h4 { margin: 0 0 .25rem; font-size: .9rem; color: var(--muted); font-weight: 500; }
+    .kpi .v { font-size: 1.6rem; font-weight: 700; color: var(--primary); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .5rem .5rem; border-bottom: 1px solid #eee; font-size: .9rem; }
+    th { color: var(--muted); font-weight: 600; }
+    .muted { color: var(--muted); }
+    .pill { display: inline-block; padding: .15rem .5rem; border-radius: 999px; font-size: .75rem; border: 1px solid #ddd; }
+    .pill.ok { color: var(--ok); border-color: var(--ok); }
+    .pill.warn { color: var(--warn); border-color: var(--warn); }
+    .pill.err { color: var(--err); border-color: var(--err); }
+    .controls { display: flex; gap: .5rem; align-items: center; }
+    select { padding: .4rem .5rem; border-radius: 8px; border: 1px solid #ddd; background: #fff; }
+    @media (max-width: 640px) { .tabs { flex-wrap: wrap; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">MemoScan Dashboard</div>
+    <div class="tabs">
+      <div class="tab active" data-view="metrics">Metrics</div>
+      <div class="tab" data-view="costs">Costs</div>
+      <div class="tab" data-view="feedback">Feedback</div>
+      <div class="tab" data-view="improvements">Improvements</div>
+    </div>
+  </header>
+  <main>
+    <div class="controls panel">
+      <label for="hours" class="muted">Time window:</label>
+      <select id="hours">
+        <option value="6">Last 6h</option>
+        <option value="24" selected>Last 24h</option>
+        <option value="72">Last 72h</option>
+        <option value="168">Last 7d</option>
+      </select>
+      <span id="status" class="muted"></span>
+    </div>
+
+    <section id="view-metrics">
+      <div class="row">
+        <div class="kpi"><h4>Total scans</h4><div class="v" id="kpi-total">—</div></div>
+        <div class="kpi"><h4>Completed</h4><div class="v" id="kpi-completed">—</div></div>
+        <div class="kpi"><h4>Failed</h4><div class="v" id="kpi-failed">—</div></div>
+        <div class="kpi"><h4>Cancelled</h4><div class="v" id="kpi-cancelled">—</div></div>
+        <div class="kpi"><h4>Completion rate</h4><div class="v" id="kpi-rate">—</div></div>
+        <div class="kpi"><h4>Avg duration (s)</h4><div class="v" id="kpi-avg">—</div></div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">By hour</h3>
+        <table id="metrics-table"><thead><tr><th>Hour</th><th>Started</th><th>Completed</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="view-costs" style="display:none;">
+      <div class="row">
+        <div class="kpi"><h4>Total cost</h4><div class="v" id="cost-total">—</div></div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">By API</h3>
+        <table id="costs-table"><thead><tr><th>API</th><th>Cost</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">High-cost calls</h3>
+        <table id="highcost-table"><thead><tr><th>When</th><th>API</th><th>Cost</th><th class="muted">Details</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="view-feedback" style="display:none;">
+      <div class="panel">
+        <h3 style="margin-top:0">Summary</h3>
+        <div class="row">
+          <div class="kpi"><h4>Total feedback</h4><div class="v" id="fb-total">—</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">By key</h3>
+        <table id="fb-bykey"><thead><tr><th>Key</th><th>Count</th><th>Avg score diff</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Systematic issues</h3>
+        <table id="fb-issues"><thead><tr><th>Issue</th><th>Count</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="view-improvements" style="display:none;">
+      <div class="panel">
+        <h3 style="margin-top:0">Prompt improvement suggestions</h3>
+        <table id="imp-table"><thead><tr><th>Area</th><th>Recommendation</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+    const views = {
+      metrics: $('#view-metrics'),
+      costs: $('#view-costs'),
+      feedback: $('#view-feedback'),
+      improvements: $('#view-improvements')
+    };
+    $$('.tab').forEach(t => t.addEventListener('click', () => {
+      $$('.tab').forEach(x => x.classList.remove('active'));
+      t.classList.add('active');
+      const v = t.getAttribute('data-view');
+      Object.entries(views).forEach(([k, el]) => el.style.display = (k === v) ? 'block' : 'none');
+      refresh();
+    }));
+
+    $('#hours').addEventListener('change', refresh);
+
+    async function api(path) {
+      const hours = $('#hours').value;
+      const url = `${path}?hours=${encodeURIComponent(hours)}`;
+      $('#status').textContent = 'Loading…';
+      const res = await fetch(url);
+      const data = await res.json();
+      $('#status').textContent = '';
+      return data;
+    }
+
+    function fmt(n) {
+      if (n == null) return '—';
+      if (typeof n === 'number') return Number.isInteger(n) ? n.toString() : n.toFixed(2);
+      return String(n);
+    }
+
+    async function loadMetrics() {
+      const m = await api('/dashboard/api/metrics');
+      $('#kpi-total').textContent = fmt(m.total_scans);
+      $('#kpi-completed').textContent = fmt(m.completed);
+      $('#kpi-failed').textContent = fmt(m.failed);
+      $('#kpi-cancelled').textContent = fmt(m.cancelled);
+      $('#kpi-rate').textContent = m.completion_rate != null ? (m.completion_rate * 100).toFixed(0) + '%' : '—';
+      $('#kpi-avg').textContent = m.avg_duration != null ? Math.round(m.avg_duration) : '—';
+
+      const tbody = $('#metrics-table tbody');
+      tbody.innerHTML = '';
+      if (m.by_hour) {
+        Object.entries(m.by_hour).sort(([a],[b]) => a.localeCompare(b)).forEach(([hour, vals]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${hour}</td><td>${fmt(vals.started)}</td><td>${fmt(vals.completed)}</td>`;
+          tbody.appendChild(tr);
+        });
+      }
+    }
+
+    async function loadCosts() {
+      const c = await api('/dashboard/api/costs');
+      $('#cost-total').textContent = c.total != null ? `$${c.total.toFixed(2)}` : '—';
+      const tbody = $('#costs-table tbody');
+      tbody.innerHTML = '';
+      if (c.by_api) {
+        Object.entries(c.by_api).forEach(([api, cost]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${api}</td><td>$${Number(cost).toFixed(2)}</td>`;
+          tbody.appendChild(tr);
+        });
+      }
+      const hi = $('#highcost-table tbody');
+      hi.innerHTML = '';
+      (c.high_cost_calls || []).forEach(entry => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${new Date(entry.timestamp*1000).toLocaleString()}</td><td>${entry.api_type||'—'}</td><td>$${Number(entry.cost||0).toFixed(2)}</td><td class="muted">${entry.details?JSON.stringify(entry.details):'—'}</td>`;
+        hi.appendChild(tr);
+      });
+    }
+
+    async function loadFeedback() {
+      const f = await api('/dashboard/api/feedback/analytics');
+      $('#fb-total').textContent = fmt(f.total_feedback || (f.error ? 0 : '—'));
+      const byKey = $('#fb-bykey tbody');
+      byKey.innerHTML = '';
+      if (f.by_key) {
+        Object.entries(f.by_key).forEach(([k, v]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${k}</td><td>${fmt(v.count)}</td><td>${fmt(v.avg_score_diff)}</td>`;
+          byKey.appendChild(tr);
+        });
+      }
+      const issues = $('#fb-issues tbody');
+      issues.innerHTML = '';
+      if (f.systematic_issues) {
+        Object.entries(f.systematic_issues).forEach(([k, v]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${k}</td><td>${fmt(v)}</td>`;
+          issues.appendChild(tr);
+        });
+      }
+    }
+
+    async function loadImprovements() {
+      const imp = await api('/dashboard/api/feedback/improvements');
+      const tbody = $('#imp-table tbody');
+      tbody.innerHTML = '';
+      const items = Array.isArray(imp) ? imp : (imp.items || []);
+      items.forEach(i => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${i.area||'General'}</td><td>${i.recommendation||i.text||JSON.stringify(i)}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function refresh() {
+      const active = document.querySelector('.tab.active').getAttribute('data-view');
+      if (active === 'metrics') await loadMetrics();
+      if (active === 'costs') await loadCosts();
+      if (active === 'feedback') await loadFeedback();
+      if (active === 'improvements') await loadImprovements();
+    }
+
+    refresh();
+  </script>
+</body>
+</html>
+
