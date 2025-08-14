@@ -574,6 +574,86 @@ def dashboard_feedback_improvements_api():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/dashboard/api/discovery/feedback")
+def dashboard_discovery_feedback_api():
+    """Unprotected Discovery feedback analytics for the dashboard UI."""
+    try:
+        hours = request.args.get('hours', 24, type=int)
+        cutoff = time.time() - (hours * 3600)
+        data_dir = os.getenv("PERSISTENT_DATA_DIR", "/data")
+        path = os.path.join(data_dir, "discovery_feedback.jsonl")
+        summary = {
+            "total": 0,
+            "helpful_true": 0,
+            "helpful_false": 0,
+            "by_key": {},
+            "by_category": {},
+            "recent": []
+        }
+        entries = []
+        if os.path.exists(path):
+            try:
+                from datetime import datetime as _dt
+                with open(path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except Exception:
+                            continue
+                        ts_raw = entry.get("timestamp")
+                        # Parse datetime strings of form 'YYYY-MM-DD HH:MM:SS' or ISO
+                        ts = None
+                        if isinstance(ts_raw, (int, float)):
+                            ts = float(ts_raw)
+                        elif isinstance(ts_raw, str):
+                            try:
+                                ts = _dt.fromisoformat(ts_raw.replace("Z", "+00:00")).timestamp()
+                            except Exception:
+                                ts = None
+                        if ts is None or ts < cutoff:
+                            continue
+                        entries.append((ts, entry))
+            except Exception:
+                pass
+
+        # Sort by timestamp desc
+        entries.sort(key=lambda x: x[0], reverse=True)
+        for ts, e in entries:
+            summary["total"] += 1
+            helpful = bool(e.get("helpful"))
+            if helpful:
+                summary["helpful_true"] += 1
+            else:
+                summary["helpful_false"] += 1
+            key = e.get("key_name") or "unknown"
+            bk = summary["by_key"].setdefault(key, {"count": 0, "helpful": 0})
+            bk["count"] += 1
+            bk["helpful"] += 1 if helpful else 0
+            cat = e.get("category") or "uncategorized"
+            summary["by_category"][cat] = summary["by_category"].get(cat, 0) + 1
+            # Recent list
+            if len(summary["recent"]) < 50:
+                summary["recent"].append({
+                    "timestamp": ts,
+                    "scan_id": e.get("scan_id"),
+                    "key_name": key,
+                    "helpful": helpful,
+                    "category": e.get("category"),
+                    "comment": (e.get("comment") or "")[:200]
+                })
+        # Compute helpful rate per key
+        for key, v in summary["by_key"].items():
+            cnt = v.get("count", 0) or 1
+            v["helpful_rate"] = v.get("helpful", 0) / cnt
+        # Overall helpful rate
+        total = summary["total"] or 1
+        summary["helpful_rate"] = summary["helpful_true"] / total
+        return jsonify(summary), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/dashboard/api/errors")
 def dashboard_errors_api():
     """Combined error feed from diagnosis and discovery."""

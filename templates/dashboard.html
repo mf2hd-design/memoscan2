@@ -41,6 +41,7 @@
       <div class="tab active" data-view="metrics">Metrics</div>
       <div class="tab" data-view="costs">Costs</div>
       <div class="tab" data-view="feedback">Feedback</div>
+      <div class="tab" data-view="disc-feedback">Discovery Feedback</div>
       <div class="tab" data-view="improvements">Improvements</div>
       <div class="tab" data-view="errors">Errors</div>
     </div>
@@ -108,6 +109,28 @@
       <div class="panel">
         <h3 style="margin-top:0">Systematic issues</h3>
         <table id="fb-issues"><thead><tr><th>Issue</th><th>Count</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="view-disc-feedback" style="display:none;">
+      <div class="panel">
+        <h3 style="margin-top:0">Discovery Feedback Summary</h3>
+        <div class="row">
+          <div class="kpi"><h4>Total</h4><div class="v" id="dfb-total">—</div></div>
+          <div class="kpi"><h4>Helpful rate</h4><div class="v" id="dfb-helpful-rate">—</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">By key</h3>
+        <table id="dfb-bykey"><thead><tr><th>Key</th><th>Count</th><th>Helpful rate</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">By category</h3>
+        <table id="dfb-bycat"><thead><tr><th>Category</th><th>Count</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="panel">
+        <h3 style="margin-top:0">Recent (last 50)</h3>
+        <table id="dfb-recent"><thead><tr><th>Time</th><th>Scan</th><th>Key</th><th>Helpful</th><th>Category</th><th>Comment</th></tr></thead><tbody></tbody></table>
       </div>
     </section>
 
@@ -243,6 +266,7 @@
       if (active === 'costs') await loadCosts();
       if (active === 'feedback') await loadFeedback();
       if (active === 'improvements') await loadImprovements();
+      if (active === 'disc-feedback') await loadDiscoveryFeedback();
       if (active === 'errors') await loadErrors();
     }
 
@@ -288,6 +312,42 @@
     loadMetrics = async function() {
       await _origLoadMetrics();
       await loadModels();
+    }
+
+    async function loadDiscoveryFeedback() {
+      const f = await api('/dashboard/api/discovery/feedback');
+      $('#dfb-total').textContent = fmt(f.total);
+      $('#dfb-helpful-rate').textContent = f.helpful_rate != null ? (f.helpful_rate * 100).toFixed(0) + '%' : '—';
+      // by key
+      const bk = $('#dfb-bykey tbody');
+      bk.innerHTML = '';
+      if (f.by_key) {
+        Object.entries(f.by_key).forEach(([key, v]) => {
+          const tr = document.createElement('tr');
+          const rate = v.helpful_rate != null ? (v.helpful_rate * 100).toFixed(0) + '%' : '—';
+          tr.innerHTML = `<td>${key}</td><td>${fmt(v.count)}</td><td>${rate}</td>`;
+          bk.appendChild(tr);
+        });
+      }
+      // by category
+      const bc = $('#dfb-bycat tbody');
+      bc.innerHTML = '';
+      if (f.by_category) {
+        Object.entries(f.by_category).forEach(([cat, c]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${cat}</td><td>${fmt(c)}</td>`;
+          bc.appendChild(tr);
+        });
+      }
+      // recent
+      const rc = $('#dfb-recent tbody');
+      rc.innerHTML = '';
+      (f.recent || []).forEach(r => {
+        const tr = document.createElement('tr');
+        const when = r.timestamp ? new Date(r.timestamp * 1000).toLocaleString() : '—';
+        tr.innerHTML = `<td>${when}</td><td>${r.scan_id||'—'}</td><td>${r.key_name||'—'}</td><td>${r.helpful? 'Yes':'No'}</td><td>${r.category||'—'}</td><td>${(r.comment||'')}</td>`;
+        rc.appendChild(tr);
+      });
     }
   </script>
 </body>
