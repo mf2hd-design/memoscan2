@@ -983,7 +983,8 @@ def validate_feedback_input(data):
     
     if not analysis_id or len(analysis_id) > 100:
         errors.append("Invalid analysis ID")
-    if not key_name or key_name not in ["Emotion", "Attention", "Story", "Involvement", "Repetition", "Consistency"]:
+    # Accept any non-empty key name up to 100 chars (avoid overly strict coupling)
+    if not key_name or len(key_name) > 100:
         errors.append("Invalid key name")
     # Accept legacy and new feedback types
     allowed_types = {"too_high", "about_right", "too_low", "accurate", "mixed", "not_accurate"}
