@@ -963,6 +963,11 @@
         
         async processMessage(msg) {
             switch (msg.type) {
+                case 'scan_started':
+                    if (msg.scan_id) {
+                        MemoScan.currentScanId = msg.scan_id;
+                    }
+                    break;
                 case 'status':
                     MemoScan.progressTracker.updateProgress(msg.progress || 0, msg.phase);
                     break;
@@ -1311,6 +1316,7 @@
             this.notificationManager = new NotificationManager();
             this.scanStartTime = null;
             this.csrfToken = null;
+            this.currentScanId = null;
             this.currentMode = localStorage.getItem('scanMode') || 'diagnosis';
             this.discoveryEnabled = false;
             
@@ -1603,6 +1609,15 @@
                 return `<div class="discovery-block">
                     <h3>🎯 Positioning Themes</h3>
                     <p>No positioning themes found in the analysis.</p>
+                    <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                        <div class=\"feedback-question\">Was this helpful?</div>
+                        <div class=\"accuracy-buttons\">
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"true\">Yes</button>
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                        </div>
+                    </div>
                 </div>`;
             }
             
@@ -1627,6 +1642,15 @@
             return `<div class="discovery-block">
                 <h3>🎯 Positioning Themes</h3>
                 <div class="discovery-items">${themesHtml}</div>
+                <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"accuracy-buttons\">
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"true\">Yes</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"positioning_themes\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                    </div>
+                </div>
             </div>`;
         }
         
@@ -1635,6 +1659,15 @@
                 return `<div class="discovery-block">
                     <h3>💬 Key Messages</h3>
                     <p>No key messages found in the analysis.</p>
+                    <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                        <div class=\"feedback-question\">Was this helpful?</div>
+                        <div class=\"accuracy-buttons\">
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"true\">Yes</button>
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                            <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                        </div>
+                    </div>
                 </div>`;
             }
             
@@ -1652,6 +1685,15 @@
             return `<div class="discovery-block">
                 <h3>💬 Key Messages</h3>
                 <div class="discovery-items">${messagesHtml}</div>
+                <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"accuracy-buttons\">
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"true\">Yes</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"key_messages\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                    </div>
+                </div>
             </div>`;
         }
         
@@ -1731,6 +1773,15 @@
             return `<div class="discovery-block">
                 <h3>🎭 Tone of Voice</h3>
                 <div class="discovery-items">${toneHtml}</div>
+                <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"accuracy-buttons\">
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"tone_of_voice\" data-helpful=\"true\">Yes</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"tone_of_voice\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"tone_of_voice\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"tone_of_voice\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                    </div>
+                </div>
             </div>`;
         }
         
@@ -1818,6 +1869,15 @@
                         </div>
                     ` : ''}
                 </div>
+                <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"accuracy-buttons\">
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"brand_elements\" data-helpful=\"true\">Yes</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"brand_elements\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"brand_elements\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"brand_elements\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                    </div>
+                </div>
             </div>`;
         }
         
@@ -1845,6 +1905,15 @@
                         </div>
                     </div>
                 </div>
+                <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"accuracy-buttons\">
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"visual_text_alignment\" data-helpful=\"true\">Yes</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"visual_text_alignment\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"visual_text_alignment\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"visual_text_alignment\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                    </div>
+                </div>
             </div>`;
         }
         
@@ -1852,6 +1921,15 @@
             return `<div class="discovery-block">
                 <h3>${SecurityUtils.sanitizeMessage(key)}</h3>
                 <pre>${SecurityUtils.sanitizeHtmlContent(JSON.stringify(analysis, null, 2))}</pre>
+                <div class=\"feedback-controls\" style=\"margin-top: 0.5rem;\">
+                    <div class=\"feedback-question\">Was this helpful?</div>
+                    <div class=\"accuracy-buttons\">
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"${SecurityUtils.sanitizeMessage(key)}\" data-helpful=\"true\">Yes</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"${SecurityUtils.sanitizeMessage(key)}\" data-helpful=\"false\" data-category=\"incorrect_evidence\">Incorrect evidence</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"${SecurityUtils.sanitizeMessage(key)}\" data-helpful=\"false\" data-category=\"missing_context\">Missing context</button>
+                        <button class=\"discovery-feedback-btn\" data-key-name=\"${SecurityUtils.sanitizeMessage(key)}\" data-helpful=\"false\" data-category=\"other\">Other</button>
+                    </div>
+                </div>
             </div>`;
         }
         
@@ -1864,8 +1942,19 @@
         }
         
         handleDiscoveryFeedbackClick(e) {
-            // Handle Discovery-specific feedback
-            console.log('Discovery feedback:', e.target.dataset);
+            const btn = e.target;
+            const keyName = btn.dataset.keyName;
+            const helpful = (btn.dataset.helpful || '').toString() === 'true';
+            const category = btn.dataset.category || null;
+            const comment = null;
+            if (!this.currentScanId) {
+                console.warn('No scan_id available for discovery feedback');
+                this.notificationManager.showToast('Feedback not sent: missing scan ID', 'error');
+                return;
+            }
+            this.sendDiscoveryFeedback(this.currentScanId, keyName, helpful, category, comment);
+            btn.classList.add('active');
+            this.notificationManager.showToast('Thank you for your feedback!', 'success');
         }
         
         attachFeedbackHandlers(block) {
@@ -1921,6 +2010,37 @@
                 }
             } catch (error) {
                 console.error('Error sending feedback:', error);
+                this.notificationManager.showToast('Failed to submit feedback. Please try again.', 'error');
+            }
+        }
+
+        async sendDiscoveryFeedback(scanId, keyName, helpful, category = null, comment = null) {
+            try {
+                const headers = { 'Content-Type': 'application/json' };
+                if (this.csrfToken) {
+                    headers['X-CSRF-Token'] = this.csrfToken;
+                }
+                const payload = {
+                    scan_id: scanId,
+                    key_name: keyName,
+                    helpful: !!helpful,
+                    category: category || null,
+                    comment: comment || null
+                };
+                const response = await fetch('/feedback/discovery', {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                if (data.status !== 'success') {
+                    console.error('Failed to send discovery feedback:', data.message);
+                }
+            } catch (error) {
+                console.error('Error sending discovery feedback:', error);
                 this.notificationManager.showToast('Failed to submit feedback. Please try again.', 'error');
             }
         }

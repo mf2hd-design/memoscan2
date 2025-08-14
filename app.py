@@ -850,6 +850,9 @@ def handle_start_scan(data):
     # Track scan for user
     track_user_scan(user_id, scan_id, cleaned_url)
     
+    # Emit initial scan_started message so frontend can capture scan_id (used for Discovery feedback)
+    emit("scan_update", {"type": "scan_started", "scan_id": scan_id, "mode": mode}, room=request.sid)
+    
     socketio.start_background_task(run_scan_in_background, request.sid, data, scan_id, user_id)
     print(f"Dispatched scan to background task for SID: {request.sid} from IP: {client_ip}, user: {user_id} (scan_id: {scan_id})", flush=True)
 
