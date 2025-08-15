@@ -47,7 +47,8 @@ except ImportError:
                 raise
     
     ET = SafeXMLParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
+import itertools
 from urllib.robotparser import RobotFileParser
 from bs4 import BeautifulSoup, Tag
 from openai import OpenAI
@@ -365,6 +366,12 @@ def is_vetoed_url(url: str) -> Tuple[bool, Optional[str]]:
     Returns (is_vetoed, category) for transparency in logging.
     """
     try:
+        # Global whitelist: never veto About/About-us pages
+        try:
+            if is_about_whitelisted(url):
+                return False, None
+        except Exception:
+            pass
         # First check exceptions - these override any veto
         url_lower = url.lower()
         if any(exception in url_lower for exception in VETO_EXCEPTIONS):
@@ -601,6 +608,16 @@ DISCOVERY_LINK_LIMITS = {
 }
 # --- END: CONFIGURATION AND CONSTANTS ---
 
+ABOUT_WHITELIST_RE = re.compile(r'/(?:about(?:[-_]?us)?)\b', re.IGNORECASE)
+
+def is_about_whitelisted(url: str) -> bool:
+    """Return True if URL path contains /about or /about-us anywhere."""
+    try:
+        path = urlsplit(url).path or "/"
+    except Exception:
+        path = url or "/"
+    return bool(ABOUT_WHITELIST_RE.search(path))
+
 # --- START: REGEX AND SCORING LOGIC ---
 NEGATIVE_REGEX = [
     # --- English ---
@@ -741,14 +758,17 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
         if rationale:
             break
 
-    # --- Negative Keyword Scoring (Always runs) ---
+    # --- Negative Keyword Scoring (guarded for About whitelist) ---
     negative_applied = False
-    for compiled_pattern in LINK_SCORE_MAP["negative"]["patterns"]:
-        if compiled_pattern.search(combined_text):
-            score += LINK_SCORE_MAP["negative"]["score"]
-            rationale.append(f"Veto: {LINK_SCORE_MAP['negative']['score']}")
-            negative_applied = True
-            break
+    if not is_about_whitelisted(link_url):
+        for compiled_pattern in LINK_SCORE_MAP["negative"]["patterns"]:
+            if compiled_pattern.search(combined_text):
+                score += LINK_SCORE_MAP["negative"]["score"]
+                rationale.append(f"Veto: {LINK_SCORE_MAP['negative']['score']}")
+                negative_applied = True
+                break
+    else:
+        rationale.append("Whitelist: About/About-us (no negative support penalty)")
 
     # Rescue rule: allow About pages through
     try:
@@ -767,9 +787,9 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
 
     # --- Path Context Bonus: Well-Structured Corporate Paths ---
     positive_paths = ['/about/', '/about-us/', '/who-we-are/', '/company/', '/info/', '/mission/', '/vision/', '/values/', '/leadership/']
-    if any(path in link_url.lower() for path in positive_paths):
+    if any(path in link_url.lower() for path in positive_paths) or is_about_whitelisted(link_url):
         score += 5
-        rationale.append("Path Bonus: +5")
+        rationale.append("Path bonus: About/About-us")
 
     # --- Bonuses and Penalties ---
     language_patterns = LINK_SCORE_MAP['language']['patterns']
