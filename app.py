@@ -20,6 +20,23 @@ from io import BytesIO
 import signal
 from threading import Event
 from dotenv import load_dotenv
+# Load environment variables early so downstream imports see them
+try:
+    load_dotenv()
+except Exception:
+    pass
+
+# Ensure PERSISTENT_DATA_DIR is set BEFORE importing scanner/discovery modules
+if not os.getenv("PERSISTENT_DATA_DIR"):
+    local_data_dir = os.path.join(os.getcwd(), "data")
+    try:
+        os.makedirs(local_data_dir, exist_ok=True)
+    except Exception:
+        # As a last resort, fall back to temp
+        local_data_dir = "/tmp"
+    os.environ["PERSISTENT_DATA_DIR"] = local_data_dir
+    print(f"✅ Set PERSISTENT_DATA_DIR to: {local_data_dir}", flush=True)
+
 # Import record_feedback from scanner.py
 from scanner import SHARED_CACHE, record_feedback, _validate_url, _clean_url, analyze_feedback_patterns, get_prompt_improvements_from_feedback, get_cost_summary, run_retention_cleanup, get_scan_metrics, track_scan_metric, start_background_threads
 
@@ -46,14 +63,6 @@ except ImportError:
 from scanner import run_full_scan_stream as run_diagnosis_scan_stream
 
 load_dotenv()
-
-# Ensure PERSISTENT_DATA_DIR is set for Discovery Mode
-if not os.getenv("PERSISTENT_DATA_DIR"):
-    # Use a writable directory for local development
-    local_data_dir = os.path.join(os.getcwd(), "data")
-    os.makedirs(local_data_dir, exist_ok=True)
-    os.environ["PERSISTENT_DATA_DIR"] = local_data_dir
-    print(f"✅ Set PERSISTENT_DATA_DIR to: {local_data_dir}", flush=True)
 
 # Admin authentication configuration
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
