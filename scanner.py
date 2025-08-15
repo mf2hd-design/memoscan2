@@ -750,11 +750,11 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
             negative_applied = True
             break
 
-    # Rescue rule: allow About pages through under support paths
+    # Rescue rule: allow About pages through
     try:
-        if negative_applied and re.search(r"/customer[-_]service/", link_url, re.I) and re.search(r"/about(-|_)us|/about/", link_url, re.I):
+        if negative_applied and re.search(r"/about(-|_)us|/about/", link_url, re.I):
             score -= LINK_SCORE_MAP["negative"]["score"]  # undo the negative penalty
-            rationale.append("Rescue: customer-service + about-us")
+            rationale.append("Rescue: about-us")
     except Exception:
         pass
 
