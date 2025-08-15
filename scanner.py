@@ -604,7 +604,7 @@ DISCOVERY_LINK_LIMITS = {
     'media': 1,
     'careers': 1,     # Minimal extraction from careers sites
     'default': 2,     # Fallback for unrecognized subdomains
-    'high_value_paths': 3  # Main domain high-value path extraction
+    'high_value_paths': 6  # Main domain high-value path extraction (raised from 3)
 }
 # --- END: CONFIGURATION AND CONSTANTS ---
 
