@@ -60,7 +60,7 @@ from urllib.parse import quote_plus
 from concurrent.futures import ThreadPoolExecutor
 
 from playwright.sync_api import sync_playwright
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Set
 
 # --- SHARED HTTP CLIENT ---
 # Create a shared httpx client with connection pooling for better performance
@@ -1823,10 +1823,14 @@ def _validate_url(url: str) -> tuple[bool, str]:
     except Exception as e:
         return False, f"URL validation error: {str(e)}"
 
-def prepare_page_for_capture(page, max_ms=45000):
+def prepare_page_for_capture(page, max_ms=60000):
     page.wait_for_load_state("domcontentloaded", timeout=max_ms)
     consent_clicked = False
-    for text in ["Accept", "I agree", "Alle akzeptieren", "Zustimmen", "Allow all", "Accept all"]:
+    for text in [
+        "Accept", "I agree", "OK", "Allow", "Continue",
+        "Alle akzeptieren", "Zustimmen", "Akzeptieren",
+        "Allow all", "Accept all", "Accept Cookies", "Accept all cookies"
+    ]:
         try:
             page.get_by_role("button", name=re.compile(text, re.I)).click(timeout=1500)
             log("info", f"Consent banner '{text}' dismissed.")
@@ -1865,12 +1869,12 @@ def prepare_page_for_capture(page, max_ms=45000):
     log("info", "✅ Aggressive scroll complete.")
     
     try:
-        page.wait_for_function("() => { const imagesReady = Array.from(document.images).every(img => img.complete && img.naturalWidth > 0); const fontsReady = !('fonts' in document) || document.fonts.status === 'loaded'; const noSkeletons = !document.querySelector('[class*=skeleton],[data-skeleton],[aria-busy=\"true\"]'); return imagesReady && fontsReady && noSkeletons; }", timeout=15000)
+        page.wait_for_function("() => { const imagesReady = Array.from(document.images).every(img => img.complete && img.naturalWidth > 0); const fontsReady = !('fonts' in document) || document.fonts.status === 'loaded'; const noSkeletons = !document.querySelector('[class*=skeleton],[data-skeleton],[aria-busy=\"true\"]'); return imagesReady && fontsReady && noSkeletons; }", timeout=20000)
         log("info", "Page is visually ready based on strict check.")
     except Exception as e:
         log("warn", f"Strict visual readiness check failed: {e}. Proceeding with lenient wait.")
         try:
-            page.wait_for_load_state("networkidle", timeout=20000)
+            page.wait_for_load_state("networkidle", timeout=30000)
             log("info", "Page is ready based on network idle state.")
         except Exception as network_e:
             log("warn", f"Network idle wait also failed: {network_e}. Proceeding anyway.")
@@ -2239,13 +2243,30 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
         client = get_shared_http_client()
         response = client.get(sitemap_urls[0], timeout=20)
         response.raise_for_status()
-    except (httpx.HTTPStatusError, httpx.RequestError):
-        log("warn", f"/sitemap.xml not found or failed. Checking robots.txt as a fallback.")
-        robots_sitemaps = find_sitemap_from_robots_txt(homepage_url)
-        if not robots_sitemaps:
+    except (httpx.HTTPStatusError, httpx.RequestError) as e:
+        log("warn", f"/sitemap.xml not found or failed ({e}). Trying robots and common variants.")
+        robots_sitemaps = find_sitemap_from_robots_txt(homepage_url) or []
+        candidates = list(robots_sitemaps)
+        # Common variants: protocol and www toggles
+        try:
+            parsed = urlparse(homepage_url)
+            schemes = ["https", "http"]
+            hosts = {parsed.netloc, parsed.netloc.replace("www.", ""), ("www." + parsed.netloc if not parsed.netloc.startswith("www.") else parsed.netloc)}
+            for sch in schemes:
+                for host in hosts:
+                    candidates.append(f"{sch}://{host}/sitemap.xml")
+        except Exception:
+            pass
+        # Deduplicate while preserving order
+        seen = set()
+        deduped = []
+        for u in candidates:
+            if u not in seen:
+                seen.add(u); deduped.append(u)
+        if not deduped:
             log("warn", "Sitemap not found in /sitemap.xml or robots.txt.")
             return None
-        sitemap_urls = robots_sitemaps
+        sitemap_urls = deduped
     
     # Process all sitemap URLs, prioritizing based on preferred_lang
     all_links = []
@@ -2256,6 +2277,9 @@ def discover_links_from_sitemap(homepage_url: str, preferred_lang: str = 'en') -
             log("info", f"Processing sitemap: {sitemap_url}")
             client = get_shared_http_client()
             response = client.get(sitemap_url, timeout=20)
+            if response.status_code == 403:
+                log("warn", f"Sitemap 403 at {sitemap_url}. Skipping but continuing discovery.")
+                continue
             response.raise_for_status()
             
             content = response.content
@@ -2368,6 +2392,37 @@ def discover_links_from_html(html: str, base_url: str) -> List[Tuple[str, str]]:
         log("debug", f"HTML snippet (first 500 chars): {html[:500]}")
     
     return links
+
+def sniff_corporate_paths_from_raw_html(html: str, base_url: str) -> List[Tuple[str, str]]:
+    """Regex-scan raw HTML for high-value corporate paths that might be injected via JS.
+    Returns list of (url, title) tuples.
+    """
+    candidates: List[Tuple[str, str]] = []
+    try:
+        patterns = [
+            r"/i18n/[^\"']*/about[-_]us/[^\"\s']+",
+            r"/about[-_]us/[^\"\s']+",
+            r"/about/[^\"\s']+",
+            r"/company/[^\"\s']+",
+            r"/who-we-are/[^\"\s']+",
+            r"/mission/[^\"\s']+",
+            r"/vision/[^\"\s']+",
+            r"/values/[^\"\s']+",
+        ]
+        seen: Set[str] = set()
+        for pat in patterns:
+            for m in re.finditer(pat, html, flags=re.IGNORECASE):
+                path = m.group(0)
+                url = urljoin(base_url, path)
+                if url not in seen:
+                    seen.add(url)
+                    title = path.strip('/').split('/')[-1].replace('-', ' ').replace('_', ' ')
+                    candidates.append((url, title))
+        if candidates:
+            log("info", f"Raw-HTML sniff found {len(candidates)} likely corporate paths.")
+    except Exception as e:
+        log("debug", f"Sniff corporate paths failed: {e}")
+    return candidates
 
 
 MEMORABILITY_KEYS_PROMPTS = {
@@ -2623,7 +2678,7 @@ def score_link_pool(links: List[Tuple[str, str]], lang: str) -> List[dict]:
             if url not in unique_urls:
                 unique_urls.add(url)
                 score, rationale = score_link(url, text, lang)
-                if score > SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:
+                if score >= SCORING_CONSTANTS["MIN_BUSINESS_SCORE"]:
                     scored_links.append({
                         "url": url, 
                         "text": text, 
@@ -2638,7 +2693,7 @@ def score_link_pool(links: List[Tuple[str, str]], lang: str) -> List[dict]:
     # Sort by score (highest first)
     scored_links.sort(key=lambda x: x["score"], reverse=True)
     
-    log("info", f"📊 Found {len(scored_links)} qualifying links (score > {SCORING_CONSTANTS['MIN_BUSINESS_SCORE']}) using language '{lang}'")
+    log("info", f"📊 Found {len(scored_links)} qualifying links (score >= {SCORING_CONSTANTS['MIN_BUSINESS_SCORE']}) using language '{lang}'")
     
     return scored_links
 
@@ -2718,6 +2773,21 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         all_discovered_links = discover_links_from_html(homepage_html, initial_url)
         yield debug_yield({'type': 'metric', 'key': 'html_links', 'value': len(all_discovered_links)})
         yield debug_yield({'type': 'activity', 'message': f'✅ Found {len(all_discovered_links)} links in HTML', 'timestamp': time.time()})
+
+        # --- Raw HTML URL sniff fallback for JS-built navs ---
+        sniffed_links = sniff_corporate_paths_from_raw_html(homepage_html, initial_url)
+        if sniffed_links:
+            prev = len(all_discovered_links)
+            # Merge while avoiding duplicates
+            existing = {u for u, _ in all_discovered_links}
+            for u, t in sniffed_links:
+                if u not in existing:
+                    all_discovered_links.append((u, t))
+                    existing.add(u)
+            added = len(all_discovered_links) - prev
+            if added > 0:
+                yield debug_yield({'type': 'activity', 'message': f'🧭 Raw-HTML sniff added {added} corporate paths', 'timestamp': time.time()})
+                yield debug_yield({'type': 'metric', 'key': 'sniff_links', 'value': added})
         
         # --- NEW: Phase 1.5: Global Site Heuristic (Tenacious Discovery) ---
         # Proactively search for the true corporate site BEFORE continuing with current site
@@ -2754,6 +2824,22 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
             yield debug_yield({'type': 'metric', 'key': 'sitemap_links', 'value': len(sitemap_links)})
         else:
             yield debug_yield({'type': 'activity', 'message': f'📄 No sitemap found - proceeding with HTML links', 'timestamp': time.time()})
+
+        # As resilience, perform a high-value path strike on homepage-discovered links
+        try:
+            hv_paths = find_high_value_paths(all_discovered_links, initial_url, preferred_lang)
+            if hv_paths:
+                prev = len(all_discovered_links)
+                existing = {u for u, _ in all_discovered_links}
+                for u, t in hv_paths:
+                    if u not in existing:
+                        all_discovered_links.append((u, t))
+                        existing.add(u)
+                added = len(all_discovered_links) - prev
+                if added > 0:
+                    yield debug_yield({'type': 'activity', 'message': f'🎯 High-value path strike added {added} paths', 'timestamp': time.time()})
+        except Exception as e:
+            log('debug', f"High-value path strike failed: {e}")
 
         # Detect the primary language from HTML for informational logging only
         detected_lang = detect_primary_language(homepage_html)
