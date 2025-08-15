@@ -885,6 +885,70 @@ def dashboard_scans_api():
         except Exception:
             pass
 
+        # Merge per-key model info: discovery + diagnosis
+        try:
+            detail_map = {}
+            # Discovery per-key models
+            d_analysis_path = os.path.join(data_dir, "discovery_analysis.jsonl")
+            if os.path.exists(d_analysis_path):
+                from datetime import datetime as _dt
+                with open(d_analysis_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        iso = entry.get("timestamp")
+                        try:
+                            ts = _dt.fromisoformat(iso).timestamp() if isinstance(iso, str) else None
+                        except Exception:
+                            ts = None
+                        if not ts or ts < cutoff:
+                            continue
+                        sid = entry.get("scan_id")
+                        if not sid:
+                            continue
+                        lst = detail_map.setdefault(sid, [])
+                        lst.append({
+                            "element": entry.get("key_name"),
+                            "status": entry.get("validation_status") or "unknown",
+                            "model_id": entry.get("model_id") or "unknown",
+                            "token_usage": entry.get("token_usage"),
+                            "error": None
+                        })
+            # Diagnosis per-key models
+            dx_path = os.path.join(data_dir, "diagnosis_analysis.jsonl")
+            if os.path.exists(dx_path):
+                with open(dx_path, "r") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        entry = json.loads(line)
+                        ts = entry.get("timestamp")
+                        if not isinstance(ts, (int, float)) or ts < cutoff:
+                            continue
+                        sid = entry.get("scan_id")
+                        if not sid:
+                            continue
+                        lst = detail_map.setdefault(sid, [])
+                        lst.append({
+                            "element": entry.get("key_name"),
+                            "status": entry.get("status"),
+                            "model_id": entry.get("model_id") or "unknown",
+                            "token_usage": entry.get("token_usage"),
+                            "error": entry.get("error")
+                        })
+            # Attach to scans
+            for sid, rec in scans.items():
+                elems = detail_map.get(sid, [])
+                rec["elements"] = elems
+                # Summary chips
+                ok = sum(1 for e in elems if (e.get("status") or "").lower() in ("success", "ok", "valid", "successfully_validated"))
+                fallback = sum(1 for e in elems if (e.get("status") or "").lower() in ("degraded_fallback", "fallback"))
+                errs = sum(1 for e in elems if (e.get("status") or "").lower() in ("error", "failed", "invalid"))
+                rec["summary"] = {"ok": ok, "fallback": fallback, "errors": errs}
+        except Exception:
+            pass
+
         # Build list and sort by start_ts desc
         scan_list = list(scans.values())
         scan_list.sort(key=lambda r: (r.get("start_ts") or 0), reverse=True)

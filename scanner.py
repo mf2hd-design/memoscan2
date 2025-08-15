@@ -2450,6 +2450,12 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
                 log("warn", f"⚠️ VISION TOKENS - {key_name}: Low prompt token count ({usage.prompt_tokens}) may indicate image processing issue")
         
         result_json = json.loads(response.choices[0].message.content)
+        # Attach model/token usage for downstream logging
+        try:
+            result_json["_model_id"] = getattr(response, 'model', 'gpt-4o')
+            result_json["_token_usage"] = getattr(usage, 'total_tokens', None)
+        except Exception:
+            pass
         validate_ai_response(result_json, ["score", "analysis", "evidence", "confidence", "confidence_rationale", "recommendation"])
         if not (0 <= result_json.get("score", -1) <= 5):
             raise ValueError(f"AI returned score {result_json.get('score')} which is not in the 0-5 range.")
@@ -2457,6 +2463,25 @@ def analyze_memorability_key(key_name, prompt_template, text_corpus, homepage_sc
     except Exception as e:
         log("error", f"LLM analysis failed for key '{key_name}': {e}")
         raise
+
+# --- START: DIAGNOSIS PER-KEY MODEL LOGGING ---
+DIAGNOSIS_ANALYSIS_FILE = os.path.join(PERSISTENT_DATA_DIR, "diagnosis_analysis.jsonl")
+
+def log_diagnosis_analysis(scan_id: str, key_name: str, model_id: str | None, token_usage: int | None, status: str, error: str | None = None):
+    try:
+        entry = {
+            "timestamp": time.time(),
+            "scan_id": scan_id,
+            "key_name": key_name,
+            "model_id": model_id or "unknown",
+            "token_usage": token_usage,
+            "status": status,
+            "error": error
+        }
+        with open(DIAGNOSIS_ANALYSIS_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        log("warn", f"Failed to log diagnosis analysis entry: {e}")
 
 def call_openai_for_executive_summary(all_analyses):
     log("info", "Generating Executive Summary...")
@@ -2961,10 +2986,14 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
                 key_name, result_json = analyze_memorability_key(key, prompt, full_corpus, homepage_screenshot_b64, brand_summary)
                 analysis_uid = str(uuid.uuid4())
                 result_json['analysis_id'] = analysis_uid 
+                # Per-key model logging
+                log_diagnosis_analysis(scan_id, key_name, result_json.get("_model_id"), result_json.get("_token_usage"), status="success")
                 circuit_breaker.record_success()
             except Exception as e:
                 circuit_breaker.record_failure()
                 log("error", f"Analysis of key '{key}' failed. Circuit breaker status: {circuit_breaker.failures} failures. Error: {e}")
+                # Per-key model logging for error case
+                log_diagnosis_analysis(scan_id, key, None, None, status="error", error=str(e))
                 yield {'type': 'result_error', 'key': key, 'message': f"Analysis failed: {e}"}
                 continue
             
