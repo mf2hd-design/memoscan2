@@ -742,11 +742,21 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
             break
 
     # --- Negative Keyword Scoring (Always runs) ---
+    negative_applied = False
     for compiled_pattern in LINK_SCORE_MAP["negative"]["patterns"]:
         if compiled_pattern.search(combined_text):
             score += LINK_SCORE_MAP["negative"]["score"]
             rationale.append(f"Veto: {LINK_SCORE_MAP['negative']['score']}")
+            negative_applied = True
             break
+
+    # Rescue rule: allow About pages through under support paths
+    try:
+        if negative_applied and re.search(r"/customer[-_]service/", link_url, re.I) and re.search(r"/about(-|_)us|/about/", link_url, re.I):
+            score -= LINK_SCORE_MAP["negative"]["score"]  # undo the negative penalty
+            rationale.append("Rescue: customer-service + about-us")
+    except Exception:
+        pass
 
     # --- Temporal Penalty: Time-Sensitive Content Detection ---
     for compiled_pattern in COMPILED_PATTERNS["temporal"]:
@@ -756,7 +766,7 @@ def score_link(link_url: str, link_text: str, preferred_lang: str = 'en') -> Tup
             break  # Apply penalty only once
 
     # --- Path Context Bonus: Well-Structured Corporate Paths ---
-    positive_paths = ['/about/', '/who-we-are/', '/company/', '/info/', '/mission/', '/vision/', '/values/', '/leadership/']
+    positive_paths = ['/about/', '/about-us/', '/who-we-are/', '/company/', '/info/', '/mission/', '/vision/', '/values/', '/leadership/']
     if any(path in link_url.lower() for path in positive_paths):
         score += 5
         rationale.append("Path Bonus: +5")
@@ -2877,7 +2887,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         if homepage_url not in found_urls:
             priority_pages.append(homepage_url); found_urls.add(homepage_url)
         for link in scored_links:
-            if len(priority_pages) >= 5: break
+            if len(priority_pages) >= 10: break
             if link["url"] not in found_urls:
                 priority_pages.append(link["url"]); found_urls.add(link["url"])
         
