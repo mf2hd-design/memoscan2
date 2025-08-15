@@ -14,6 +14,7 @@ import secrets
 from functools import wraps
 from collections import defaultdict, deque
 from flask import Flask, request, send_from_directory, send_file, jsonify, session
+import json
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from io import BytesIO
 import signal
@@ -342,12 +343,11 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
         else:
             # Diagnosis stream does not accept a 'mode' argument
             scan_stream = run_diagnosis_scan_stream(url, SHARED_CACHE, preferred_lang='en', scan_id=scan_id)
-        # Track scan start for discovery (diagnosis handles its own logging)
-        if mode == "discovery":
-            try:
-                track_scan_metric(scan_id, "started", {"mode": mode, "url": url})
-            except Exception:
-                pass
+        # Track scan start for dashboard visibility (all modes)
+        try:
+            track_scan_metric(scan_id, "started", {"mode": mode, "url": url})
+        except Exception:
+            pass
 
         for update in scan_stream:
             # Check if scan has been cancelled or expired
@@ -360,15 +360,14 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             socketio.emit("scan_update", update, room=sid)
             socketio.sleep(0)
 
-            # Track completion/failure for discovery scans
-            if mode == "discovery":
-                try:
-                    if update.get("type") == "complete":
-                        track_scan_metric(scan_id, "completed", {"mode": mode})
-                    elif update.get("type") == "error":
-                        track_scan_metric(scan_id, "failed", {"mode": mode, "error": update.get("message")})
-                except Exception:
-                    pass
+            # Track completion/failure for dashboard (all modes)
+            try:
+                if update.get("type") == "complete":
+                    track_scan_metric(scan_id, "completed", {"mode": mode})
+                elif update.get("type") == "error":
+                    track_scan_metric(scan_id, "failed", {"mode": mode, "error": update.get("message")})
+            except Exception:
+                pass
     except ValueError as e:
         # Input validation errors
         print(f"VALIDATION ERROR for SID {sid}: {e}", flush=True)
@@ -377,8 +376,7 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "message": f"Invalid input: {str(e)}"
         }, room=sid)
         try:
-            if mode == "discovery":
-                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+            track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
         except Exception:
             pass
     except ConnectionError as e:
@@ -389,8 +387,7 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "message": "Unable to connect to the target website. Please check the URL and try again."
         }, room=sid)
         try:
-            if mode == "discovery":
-                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+            track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
         except Exception:
             pass
     except TimeoutError as e:
@@ -401,8 +398,7 @@ def run_scan_in_background(sid, data, scan_id=None, user_id=None):
             "message": "The scan timed out. The website may be slow or unavailable."
         }, room=sid)
         try:
-            if mode == "discovery":
-                track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
+            track_scan_metric(scan_id, "failed", {"mode": mode, "error": str(e)})
         except Exception:
             pass
     except Exception as e:
