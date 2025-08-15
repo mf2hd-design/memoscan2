@@ -1338,11 +1338,24 @@ def record_feedback(analysis_id: str, key_name: str, feedback_type: str,
         if e.errno == 28:  # No space left on device
             log("error", "Disk space full - cannot record feedback")
         else:
-            log("error", f"OS error recording feedback: {e}")
-        raise
+            log("warn", f"Atomic feedback write failed, falling back to append: {e}")
+        # Fallback: simple append to ensure we don't 500 on user
+        try:
+            with open(FEEDBACK_FILE, "a") as f:
+                f.write(json.dumps(feedback_entry) + "\n")
+            log("info", "Feedback recorded via append fallback")
+        except Exception as e2:
+            log("error", f"Append fallback failed for feedback: {e2}")
+            raise
     except Exception as e:
-        log("error", f"Failed to record feedback to file: {e}")
-        raise
+        log("warn", f"Atomic feedback write encountered error, attempting append fallback: {e}")
+        try:
+            with open(FEEDBACK_FILE, "a") as f:
+                f.write(json.dumps(feedback_entry) + "\n")
+            log("info", "Feedback recorded via append fallback")
+        except Exception as e2:
+            log("error", f"Append fallback failed for feedback: {e2}")
+            raise
     finally:
         # Cleanup temporary files
         cleanup_files = [temp_file]
