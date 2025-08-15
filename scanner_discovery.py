@@ -132,7 +132,8 @@ def run_discovery_phase(initial_url: str):
         # Import real scanner functions
         from scanner import (
             discover_links_from_html, discover_links_from_sitemap, 
-            find_high_value_subdomain, fetch_page_content_robustly
+            find_high_value_subdomain, fetch_page_content_robustly,
+            sniff_corporate_paths_from_raw_html
         )
         
         # Fetch homepage content
@@ -145,6 +146,22 @@ def run_discovery_phase(initial_url: str):
         # Discover links from HTML
         yield {'type': 'activity', 'message': f'🔍 Analyzing HTML structure for links...', 'timestamp': time.time()}
         html_links = discover_links_from_html(homepage_html, initial_url)
+        # Raw-HTML sniff fallback for JS-built navs
+        try:
+            sniffed = sniff_corporate_paths_from_raw_html(homepage_html, initial_url)
+        except Exception:
+            sniffed = []
+        if sniffed:
+            existing = {u for (u, _t) in html_links}
+            prev = len(html_links)
+            for u, t in sniffed:
+                if u not in existing:
+                    html_links.append((u, t))
+                    existing.add(u)
+            added = len(html_links) - prev
+            if added > 0:
+                yield {'type': 'activity', 'message': f'🧭 Raw-HTML sniff added {added} corporate paths', 'timestamp': time.time()}
+                yield {'type': 'metric', 'key': 'sniff_links', 'value': added}
         
         # Discover links from sitemap
         yield {'type': 'activity', 'message': f'🗺️ Checking for XML sitemaps...', 'timestamp': time.time()}
