@@ -296,6 +296,8 @@
     }
 
     refresh();
+    // Auto-refresh every 15 seconds
+    setInterval(refresh, 15000);
 
     async function loadErrors() {
       const e = await api('/dashboard/api/errors');

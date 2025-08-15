@@ -538,7 +538,9 @@ def dashboard_metrics_api():
     hours = request.args.get('hours', 24, type=int)
     try:
         data = get_scan_metrics(hours)
-        return jsonify(data), 200
+        resp = jsonify(data)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -548,7 +550,9 @@ def dashboard_costs_api():
     hours = request.args.get('hours', 24, type=int)
     try:
         data = get_cost_summary(hours)
-        return jsonify(data), 200
+        resp = jsonify(data)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -646,7 +650,10 @@ def dashboard_discovery_feedback_api():
         # Overall helpful rate
         total = summary["total"] or 1
         summary["helpful_rate"] = summary["helpful_true"] / total
-        return jsonify(summary), 200
+        # Force client refresh by adding cache headers
+        resp = jsonify(summary)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -709,7 +716,9 @@ def dashboard_errors_api():
 
         # Sort newest first
         results.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        return jsonify({"errors": results[:200]}), 200
+        resp = jsonify({"errors": results[:200]})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -953,7 +962,9 @@ def dashboard_scans_api():
         # Build list and sort by start_ts desc
         scan_list = list(scans.values())
         scan_list.sort(key=lambda r: (r.get("start_ts") or 0), reverse=True)
-        return jsonify({"scans": scan_list}), 200
+        resp = jsonify({"scans": scan_list})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
