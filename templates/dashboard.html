@@ -73,7 +73,7 @@
       </div>
       <div class="panel">
         <h3 style="margin-top:0">Recent scans</h3>
-        <table id="metrics-table"><thead><tr><th>Start (CEST)</th><th>Mode</th><th>Status</th><th>Duration</th><th>Summary</th><th>Details</th></tr></thead><tbody></tbody></table>
+        <table id="metrics-table"><thead><tr><th>Start (CEST)</th><th>URL</th><th>Mode</th><th>Status</th><th>Duration</th><th>Summary</th><th>Details</th></tr></thead><tbody></tbody></table>
       </div>
       <div class="panel">
         <h3 style="margin-top:0">Models (last window)</h3>
@@ -203,12 +203,13 @@
         const sum = rec.summary ? `OK ${rec.summary.ok||0} • Fallback ${rec.summary.fallback||0} • Errors ${rec.summary.errors||0}` : '';
         const detailsId = `scan-details-${idx}`;
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${start}</td><td>${rec.mode||'diagnosis'}</td><td>${rec.status}</td><td>${dur}</td><td>${sum}</td><td><button data-target="${detailsId}">Expand</button></td>`;
+        const urlCell = rec.url ? `<a href="${rec.url}" target="_blank" rel="noopener">${rec.url}</a>` : '—';
+        tr.innerHTML = `<td>${start}</td><td class="muted" style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${urlCell}</td><td>${rec.mode||'diagnosis'}</td><td>${rec.status}</td><td>${dur}</td><td>${sum}</td><td><button data-target="${detailsId}">Expand</button></td>`;
         tbody.appendChild(tr);
         // Expandable row
         const tr2 = document.createElement('tr');
         const td = document.createElement('td');
-        td.colSpan = 6;
+        td.colSpan = 7;
         td.style.display = 'none';
         td.id = detailsId;
         const elems = rec.elements || [];
