@@ -124,7 +124,7 @@ def _get_discovery_error_explanation(error_msg: str) -> str:
 
 def run_discovery_phase(initial_url: str):
     """Phase 1: Discover all brand pages from HTML and sitemaps."""
-    yield {'type': 'status', 'message': 'Step 1/5: Discovering all brand pages...', 'phase': 'discovery', 'progress': 10}
+    yield {'type': 'status', 'message': 'Step 1/6: Discovering all brand pages...', 'phase': 'discovery', 'progress': 10}
     yield {'type': 'activity', 'message': f'🌐 Starting scan at {initial_url}', 'timestamp': time.time()}
     
     # Use real scanner functions for page discovery
@@ -198,7 +198,7 @@ def run_discovery_phase(initial_url: str):
 
 def run_content_extraction_phase(initial_url: str, homepage_html: str, all_discovered_links: list, preferred_lang: str, shared_cache: dict | None = None):
     """Phase 2: Extract content from discovered pages."""
-    yield {'type': 'status', 'message': 'Step 2/5: Analyzing and scoring all pages...', 'phase': 'content_extraction', 'progress': 35}
+    yield {'type': 'status', 'message': 'Step 2/6: Analyzing and scoring all pages...', 'phase': 'content_extraction', 'progress': 35}
     yield {'type': 'activity', 'message': f'📄 Extracting content from {len(all_discovered_links)} pages...', 'timestamp': time.time()}
     
     try:
@@ -505,7 +505,7 @@ def run_analysis_phase(mode: str, scan_id: str, full_corpus: str, homepage_scree
     """Phase 3: Perform Discovery or Diagnosis analysis based on mode."""
     
     if mode == 'discovery' and DISCOVERY_AVAILABLE:
-        yield {'type': 'status', 'message': 'Step 4/5: Performing Discovery analysis...', 'phase': 'discovery_analysis', 'progress': 75}
+        yield {'type': 'status', 'message': 'Step 4/6: Performing Discovery analysis...', 'phase': 'discovery_analysis', 'progress': 75}
         yield {'type': 'activity', 'message': '🚀 Running concurrent Discovery analysis (positioning, messaging, tone)...', 'timestamp': time.time()}
         
         try:
@@ -642,7 +642,7 @@ def run_analysis_phase(mode: str, scan_id: str, full_corpus: str, homepage_scree
     
     else:
         # Fallback to regular diagnosis mode
-        yield {'type': 'status', 'message': 'Step 4/5: Performing memorability analysis...', 'phase': 'analysis', 'progress': 75}
+        yield {'type': 'status', 'message': 'Step 4/6: Performing memorability analysis...', 'phase': 'analysis', 'progress': 75}
         yield {'type': 'activity', 'message': '🧠 Running memorability analysis...', 'timestamp': time.time()}
         
         # Mock memorability analysis results
@@ -663,7 +663,7 @@ def run_analysis_phase(mode: str, scan_id: str, full_corpus: str, homepage_scree
 
 def run_summary_phase(all_results: list):
     """Phase 4: Generate executive summary."""
-    yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...', 'phase': 'summary', 'progress': 90}
+    yield {'type': 'status', 'message': 'Step 5/6: Generating Executive Summary...', 'phase': 'summary', 'progress': 90}
     yield {'type': 'activity', 'message': '📋 Creating executive summary...', 'timestamp': time.time()}
     
     try:
@@ -865,7 +865,7 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
             return
 
         # Phase 3: Brand Overview (real synthesis)
-        yield {'type': 'status', 'message': 'Step 3/5: Synthesizing brand overview...', 'phase': 'analysis', 'progress': 65}
+        yield {'type': 'status', 'message': 'Step 3/6: Synthesizing brand overview...', 'phase': 'analysis', 'progress': 65}
         yield {'type': 'activity', 'message': '🧠 AI analyzing brand identity and positioning...', 'timestamp': time.time()}
         
         try:
@@ -1016,8 +1016,24 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
 
         # Final results
         yield {'type': 'summary', 'text': executive_summary}
+
+        # Step 6: Industry Context Analysis (only for discovery/audit mode)
+        if mode == 'discovery':
+            yield {'type': 'status', 'message': 'Step 6/6: Analyzing industry context and competitive landscape...', 'phase': 'industry_context', 'progress': 95}
+            yield {'type': 'activity', 'message': '🌍 Analyzing industry dynamics and strategic positioning...', 'timestamp': time.time()}
+            try:
+                # Import industry context analyzer from main scanner
+                from scanner import analyze_industry_context
+                industry_context_text = analyze_industry_context(brand_summary, full_corpus)
+                yield {'type': 'industry_context', 'text': industry_context_text}
+                log("info", "✅ Industry context analysis completed successfully")
+            except Exception as e:
+                log("error", f"Industry context analysis failed but continuing: {e}")
+                # Don't fail the entire scan if industry analysis fails
+                yield {'type': 'industry_context', 'text': f"**Industry Context Analysis Unavailable**\n\nThe analysis could not be completed at this time. The brand audit results above are still valid."}
+
         yield {'type': 'complete', 'message': '🎉 Scan completed successfully!', 'timestamp': time.time()}
-        
+
         log("info", f"Scan completed successfully: {scan_id}")
         
     except Exception as e:

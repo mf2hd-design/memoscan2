@@ -1496,6 +1496,7 @@ COST_LOG_FILE = os.path.join(PERSISTENT_DATA_DIR, "api_costs.jsonl")
 API_COSTS = {
     "gpt-4o": {"input": 0.0025, "output": 0.01},  # per 1K tokens
     "gpt-4o-vision": {"input": 0.005, "output": 0.015},  # per 1K tokens
+    "gpt-5.1": {"input": 0.01, "output": 0.04},  # per 1K tokens (estimated - update when pricing confirmed)
     "scrapfly": 0.001,  # per page
     "playwright": 0.0  # free but resource intensive
 }
@@ -2595,6 +2596,108 @@ def call_openai_for_executive_summary(all_analyses):
         log("error", f"AI summary failed: {e}")
         raise
 
+def analyze_industry_context(brand_summary, text_corpus):
+    """Analyze the industry context and competitive landscape using GPT-5.1."""
+    log("info", "Analyzing industry context and competitive landscape...")
+
+    # Runtime validation of OpenAI client
+    global client
+    if client is None:
+        log("error", "OpenAI client not initialized. Cannot perform industry analysis.")
+        raise RuntimeError("OpenAI client not initialized")
+
+    try:
+        # Extract brand name from the summary (simple heuristic - look for company/brand mentions)
+        brand_name_placeholder = "[BRAND NAME]"
+        industry_placeholder = "[INDUSTRY/SECTOR]"
+
+        # Build the comprehensive strategic prompt
+        strategic_prompt = f"""Role: Act as a Senior B2B Brand Strategist and Industrial Analyst.
+
+Context: I am developing a strategy for {brand_name_placeholder}, based on the following brand overview and website content:
+
+BRAND SUMMARY:
+{brand_summary}
+
+FULL WEBSITE CONTENT:
+{text_corpus[:15000]}
+
+Based on this information, identify the brand name and industry/sector, then conduct a high-level strategic audit of the industry context.
+
+Scope: Global analysis, with specific attention to the markets most significant to this industry.
+Target: Primarily B2B (Business-to-Business) enterprise and mid-market buyers.
+
+Task: Conduct a high-level strategic audit of the industry context to help understand the risks and opportunities for this brand. Structure your response as follows:
+
+## 1. Market Dynamics (Global & Key Markets)
+
+**Industry Maturity**: Where is this industry on the S-Curve? (e.g., Growth, Shakeout, Maturity, Decline).
+
+**The Global Value Chain**: How is the value chain shifting? Are profit pools moving upstream (suppliers) or downstream (distributors/end-users)?
+
+**Macro-Economic Pressures**: Specifically focused on supply chain stability, labor shortages, inflation, or geopolitical friction affecting this sector.
+
+## 2. The B2B Competitive Landscape
+
+**Peer Group Analysis**: How are other established "titans" in this space positioning themselves? (e.g., Are they pivoting to "Solutions-as-a-Service" or sticking to hardware/commodities?)
+
+**Asymmetric Threats**: Identify smaller, agile competitors or tech-native startups that are "unbundling" parts of the service offering to steal market share.
+
+**M&A Activity**: What recent consolidation or acquisition trends suggest where the "smart money" is moving?
+
+## 3. B2B Buyer Dynamics & Behavior
+
+**The Changing DMU (Decision Making Unit)**: How are buying committees changing? (e.g., Increased influence of the CFO/CTO, younger procurement officers demanding "consumer-grade" digital experiences).
+
+**New Value Drivers**: Beyond price and specs, what are B2B buyers demanding? (e.g., Sustainability/ESG compliance, API integration, speed of implementation, predictive maintenance).
+
+**The "Service Layer"**: How important has post-sales support and customer success become in retaining contracts?
+
+## 4. Technological & Regulatory Context
+
+**Digital Transformation**: How is AI, IoT, or automation changing how this industry operates?
+
+**Regulatory Headwinds**: Are there looming regulations (e.g., Carbon reporting, Data Privacy, Trade Tariffs) that will force established players to adapt?
+
+## 5. Strategic Hypothesis (The "So What?")
+
+**Format**: "Given that [Trend A] and [Market Force B] are converging, the Brand has an opportunity to shift its positioning from [Current Likely State] to [Future Competitive Advantage] by leveraging its [Asset]."
+
+**Defense vs. Offense**: Suggest one "Defensive Move" to protect their legacy business and one "Offensive Move" to capture new growth.
+
+---
+
+Output Format: Professional strategic brief. Use bullet points for density and **bold text** for key terms. Be specific and actionable."""
+
+        # Use GPT-5.1 API with high reasoning effort for strategic depth
+        log("info", "🚀 CALLING GPT-5.1 API for industry context analysis")
+        response = client.responses.create(
+            model="gpt-5.1",
+            input=strategic_prompt,
+            reasoning={"effort": "high"},
+            text={"verbosity": "high"}
+        )
+
+        # Extract the output text
+        industry_analysis = response.output_text
+
+        # Track API usage for GPT-5.1
+        # Note: GPT-5.1 may have different usage tracking structure
+        if hasattr(response, 'usage'):
+            track_api_usage("gpt-5.1",
+                          getattr(response.usage, 'input_tokens', 0),
+                          getattr(response.usage, 'output_tokens', 0))
+
+        log("info", f"✅ GPT-5.1 API SUCCESS: Received industry context analysis ({len(industry_analysis)} chars)")
+        return industry_analysis
+
+    except Exception as e:
+        log("error", f"Industry context analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return a graceful error message instead of raising
+        return f"**Industry Context Analysis Unavailable**\n\nThe industry context analysis could not be completed due to a technical issue: {str(e)}\n\nPlease try again later or contact support if the issue persists."
+
 def capture_screenshots_playwright(urls):
     results = []
     log("info", f"Starting screenshot capture for {len(urls)} URLs.")
@@ -3132,12 +3235,12 @@ def run_full_scan_stream(url: str, cache: dict, preferred_lang: str = 'en', scan
         
         yield {'type': 'status', 'message': 'Step 5/5: Generating Executive Summary...', 'phase': 'summary', 'progress': 95}
         yield {'type': 'activity', 'message': '📝 Generating strategic recommendations...', 'timestamp': time.time()}
-        summary_text = call_openai_for_executive_summary(all_results) 
+        summary_text = call_openai_for_executive_summary(all_results)
         yield {'type': 'summary', 'text': summary_text}
-        
+
         quantitative_summary = summarize_results(all_results)
         yield {'type': 'quantitative_summary', 'data': quantitative_summary}
-        
+
         yield {'type': 'complete', 'message': f'✅ Analysis complete! Used {processing_mode} processing.', 'progress': 100}
         yield {'type': 'activity', 'message': '🎉 Scan completed successfully!', 'timestamp': time.time()}
         

@@ -999,6 +999,9 @@
                 case 'summary':
                     MemoScan.displaySummary(msg.text);
                     break;
+                case 'industry_context':
+                    MemoScan.displayIndustryContext(msg.text);
+                    break;
                 case 'complete':
                     MemoScan.handleScanComplete();
                     break;
@@ -1062,7 +1065,8 @@
                     'analysis': 'Analyzing page content...',
                     'synthesis': 'Synthesizing brand overview...',
                     'ai_analysis': 'Performing AI analysis...',
-                    'summary': 'Generating recommendations...'
+                    'summary': 'Generating recommendations...',
+                    'industry_context': 'Analyzing industry context...'
                 };
                 
                 if (phaseText) {
@@ -1119,7 +1123,7 @@
         
         updatePhaseVisual(phase) {
             const steps = document.querySelectorAll('.phase-step');
-            const phaseOrder = ['discovery', 'scoring', 'analysis', 'ai_analysis', 'summary'];
+            const phaseOrder = ['discovery', 'scoring', 'analysis', 'ai_analysis', 'summary', 'industry_context'];
             const currentIndex = phaseOrder.indexOf(phase);
             
             steps.forEach((step, index) => {
@@ -1504,7 +1508,14 @@
             document.getElementById('evidence-gallery').style.display = 'none';
             document.getElementById('screenshot-container').innerHTML = '';
             document.getElementById('activity-items').innerHTML = '';
-            
+
+            // Clear industry context container if it exists
+            const industryContainer = document.getElementById('industry-context-container');
+            if (industryContainer) {
+                industryContainer.style.display = 'none';
+                industryContainer.innerHTML = '';
+            }
+
             // Reset metrics and progress tracker
             this.metricsDashboard.reset();
             this.progressTracker.reset();
@@ -2082,14 +2093,58 @@
         displaySummary(text) {
             const summaryContainer = document.getElementById('summary-container');
             if (!summaryContainer) return;
-            
+
             // FIX: Use the new function that does not truncate the summary
             const sanitizedHtml = SecurityUtils.sanitizeHtmlContent(text);
             summaryContainer.innerHTML = `<h3>Executive Summary</h3>${sanitizedHtml}`;
             summaryContainer.style.display = 'block';
             summaryContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
-        
+
+        displayIndustryContext(text) {
+            // Check if industry context container already exists
+            let industryContainer = document.getElementById('industry-context-container');
+
+            if (!industryContainer) {
+                // Create the container if it doesn't exist
+                const summaryContainer = document.getElementById('summary-container');
+                if (!summaryContainer) return;
+
+                industryContainer = document.createElement('div');
+                industryContainer.id = 'industry-context-container';
+                industryContainer.style.cssText = `
+                    margin-top: 2rem;
+                    padding: 1.5rem;
+                    background: linear-gradient(to right, #f8f9fa, #ffffff);
+                    border-left: 4px solid var(--primary-color);
+                    border-radius: 8px;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                `;
+
+                // Insert after summary container
+                summaryContainer.parentNode.insertBefore(industryContainer, summaryContainer.nextSibling);
+            }
+
+            // Sanitize and display the industry context
+            const sanitizedHtml = SecurityUtils.sanitizeHtmlContent(text);
+            industryContainer.innerHTML = `
+                <details open>
+                    <summary style="cursor: pointer; font-size: 1.3rem; font-weight: bold; color: var(--primary-color); margin-bottom: 1rem; user-select: none;">
+                        🌍 Industry Context & Strategic Analysis
+                    </summary>
+                    <div style="margin-top: 1rem;">
+                        ${sanitizedHtml}
+                    </div>
+                </details>
+            `;
+            industryContainer.style.display = 'block';
+
+            // Smooth scroll to the new section
+            setTimeout(() => {
+                industryContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+        }
+
         handleScanComplete() {
             // Force-complete progress UI synchronously (bypass throttle)
             const progressBar = document.querySelector('.progress-bar');
