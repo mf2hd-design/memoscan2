@@ -22,6 +22,13 @@ class PromptTemplates:
         """Brand Audit prompt template."""
         return f"""Act as a Senior Strategy Consultant. Perform a comprehensive Brand Audit for {brand_name}.
 
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
+
+
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
 - Use # (H1) for MAIN section headers: Executive Summary, Owned Space, Recent Developments, Product Portfolio, Brand Social Sentiment, Brand Website & Creative, Competitor & Industry Audit, Audience Identification, Audience Competitor Interactions, Messaging & Engagement
@@ -234,6 +241,12 @@ Now generate the comprehensive Brand Audit report following the exact structure 
         """Meeting Brief prompt template."""
         return f"""Act as a Chief of Staff. Prepare a professional Meeting Brief for a meeting with {person_name}, {person_role} at {company_name}.
 
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total (approximately 1,000-1,300 words)
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
+
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
 - Use # (H1) for MAIN section headers: About {person_name}, About {company_name}, Recent News & Developments, Competitive Landscape, Industry Trends, Strategic Talking Points
@@ -366,6 +379,12 @@ Now generate the Meeting Brief following the exact structure and formatting requ
         """Industry Profile prompt template."""
         return f"""Act as a Senior Market Research Analyst. Create a comprehensive Industry & Market Profile for {industry_name} in {geography}.
 
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total (approximately 1,000-1,300 words)
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
+
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
 - Use # (H1) for MAIN section headers: Macro Trends, Market Challenges & Threats, Growth Opportunities, Industry Drivers, Consumer Mindset, Leading Brands, Emerging Brands, Sources
@@ -488,6 +507,13 @@ Now generate the Industry & Market Profile report following the exact structure 
     ) -> str:
         """Brand House prompt template."""
         return f"""Act as a Brand Strategist. Create a Brand House Strategy for {brand_name}. The goal is to analyze their current positioning and recommend a strategic rebrand/refresh.
+
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
+
 
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
@@ -624,6 +650,13 @@ Now generate the Brand House Strategy following the exact structure and formatti
     ) -> str:
         """Four C's Analysis prompt template."""
         return f"""Act as a Strategic Planner. Conduct a deep-dive "Four C's" Analysis for {brand_name}. Analyze the brand through the lens of Company, Category, Consumer, and Culture.
+
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
+
 
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
@@ -774,6 +807,12 @@ Now generate the Four C's Analysis following the exact structure above. Use anal
         """Competitive Landscape prompt template."""
         return f"""Act as a Market Analyst. Build a Competitive Landscape Map for {brand_name} in the {industry_name} industry.
 
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total (approximately 1,000-1,300 words)
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
+
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
 - Use # (H1) for MAIN sections: Competitor Overview Table, Deep Dives by Category, Sources
@@ -906,6 +945,12 @@ Now generate the Competitive Landscape Map following the exact structure above. 
     ) -> str:
         """Audience Profile prompt template."""
         return f"""Act as a Consumer Insights Researcher. Create a comprehensive Audience Profile for {audience_name} in {geography}.
+
+**CRITICAL LENGTH REQUIREMENT:**
+- Your response MUST be between 6,000-8,000 characters total (approximately 1,000-1,300 words)
+- This is a HARD LIMIT - responses over 8,000 characters will be rejected
+- Be comprehensive but concise - prioritize quality over quantity
+- Use bullet points and tables to convey information efficiently
 
 CRITICAL FORMATTING REQUIREMENTS:
 - Use proper markdown syntax with STRONG visual hierarchy
