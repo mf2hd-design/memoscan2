@@ -48,7 +48,7 @@ services:
       - key: GPT5_MODEL
         value: gpt-5.1-2025-11-13
       - key: GPT5_TIMEOUT
-        value: "90"
+        value: "180"
       - key: CIRCUIT_BREAKER_THRESHOLD
         value: "3"
       - key: CIRCUIT_BREAKER_COOLDOWN

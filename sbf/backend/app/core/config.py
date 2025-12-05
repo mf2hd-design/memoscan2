@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # === GPT-5.1 Configuration ===
     GPT5_MODEL: str = "gpt-5.1-2025-11-13"
-    GPT5_TIMEOUT: int = 90
+    GPT5_TIMEOUT: int = 180  # 3 minutes for comprehensive reports
     CIRCUIT_BREAKER_THRESHOLD: int = 3
     CIRCUIT_BREAKER_COOLDOWN: int = 600  # 10 minutes
 
