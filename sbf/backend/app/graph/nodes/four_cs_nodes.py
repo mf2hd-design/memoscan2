@@ -68,7 +68,8 @@ async def node_analyze_four_cs(state: Dict[str, Any]) -> Dict[str, Any]:
             brand_site_content=brand_content,
             competitor_data=comp_text,
             news_mentions="",
-            trend_data=""
+            social_sentiment="",
+            industry_trends=""
         )
 
         response, meta = llm_client.generate(
