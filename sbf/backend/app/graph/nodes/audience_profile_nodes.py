@@ -37,8 +37,8 @@ async def node_analyze_audience(state: Dict[str, Any]) -> Dict[str, Any]:
             geography=state.get("geography"),
             demographic_data="GPT-5.1 will use built-in knowledge.",
             psychographic_data="",
-            media_consumption_data="",
-            brand_preference_data=""
+            media_consumption="",
+            brand_preferences=""
         )
 
         response, meta = llm_client.generate(

@@ -24,8 +24,8 @@ async def node_research_competitive_landscape(state: Dict[str, Any]) -> Dict[str
 
         content = ""
         if result.success:
-            chunks = html_cleaner.clean_and_chunk(result.content, source_id=1, max_chunks=3)
-            content = "\n\n".join([chunk.text for chunk in chunks])
+            # clean_and_chunk returns a single formatted string, not a list
+            content = html_cleaner.clean_and_chunk(result.content, source_id=1, max_chunks=3)
 
         return {
             **state,

@@ -45,13 +45,12 @@ async def node_research_brand_positioning(state: Dict[str, Any]) -> Dict[str, An
 
         brand_content = ""
         if result.success:
-            # Clean and chunk the HTML content
-            chunks = html_cleaner.clean_and_chunk(
+            # clean_and_chunk returns a single formatted string, not a list
+            brand_content = html_cleaner.clean_and_chunk(
                 result.content,
                 source_id=1,
                 max_chunks=5
             )
-            brand_content = "\n\n".join([chunk.text for chunk in chunks])
         else:
             logger.warning("brand_scrape_failed", url=brand_url, error=result.error)
 

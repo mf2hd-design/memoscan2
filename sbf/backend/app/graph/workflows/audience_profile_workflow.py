@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph, END
 from typing import Dict, Any
 
 from ..nodes.common import node_initialize, node_cache_check, node_format_report
-from ..nodes.audience_profile_nodes import node_research_audience, node_analyze_audience_profile
+from ..nodes.audience_profile_nodes import node_research_audience, node_analyze_audience
 from .base import get_checkpointer
 
 logger = structlog.get_logger()
@@ -48,7 +48,7 @@ async def create_audience_profile_workflow():
     workflow.add_node("initialize", node_initialize)
     workflow.add_node("cache_check", node_cache_check)
     workflow.add_node("research", node_research_audience)
-    workflow.add_node("analyze", node_analyze_audience_profile)
+    workflow.add_node("analyze", node_analyze_audience)
     workflow.add_node("format", node_format_report)
 
     # Define flow
