@@ -57,7 +57,7 @@ async def node_analyze_competitive_landscape(state: Dict[str, Any]) -> Dict[str,
 
         prompt = PromptTemplates.competitive_landscape(
             brand_name=state.get("brand_name"),
-            brand_site_content=state.get("brand_site_content", ""),
+            industry_name=state.get("industry_name", "General Market"),
             competitor_data=comp_text,
             market_analysis="See competitor data above."
         )
