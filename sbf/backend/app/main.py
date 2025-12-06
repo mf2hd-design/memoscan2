@@ -16,6 +16,10 @@ from .core.config import settings
 from .graph.workflows.brand_audit_workflow import create_brand_audit_workflow
 from .graph.workflows.meeting_brief_workflow import create_meeting_brief_workflow
 from .graph.workflows.industry_workflow import create_industry_profile_workflow
+from .graph.workflows.brand_house_workflow import create_brand_house_workflow
+from .graph.workflows.four_cs_workflow import create_four_cs_workflow
+from .graph.workflows.competitive_landscape_workflow import create_competitive_landscape_workflow
+from .graph.workflows.audience_profile_workflow import create_audience_profile_workflow
 from .graph.workflows.base import close_checkpointer
 
 # Setup structured logging
@@ -56,12 +60,18 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("initializing_workflows")
 
+        # Import all workflow modules
         import app.graph.workflows.brand_audit_workflow as ba_module
         import app.graph.workflows.meeting_brief_workflow as mb_module
         import app.graph.workflows.industry_workflow as ip_module
+        import app.graph.workflows.brand_house_workflow as bh_module
+        import app.graph.workflows.four_cs_workflow as fc_module
+        import app.graph.workflows.competitive_landscape_workflow as cl_module
+        import app.graph.workflows.audience_profile_workflow as ap_module
 
-        logger.info("workflow_modules_imported")
+        logger.info("workflow_modules_imported", count=7)
 
+        # Initialize all 7 workflows at startup
         logger.info("creating_brand_audit_workflow")
         ba_module.brand_audit_workflow = await create_brand_audit_workflow()
         logger.info("brand_audit_workflow_created")
@@ -74,7 +84,23 @@ async def lifespan(app: FastAPI):
         ip_module.industry_profile_workflow = await create_industry_profile_workflow()
         logger.info("industry_profile_workflow_created")
 
-        logger.info("workflows_initialized", count=3)
+        logger.info("creating_brand_house_workflow")
+        bh_module.brand_house_workflow = await create_brand_house_workflow()
+        logger.info("brand_house_workflow_created")
+
+        logger.info("creating_four_cs_workflow")
+        fc_module.four_cs_workflow = await create_four_cs_workflow()
+        logger.info("four_cs_workflow_created")
+
+        logger.info("creating_competitive_landscape_workflow")
+        cl_module.competitive_landscape_workflow = await create_competitive_landscape_workflow()
+        logger.info("competitive_landscape_workflow_created")
+
+        logger.info("creating_audience_profile_workflow")
+        ap_module.audience_profile_workflow = await create_audience_profile_workflow()
+        logger.info("audience_profile_workflow_created")
+
+        logger.info("workflows_initialized", count=7)
     except Exception as e:
         logger.error("workflow_initialization_failed", error=str(e), exc_info=True)
         raise  # Re-raise to prevent server from starting with broken workflows
