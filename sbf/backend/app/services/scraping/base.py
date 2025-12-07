@@ -47,7 +47,7 @@ class BaseScrapingService:
         try:
             config = ScrapeConfig(
                 url=url,
-                country=country.upper(),
+                # Removed country parameter - was causing proxy pool errors
                 asp=settings.SCRAPFLY_ASP,
                 render_js=render_js,
                 # Note: Don't set timeout when using Scrapfly's built-in retry mechanism
@@ -124,7 +124,7 @@ class BaseScrapingService:
         for idx, url in enumerate(filtered_urls[:max_concurrent]):
             config = ScrapeConfig(
                 url=url,
-                country=country.upper(),
+                # Removed country parameter - was causing proxy pool errors
                 asp=settings.SCRAPFLY_ASP,
                 render_js=True,
                 # Note: Don't set timeout when using Scrapfly's built-in retry mechanism

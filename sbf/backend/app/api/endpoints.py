@@ -306,6 +306,21 @@ async def generate_report(
                     if "final_report" in state_updates and state_updates["final_report"]:
                         duration = (datetime.utcnow() - started_at).total_seconds()
 
+                        # Extract subject name based on report type
+                        subject_name = ""
+                        if report_type == "meeting_brief":
+                            # For meeting brief, combine person and company
+                            person = state.get("person_name", "")
+                            company = state.get("company_name", "")
+                            subject_name = f"{person} ({company})" if person and company else person or company
+                        elif report_type == "industry_profile":
+                            subject_name = state.get("industry_name", "")
+                        elif report_type == "audience_profile":
+                            subject_name = state.get("audience_name", "")
+                        else:
+                            # brand_audit, brand_house, four_cs, competitive_landscape
+                            subject_name = state.get("brand_name", "")
+
                         # Final result
                         yield json.dumps(ResultResponse(
                             markdown=state_updates["final_report"],
@@ -314,7 +329,8 @@ async def generate_report(
                                 "workflow_id": workflow_id or "unknown",
                                 "duration_seconds": duration,
                                 "report_type": report_type,
-                                "geography": geography
+                                "geography": geography,
+                                "subject_name": subject_name
                             }
                         ).model_dump(mode='json')) + "\n"
 

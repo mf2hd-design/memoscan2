@@ -1,5 +1,5 @@
 """
-Audience Profile workflow nodes - NO WEB SCRAPING (audience analysis from GPT-5.1 knowledge).
+Audience Profile workflow nodes - Research audience demographics and behavior.
 """
 
 import structlog
@@ -8,25 +8,54 @@ from typing import Dict, Any
 from ...core.llm_client import LLMClient
 from ..prompts import PromptTemplates
 from .common import StepStatus
+from ...services.scraping.strategies import AudienceScrapingStrategy
 
 logger = structlog.get_logger()
 llm_client = LLMClient()
 
 
 async def node_research_audience(state: Dict[str, Any]) -> Dict[str, Any]:
-    """No scraping needed - audience analysis uses GPT-5.1 knowledge."""
+    """Research audience demographics, psychographics, and behavior."""
     logger.info("node_research_audience", audience=state.get("audience_name"))
 
-    return {
-        **state,
-        "demographic_data": [],
-        "psychographic_data": [],
-        "media_consumption_data": [],
-        "brand_preference_data": [],
-        "current_step": "Research skipped (using GPT-5.1 knowledge)...",
-        "progress_percent": 70,
-        "steps": {**state.get("steps", {}), "research": StepStatus.COMPLETED}
-    }
+    try:
+        strategy = AudienceScrapingStrategy()
+        results = await strategy.execute(state)
+
+        # Format scraped data for the prompt
+        def format_data(data_list):
+            if not data_list:
+                return "No data found."
+            formatted = ""
+            for idx, item in enumerate(data_list, 1):
+                formatted += f"\n[Source {idx}] {item.get('url', 'Unknown source')}\n{item.get('content', '')}\n"
+            return formatted
+
+        return {
+            **state,
+            "demographic_data": format_data(results.get("demographic_data", [])),
+            "psychographic_data": format_data(results.get("psychographic_data", [])),
+            "media_consumption_data": format_data(results.get("media_consumption", [])),
+            "brand_preference_data": format_data(results.get("brand_preferences", [])),
+            "current_step": "Audience research complete, analyzing...",
+            "progress_percent": 70,
+            "steps": {**state.get("steps", {}), "research": StepStatus.COMPLETED}
+        }
+
+    except Exception as e:
+        import traceback
+        logger.error("audience_research_failed", error=str(e), traceback=traceback.format_exc())
+        # Fall back to GPT-5.1 knowledge if scraping fails
+        return {
+            **state,
+            "demographic_data": "Research failed, using GPT-5.1 knowledge.",
+            "psychographic_data": "",
+            "media_consumption_data": "",
+            "brand_preference_data": "",
+            "current_step": "Research failed, using GPT-5.1 knowledge...",
+            "progress_percent": 70,
+            "steps": {**state.get("steps", {}), "research": StepStatus.COMPLETED}
+        }
 
 
 async def node_analyze_audience(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -35,10 +64,10 @@ async def node_analyze_audience(state: Dict[str, Any]) -> Dict[str, Any]:
         prompt = PromptTemplates.audience_profile(
             audience_name=state.get("audience_name"),
             geography=state.get("geography"),
-            demographic_data="GPT-5.1 will use built-in knowledge.",
-            psychographic_data="",
-            media_consumption="",
-            brand_preferences=""
+            demographic_data=state.get("demographic_data", ""),
+            psychographic_data=state.get("psychographic_data", ""),
+            media_consumption=state.get("media_consumption_data", ""),
+            brand_preferences=state.get("brand_preference_data", "")
         )
 
         response, meta = llm_client.generate(

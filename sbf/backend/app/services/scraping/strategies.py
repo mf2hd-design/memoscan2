@@ -577,3 +577,117 @@ class IndustryScrapingStrategy:
         )
 
         return results
+
+
+class AudienceScrapingStrategy:
+    """Audience demographic and behavioral research for Audience Profile reports."""
+
+    async def execute(self, state: Dict) -> Dict:
+        """
+        Audience Profile scraping pipeline:
+        1. Search for demographic research and statistics
+        2. Gather psychographic and behavioral data
+        3. Find media consumption patterns
+        4. Identify brand preferences and affinities
+
+        Args:
+            state: Dict with audience details
+
+        Returns:
+            Dict with all scraped data
+        """
+        audience_name = state.get("audience_name")
+        geography = state.get("geography", "US")
+
+        logger.info("executing_audience_strategy", audience=audience_name, geography=geography)
+
+        results = {}
+
+        logger.info("starting_parallel_google_searches", audience=audience_name)
+        # Run searches in parallel for different data types
+        tasks = [
+            # Demographics and statistics
+            base_scraping_service.google_search(
+                f"{audience_name} demographics statistics {geography}",
+                country=geography,
+                max_results=5
+            ),
+            # Psychographics and behavior
+            base_scraping_service.google_search(
+                f"{audience_name} behavior preferences psychographics",
+                country=geography,
+                max_results=5
+            ),
+            # Media consumption
+            base_scraping_service.google_search(
+                f"{audience_name} media consumption habits {geography}",
+                country=geography,
+                max_results=5
+            ),
+            # Brand preferences
+            base_scraping_service.google_search(
+                f"{audience_name} brand preferences favorite brands",
+                country=geography,
+                max_results=5
+            )
+        ]
+
+        search_results = await asyncio.gather(*tasks)
+
+        logger.info(
+            "google_searches_complete",
+            search_results_counts=[len(urls) for urls in search_results]
+        )
+
+        # Collect URLs (top 2 from each search category)
+        all_urls = []
+        for urls in search_results:
+            all_urls.extend(urls[:2])
+
+        logger.info("collected_urls_for_scraping", url_count=len(all_urls))
+
+        # Scrape in parallel
+        scrape_results = await base_scraping_service.scrape_multiple(
+            all_urls,
+            country=geography
+        )
+
+        logger.info(
+            "scrape_multiple_complete",
+            total_results=len(scrape_results),
+            success_count=sum(1 for r in scrape_results if r.success)
+        )
+
+        # Organize results by category
+        results["demographic_data"] = []
+        results["psychographic_data"] = []
+        results["media_consumption"] = []
+        results["brand_preferences"] = []
+
+        for idx, result in enumerate(scrape_results):
+            if result.success:
+                cleaned_content = html_cleaner.clean_html(result.content)
+                truncated = cleaned_content[:3000]  # Limit per source
+
+                data_entry = {
+                    "url": result.url,
+                    "content": truncated
+                }
+
+                # Categorize based on which search it came from
+                if idx < 4:
+                    results["demographic_data"].append(data_entry)
+                elif idx < 8:
+                    results["psychographic_data"].append(data_entry)
+                elif idx < 12:
+                    results["media_consumption"].append(data_entry)
+                else:
+                    results["brand_preferences"].append(data_entry)
+
+        logger.info(
+            "audience_strategy_complete",
+            audience=audience_name,
+            sources_scraped=len(scrape_results)
+        )
+
+        return results

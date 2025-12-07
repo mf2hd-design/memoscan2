@@ -209,7 +209,7 @@ class LLMClient:
                 model=settings.GPT5_MODEL,
                 input=prompt,
                 reasoning={"effort": "medium"},  # SBF needs deeper reasoning
-                text={"verbosity": "medium"}
+                text={"verbosity": "low"}  # Keep responses concise and focused
             )
             raw = _extract_text_from_responses(resp)
             if not raw:

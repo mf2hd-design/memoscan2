@@ -25,8 +25,10 @@ class PromptTemplates:
 **CRITICAL LENGTH REQUIREMENT:**
 - Your response MUST be between 6,000-8,000 characters total
 - This is a HARD LIMIT - responses over 8,000 characters will be rejected
-- Be comprehensive but concise - prioritize quality over quantity
+- Be DIRECT and SUCCINCT - eliminate unnecessary elaboration and filler words
+- Prioritize quality over quantity - every sentence must add strategic value
 - Use bullet points and tables to convey information efficiently
+- Avoid repetition and redundant explanations
 
 
 CRITICAL FORMATTING REQUIREMENTS:
@@ -220,7 +222,7 @@ Examples: Gen AI Adoption, Nearshoring, Sustainability Demands, Digital Transfor
 ## Recent News
 {news_mentions}
 
-{f"## Uploaded Documents Context\\n{pdf_context}" if pdf_context else ""}
+{("## Uploaded Documents Context" + chr(10) + pdf_context) if pdf_context else ""}
 
 ---
 
@@ -511,8 +513,10 @@ Now generate the Industry & Market Profile report following the exact structure 
 **CRITICAL LENGTH REQUIREMENT:**
 - Your response MUST be between 6,000-8,000 characters total
 - This is a HARD LIMIT - responses over 8,000 characters will be rejected
-- Be comprehensive but concise - prioritize quality over quantity
+- Be DIRECT and SUCCINCT - eliminate unnecessary elaboration and filler words
+- Prioritize quality over quantity - every sentence must add strategic value
 - Use bullet points and tables to convey information efficiently
+- Avoid repetition and redundant explanations
 
 
 CRITICAL FORMATTING REQUIREMENTS:
@@ -654,8 +658,10 @@ Now generate the Brand House Strategy following the exact structure and formatti
 **CRITICAL LENGTH REQUIREMENT:**
 - Your response MUST be between 6,000-8,000 characters total
 - This is a HARD LIMIT - responses over 8,000 characters will be rejected
-- Be comprehensive but concise - prioritize quality over quantity
+- Be DIRECT and SUCCINCT - eliminate unnecessary elaboration and filler words
+- Prioritize quality over quantity - every sentence must add strategic value
 - Use bullet points and tables to convey information efficiently
+- Avoid repetition and redundant explanations
 
 
 CRITICAL FORMATTING REQUIREMENTS:
