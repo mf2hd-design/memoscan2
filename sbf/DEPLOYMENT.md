@@ -15,7 +15,7 @@ Render.com provides a simple, managed deployment with automatic builds from GitH
 
 ### Step 1: Prepare Your Repository
 
-Your repository is already configured with `render.yaml`. Ensure all changes are committed and pushed:
+The repository root contains `render.yaml` that points to the SBF app in the `sbf/` subdirectory. Ensure all changes are committed and pushed:
 
 ```bash
 git add .
