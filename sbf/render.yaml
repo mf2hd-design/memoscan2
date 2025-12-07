@@ -79,3 +79,20 @@ services:
         value: "900"
       - key: SCRAPE_TIMEOUT
         value: "45"
+
+  # Frontend (Next.js)
+  - type: web
+    name: sbf-frontend
+    env: node
+    buildCommand: cd frontend && npm install && npm run build
+    startCommand: cd frontend && npm start
+    plan: starter
+
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: sbf-backend
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: NODE_ENV
+        value: production
