@@ -1,0 +1,39 @@
+# FastAPI & Web Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart
+
+# LangGraph & LangChain (simplified - let pip resolve versions)
+langgraph
+langchain
+langchain-openai
+langchain-community
+langchain-text-splitters
+langchain-core
+
+# PostgreSQL for LangGraph persistence
+psycopg[binary]
+asyncpg
+
+# Scraping
+scrapfly-sdk
+beautifulsoup4
+playwright
+httpx
+
+# RAG (in-memory only)
+chromadb
+pypdf
+
+# Core utilities
+pydantic>=2.0
+pydantic-settings
+python-dotenv
+tiktoken
+structlog
+slowapi
+psutil
+
+# Additional dependencies
+requests
+aiohttp

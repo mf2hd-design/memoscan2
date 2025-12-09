@@ -1,0 +1,113 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Environment Variables
+.env
+.env.local
+.env.production
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+app.log
+server.log
+
+# Cache
+/backend/cache/
+*.cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+
+# ChromaDB
+chroma_data/
+.chroma/
+
+# Playwright
+.playwright/
+playwright-report/
+test-results/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Testing
+.pytest_cache/
+.tox/
+
+# Documentation
+docs/_build/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Frontend (when built)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.turbo/
+frontend/dist/
+
+# Secrets
+*.key
+*.pem
+*.crt
+*.p12
+secrets/
+
+# Backups
+*.backup
+*_backup
+backup/
