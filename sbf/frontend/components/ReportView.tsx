@@ -86,7 +86,7 @@ export default function ReportView({ report, onReset }: ReportViewProps) {
 
       {/* Report Content */}
       <div className="card">
-        <div className="prose prose-lg max-w-none">
+        <div className="prose prose-lg max-w-none prose-a:text-blue-600 prose-a:font-medium prose-a:underline prose-a:decoration-2 prose-a:underline-offset-2 hover:prose-a:text-blue-800 hover:prose-a:decoration-blue-800">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {report.markdown}
           </ReactMarkdown>

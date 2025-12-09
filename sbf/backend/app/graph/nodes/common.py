@@ -133,7 +133,7 @@ async def node_cache_check(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         **state,  # Preserve all existing state (industry_name, geography, etc.)
         "cache_hit": False,
-        "current_step": "Cache miss - proceeding with research...",
+        "current_step": "Starting fresh research...",
         "progress_percent": 10,
         "steps": {**state.get("steps", {}), "cache_check": StepStatus.COMPLETED}
     }
