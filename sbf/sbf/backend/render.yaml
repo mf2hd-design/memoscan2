@@ -1,0 +1,54 @@
+# Render.com Blueprint
+# Deploy with: render blueprint sync
+
+services:
+  - type: web
+    name: sbf-backend
+    runtime: docker
+    region: oregon
+    plan: starter
+    
+    # Environment variables
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false  # Set manually in dashboard
+      - key: SCRAPFLY_KEY
+        sync: false  # Set manually in dashboard
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: DEBUG
+        value: "false"
+      - key: RATE_LIMIT_PER_HOUR
+        value: "10"
+      - key: CACHE_TTL_HOURS
+        value: "24"
+      - key: GPT5_MODEL
+        value: gpt-5.1-2025-11-13
+      - key: GPT5_TIMEOUT
+        value: "180"
+      - key: CIRCUIT_BREAKER_THRESHOLD
+        value: "3"
+      - key: CIRCUIT_BREAKER_COOLDOWN
+        value: "600"
+    
+    # Health check
+    healthCheckPath: /health
+    
+    # Autoscaling (optional, for paid plans)
+    # autoscaling:
+    #   minInstances: 1
+    #   maxInstances: 3
+    #   targetMemoryPercent: 80
+    #   targetCPUPercent: 80
+    
+    # Build settings
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    
+    # Disk (optional, for cache persistence)
+    # disk:
+    #   name: sbf-cache
+    #   mountPath: /tmp/sbf_cache
+    #   sizeGB: 1

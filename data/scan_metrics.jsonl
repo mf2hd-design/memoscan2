@@ -1,0 +1,4 @@
+{"timestamp": 1764859598.502892, "scan_id": "0fd9052d-a88a-4aeb-b352-573e52f35e48", "event_type": "started", "details": {"mode": "discovery", "url": "https://stripe.com"}}
+{"timestamp": 1764859884.421726, "scan_id": "0fd9052d-a88a-4aeb-b352-573e52f35e48", "event_type": "completed", "details": {"mode": "discovery"}}
+{"timestamp": 1764860175.6074839, "scan_id": "a317f373-742d-4a60-a1e5-950dc02c3e98", "event_type": "started", "details": {"mode": "discovery", "url": "https://basecamp.com"}}
+{"timestamp": 1764860487.718592, "scan_id": "a317f373-742d-4a60-a1e5-950dc02c3e98", "event_type": "completed", "details": {"mode": "discovery"}}

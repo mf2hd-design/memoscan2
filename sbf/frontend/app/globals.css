@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply text-gray-900;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-primary-600 text-white hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-200 text-gray-800 hover:bg-gray-300;
+  }
+
+  .input {
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+  }
+
+  .card {
+    @apply bg-white rounded-lg shadow-md p-6;
+  }
+
+  /* Custom prose heading styles for strong visual hierarchy */
+  .prose h1 {
+    @apply text-3xl font-bold text-gray-900 mt-8 mb-4 pb-2 border-b-2 border-primary-600;
+  }
+
+  .prose h2 {
+    @apply text-2xl font-semibold text-gray-800 mt-6 mb-3;
+  }
+
+  .prose h3 {
+    @apply text-xl font-medium text-gray-700 mt-4 mb-2;
+  }
+
+  /* First H1 should have less top margin */
+  .prose > h1:first-child {
+    @apply mt-0;
+  }
+
+  /* Ensure proper spacing for lists within prose */
+  .prose ul, .prose ol {
+    @apply my-3;
+  }
+
+  .prose li {
+    @apply my-1;
+  }
+}

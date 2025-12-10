@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Prose styles for markdown */
+.prose h1 { @apply text-2xl font-bold text-indigo-800 mt-6 mb-4; }
+.prose h2 { @apply text-xl font-bold text-indigo-700 mt-6 mb-3; }
+.prose h3 { @apply text-lg font-semibold mt-4 mb-2; }
+.prose p { @apply mb-3 text-slate-700 leading-relaxed; }
+.prose ul { @apply list-disc pl-6 mb-3; }
+.prose ol { @apply list-decimal pl-6 mb-3; }
+.prose li { @apply mb-1; }
+.prose strong { @apply font-semibold; }
+.prose em { @apply italic; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

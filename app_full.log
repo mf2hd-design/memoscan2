@@ -1,0 +1,9 @@
+✅ Set PERSISTENT_DATA_DIR to: /Users/ben/Documents/Saffron/memoscan2/data
+[INFO] ✅ Configuration validation passed
+[2025-12-04 15:13:51] INFO: Discovery Mode initialized successfully
+✅ Discovery Mode with concurrent API optimization initialized successfully
+SECURITY: Admin key generated and stored securely at /Users/ben/Documents/Saffron/memoscan2/data/secure/admin.key
+Set ADMIN_API_KEY environment variable for production!
+CORS configured for origins: https://memoscan2.onrender.com, http://localhost:5000, http://127.0.0.1:5000, http://localhost:8081, http://127.0.0.1:8081
+[INFO] Data retention cleanup scheduled (retention: 90 days)
+[INFO] Background threads started
