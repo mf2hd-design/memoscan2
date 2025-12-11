@@ -181,7 +181,9 @@ async def node_format_report(state: Dict[str, Any]) -> Dict[str, Any]:
 
     query_cache.set(cache_data, *cache_key_parts)
 
+    # IMPORTANT: Preserve final_report and chart_json so the API can return them
     return {
+        **state,  # Preserve all existing state including final_report
         "current_step": "Report complete!",
         "progress_percent": 100,
         "steps": {**state.get("steps", {}), "format": StepStatus.COMPLETED}
